@@ -16,6 +16,8 @@ import { pick } from './utils.js';
 
 const $ = (id) => document.getElementById(id);
 const NO_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: false, fire: false };
+// сколько корпуса чинит убийство
+const HEAL = { car: 6, gib: 8, crush: 7, gun: 4 };
 const SHADOW_EXTENT = 60;
 const SHADOW_MAP = 2048;
 
@@ -225,6 +227,9 @@ class Game {
         text = pick(['В ФАРШ!', 'В КЛОЧЬЯ!', 'НА ЗАПЧАСТИ!']);
         cls = 'big';
         break;
+      case 'crush':
+        text = pick(['РАЗДАВЛЕН!', 'В БЛИН!', 'ХРУСТЬ!', 'ДОБИЛ!']);
+        break;
       case 'gun':
         base = 75;
         text = pick(['РАССТРЕЛЯН', 'НАШПИГОВАН', 'ДЫРЯВЫЙ']);
@@ -242,10 +247,19 @@ class Game {
     else if (this.multi === 3) this.hud.popup('ТРИПЛЕТ!', 'gold');
     else if (this.multi >= 4) this.hud.popup('МЯСОРУБКА!', 'gold big');
     if ((cause === 'car' || cause === 'gib') && speed > 13 && this.cam.mode !== 2) this.hud.splatter(Math.min(1.5, speed / 22));
-    if (cause === 'car' || cause === 'gib') this.cam.shake(0.12 + speed * 0.006);
+    if (cause === 'car' || cause === 'gib' || cause === 'crush') this.cam.shake(0.12 + speed * 0.006);
+    const healed = this.car.heal(HEAL[cause] || 0);
+    if (healed > 0) {
+      this.hud.heal(Math.round(healed));
+      if (this.car.health > 40) this.critWarned = false;
+    }
   }
 
   _pedEvent(type, p) {
+    if (type === 'knock') {
+      this.hud.popup(pick(['С НОГ!', 'ОПРОКИНУТ!', 'ЛЕЖАТЬ!']), 'info');
+      return;
+    }
     p.bonus = p.bonus || 0;
     const bits = { air: 1, wall: 2, juggle: 4, mince: 8 };
     if (p.bonus & bits[type]) return;

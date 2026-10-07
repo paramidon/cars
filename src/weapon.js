@@ -152,7 +152,7 @@ export class MachineGun {
       t = pedHit.t;
       const hx = M.x + dx * t, hz = M.z + dz * t;
       const p = pedHit.ped;
-      hy = p.state === ST.DEAD ? car.y + 0.3 : car.y + 1.3;
+      hy = this.peds.isLying(p) ? car.y + 0.3 : car.y + 1.3;
       this.peds.bulletHit(p, dx, dz, hx, hz);
     } else if (wallHit) {
       const hx = M.x + dx * t, hz = M.z + dz * t;

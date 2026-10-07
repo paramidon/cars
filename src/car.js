@@ -18,8 +18,8 @@ const P = {
   steerHigh: 0.17,
   restitution: 0.25,
   inertia: 1.9,
-  damageThreshold: 6.5, // м/с ≈ 23 км/ч — ниже этого удар не повреждает
-  damageScale: 3.4,
+  damageThreshold: 8, // м/с ≈ 29 км/ч — ниже этого удар не повреждает
+  damageScale: 2.4,
 };
 
 // машина в коллизиях — три круга вдоль корпуса
@@ -450,9 +450,17 @@ export class Car {
     if (impact > 5) this.fx.dust(px, y - 0.3, pz, 5);
     if (this.onImpact) this.onImpact(impact, px, pz);
     if (!HARD.has(col.kind) || impact < P.damageThreshold || this.wrecked) return;
-    const mult = col.kind === 'pole' || col.kind === 'pillar' || col.kind === 'tree' ? 1.25 : 1;
+    const mult = col.kind === 'pole' || col.kind === 'pillar' || col.kind === 'tree' ? 1.15 : 1;
     const dmg = (impact - P.damageThreshold) * P.damageScale * mult;
     this.applyDamage(dmg, px, pz, nx, nz);
+  }
+
+  /** Подлатать корпус (за убийства). Возвращает, сколько реально добавилось. */
+  heal(amount) {
+    if (this.wrecked) return 0;
+    const before = this.health;
+    this.health = Math.min(100, this.health + amount);
+    return this.health - before;
   }
 
   applyDamage(dmg, px, pz, nx, nz) {

@@ -92,6 +92,19 @@ export class HUD {
     setTimeout(() => d.remove(), 1700);
   }
 
+  /** Корпус подлатали: зелёная вспышка полоски и всплывающее «+N». */
+  heal(amount) {
+    const wrap = this.el.healthWrap;
+    const d = document.createElement('span');
+    d.className = 'heal-pop';
+    d.textContent = `+${amount}`;
+    wrap.appendChild(d);
+    setTimeout(() => d.remove(), 1200);
+    wrap.classList.remove('healed');
+    void wrap.offsetWidth; // перезапуск анимации
+    wrap.classList.add('healed');
+  }
+
   damageFlash(strength = 0.6) {
     this.flashT = Math.min(1, Math.max(this.flashT, strength));
   }
@@ -171,8 +184,9 @@ export class HUD {
       if (p.state === ST.FREE) continue;
       const [sx, sy] = toScreen(p.x, p.z);
       if (sx < -4 || sy < -4 || sx > W + 4 || sy > H + 4) continue;
-      const dead = p.state === ST.DEAD || p.state === ST.FLYING;
-      ctx.fillStyle = dead ? '#6b0d0d' : p.state === ST.PANIC || p.state === ST.COWER ? '#ffd23f' : '#ff5a4f';
+      const down = p.state === ST.DOWN || p.state === ST.GETUP || (p.state === ST.FLYING && p.knocked);
+      const dead = !down && (p.state === ST.DEAD || p.state === ST.FLYING);
+      ctx.fillStyle = dead ? '#6b0d0d' : down ? '#ff9f1a' : p.state === ST.PANIC || p.state === ST.COWER ? '#ffd23f' : '#ff5a4f';
       ctx.fillRect(sx - 2, sy - 2, 4, 4);
     }
     ctx.restore();
