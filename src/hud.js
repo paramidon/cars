@@ -1,5 +1,6 @@
 import { ST } from './pedestrians.js';
 import { rand } from './utils.js';
+import { RACE } from './race.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -64,7 +65,7 @@ export class HUD {
   update(dt, game) {
     const { car } = game;
     this._set('score', this.el.score, game.score.toLocaleString('ru-RU'));
-    this._set('kills', this.el.kills, String(game.kills));
+    this._set('kills', this.el.kills, `${game.kills}/${RACE.goreWin}`);
     this._set('speed', this.el.speed, String(Math.round(car.speed * 3.6)));
     const combo = game.combo > 1 && game.comboTimer > 0 ? `КОМБО ×${game.combo}` : '';
     this._set('combo', this.el.combo, combo);
@@ -128,13 +129,13 @@ export class HUD {
 
   /** Таблица участников (ПК). */
   _standings(game) {
-    const key = game.standings.map((e) => `${e.name}${e.car.wrecked ? 'x' : ''}${e.finished ? 'f' : ''}`).join('|');
+    const key = game.standings.map((e) => `${e.name}${e.car.wrecked ? 'x' : ''}${e.finished ? 'f' : ''}${e.car.kills}`).join('|');
     if (key === this.cache.standings) return;
     this.cache.standings = key;
     this.el.standings.innerHTML = game.standings
       .map((e, i) => {
         const note = e.finished ? ' ✓' : e.car.wrecked ? ' ✕' : '';
-        return `<div class="${e.player ? 'me' : ''}${e.car.wrecked ? ' out' : ''}"><i style="background:${e.color}"></i>${i + 1}. ${e.name}${note}</div>`;
+        return `<div class="${e.player ? 'me' : ''}${e.car.wrecked ? ' out' : ''}"><i style="background:${e.color}"></i>${i + 1}. ${e.name}${note}<small title="сбито пешеходов">${e.car.kills}</small></div>`;
       })
       .join('');
   }

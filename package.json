@@ -1,7 +1,7 @@
 {
   "name": "cars-and-guts",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Cars & Guts — аркадная гонка-давилка в духе Carmageddon на three.js",
   "type": "module",
   "scripts": {

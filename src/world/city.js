@@ -113,7 +113,8 @@ export function buildCity(scene, quality) {
   const skyCols = ['#8a98a8', '#9aa6b2', '#7d8a99', '#a4adb8', '#94a0ad'];
   for (let i = 0; i < 70; i++) {
     const a = (i / 70) * Math.PI * 2 + R(-0.03, 0.03);
-    const d = R(outer + 45, outer + 140);
+    // кольцо квадратное, как стена: иначе на диагоналях дома оказывались внутри города (и были проезжими)
+    const d = R(outer + 45, outer + 140) / Math.max(Math.abs(Math.cos(a)), Math.abs(Math.sin(a)));
     const h = R(14, 75);
     addBox(g.props, Math.cos(a) * d, h / 2, Math.sin(a) * d, R(14, 32), h, R(14, 32), col(pickR(skyCols)), R(0, Math.PI));
   }

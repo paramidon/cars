@@ -1,18 +1,29 @@
 import * as THREE from 'three';
 import { Car, HIT_Z, HIT_R, CAR_INERTIA } from './car.js';
-import { clamp, rand } from './utils.js';
+import { ST } from './pedestrians.js';
+import { clamp, lerp, rand } from './utils.js';
 
 /**
- * Соперники. role: 'racer' — гонщик, хочет прийти первым и стреляет, только если кто-то прямо по курсу;
- * 'hunter' — охотник, гоняется за ближайшей машиной (игроком или другим ботом), таранит и стреляет.
+ * Соперники. Характер — не роль, а две шкалы от 0 до 1:
+ * aggr — тяга к охоте на машины: 0 — чистый гонщик (стреляет, только если кто-то прямо по курсу, сворачивает
+ *   за машиной редко и ненадолго), 1 — охотник (замечает машины издалека, гоняется за ними долго);
+ * gore — тяга к пешеходам: около 0 — давит только тех, кто попался прямо на дороге, 1 — мясник: хочет выиграть,
+ *   первым набив RACE.goreWin пешеходов, рыщет по тротуарам и стреляет по толпе.
  * speed — доля от максималки игрока, corner — скорость в повороте 90°, м/с; lane — полоса (вправо +).
  */
 export const RIVALS = [
-  { name: 'МОЛНИЯ', color: '#1f5fe0', number: 7, role: 'racer', speed: 0.9, corner: 12, lane: 2.2 },
-  { name: 'РАКЕТА', color: '#8e2fd0', number: 21, role: 'racer', speed: 0.87, corner: 11.5, lane: -2.2 },
-  { name: 'МЯСНИК', color: '#1f9e45', number: 13, role: 'hunter', speed: 0.9, corner: 11, lane: 0 },
-  { name: 'БУЛЬДОЗЕР', color: '#e8b10c', number: 66, role: 'hunter', speed: 0.85, corner: 10.5, lane: 0 },
+  { name: 'МОЛНИЯ', color: '#1f5fe0', number: 7, aggr: 0.1, gore: 0.1, speed: 0.9, corner: 12, lane: 2.2 },
+  { name: 'РАКЕТА', color: '#8e2fd0', number: 21, aggr: 0.3, gore: 0.15, speed: 0.87, corner: 11.5, lane: -2.2 },
+  { name: 'МЯСНИК', color: '#1f9e45', number: 13, aggr: 0.25, gore: 1, speed: 0.88, corner: 11, lane: 0 },
+  { name: 'БУЛЬДОЗЕР', color: '#e8b10c', number: 66, aggr: 0.8, gore: 0.2, speed: 0.85, corner: 10.5, lane: 0 },
 ];
+
+/** Роль для подписей и выбора жертвы — по преобладающей черте характера. */
+export function roleOf(def) {
+  if (def.gore >= 0.6) return 'butcher';
+  if (def.aggr >= 0.6) return 'hunter';
+  return 'racer';
+}
 
 /** Стартовая решётка: [вбок, вперёд] от точки старта игрока, по направлению движения. */
 const GRID = [
@@ -22,14 +33,34 @@ const GRID = [
   [0, -7.5], // позади игрока
 ];
 
-const HUNT_DELAY = 10; // с после старта охотники ещё едут по трассе — без свалки на старте
-const HUNT_RANGE = 170; // дальше охотник цель не видит
-// кого охотник выбирает охотнее: расстояние до цели умножается на вес (меньше — желаннее)
-const PREY_WEIGHT = { player: 0.6, hunter: 0.8, racer: 1.7 };
-const FIRE_RANGE = { racer: 45, hunter: 80 };
+const HUNT_DELAY = 10; // с после старта все ещё едут по трассе — без свалки на старте
+/** Охота на машины: пары [при aggr = 0, при aggr = 1], между ними — линейно. */
+const HUNT = {
+  range: [30, 170], // дальше цель не замечают, м
+  cone: [0.5, Math.PI], // цель должна быть в таком секторе перед носом, рад (охотник видит и сзади)
+  chance: [0.05, 1], // вероятность ввязаться, когда цель подходит (проверка раз в 1.5 с)
+  patience: [2.5, 12], // сколько с гоняться, ни разу не попав, — потом бросить (каждое попадание обнуляет)
+  mutual: 1.7, // если жертва охотится на тебя же, терпение тает быстрее — чтобы не кружить в вальсе
+  cooldown: [25, 8], // сколько с после этого ехать по трассе, не отвлекаясь на машины
+  fireRange: [35, 80],
+  fireCone: [0.05, 0.09], // насколько точно нос должен смотреть на цель, рад
+  firePause: [[3.5, 6.5], [0.4, 1]], // пауза между выстрелами, когда не охотится, с
+};
+// кого выбирают охотнее: расстояние до цели умножается на вес (меньше — желаннее)
+const PREY_WEIGHT = { player: 0.6, butcher: 1, hunter: 1, racer: 1.2 };
+/** Охота на пешеходов: пары [при gore = 0, при gore = 1]. */
+const GORE = {
+  range: [12, 70], // м
+  cone: [0.3, 1.9], // рад
+  give: [1.5, 7], // через сколько с бросить, если не догнал
+  fireRange: [0, 50], // стрельба по толпе (у мясника), м
+  firePause: [2, 4], // пауза между выстрелами по толпе, с
+  clearance: 8, // по толпе не стреляет, если рядом с ней машина, м
+};
 const FIRE_MIN = 8; // в упор не стреляют
-const RACER_FIRE_PAUSE = [2.5, 5]; // гонщик между выстрелами отвлекается на дорогу, с
-const FIRE_CONE = { racer: 0.05, hunter: 0.09 }; // насколько точно нос должен смотреть на цель, рад
+const at = (pair, k) => lerp(pair[0], pair[1], k);
+// пара диапазонов [[от, до] при 0, [от, до] при 1] → диапазон при k
+const at2 = (pairs, k) => [at([pairs[0][0], pairs[1][0]], k), at([pairs[0][1], pairs[1][1]], k)];
 const losFilter = (c) => c.kind === 'building' || c.kind === 'wall' || c.kind === 'statue' || c.kind === 'pump';
 const shotFilter = (c) => c.kind !== 'breakable' && c.h >= 1.2;
 
@@ -37,6 +68,7 @@ const shotFilter = (c) => c.kind !== 'breakable' && c.h >= 1.2;
 export const CAR_HIT = {
   threshold: 4.5, // м/с встречной скорости, ниже — без урона
   scale: 2.4,
+  // front — только лоб в лоб; если таранишь лбом в бок или зад, лоб с кенгурятником не страдает вовсе
   zone: { front: 0.3, side: 1.25, rear: 1.0 },
   restitution: 0.3,
 };
@@ -62,7 +94,8 @@ export class Rival {
     this.car = new Car(scene, city, fx, audio, debris, quality, {
       color: def.color, wing: true, isPlayer: false, number: def.number, name: def.name, wallDamage: 0.5,
     });
-    this.car.role = def.role;
+    this.car.role = roleOf(def);
+    this.car.ai = this;
     this.inp = { throttle: 0, brake: 0, steer: 0, handbrake: false, fire: false };
     this.tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: tagTexture(), transparent: true, depthWrite: false }));
     this.tag.scale.set(4.4, 1.1, 1);
@@ -73,7 +106,7 @@ export class Rival {
   }
 
   get role() {
-    return this.def.role;
+    return this.car.role;
   }
 
   get name() {
@@ -98,9 +131,17 @@ export class Rival {
     this.stuckT = 0;
     this.reverseT = 0;
     this.boost = 1;
+    this.mode = 'race'; // race — по трассе, hunt — за машиной, gore — за пешеходом
     this.target = null;
     this.retarget = 0;
-    this.fireCD = rand(...RACER_FIRE_PAUSE);
+    this.patience = 0;
+    this.calmT = 0; // пока > 0, на машины не отвлекается
+    this.targetHp = 0;
+    this.prey = null;
+    this.preyT = 0;
+    this.scanT = 0;
+    this.fireCD = rand(...at2(HUNT.firePause, this.def.aggr));
+    this.goreCD = rand(...GORE.firePause);
     this.out = false; // разбит — выбыл
     this._drawTag();
   }
@@ -137,12 +178,28 @@ export class Rival {
     if (Math.round(c.health) !== this._tagHp || (c.wrecked && this._tagHp !== 0)) this._drawTag();
   }
 
-  /** Цель охотника: ближайшая с учётом предпочтений; текущую держим, пока она не сильно хуже новой. */
-  _pickTarget(cars) {
+  /** Угол от носа до точки (вправо +) и расстояние. */
+  _bearing(x, z) {
     const car = this.car;
+    const s = Math.sin(car.yaw), c = Math.cos(car.yaw);
+    const dx = x - car.x, dz = z - car.z;
+    return { ang: Math.atan2(dx * -c + dz * s, dx * s + dz * c), d: Math.hypot(dx, dz) };
+  }
+
+  _clearLine(x, z) {
+    const car = this.car;
+    const d = Math.hypot(x - car.x, z - car.z) || 1;
+    return !this.city.world.raycast(car.x, car.z, (x - car.x) / d, (z - car.z) / d, d, losFilter);
+  }
+
+  /** Жертва-машина: ближайшая с учётом предпочтений; current — держим, пока она не сильно хуже новой. */
+  _pickTarget(cars, current) {
+    const car = this.car, a = this.def.aggr;
+    const range = at(HUNT.range, a), cone = at(HUNT.cone, a);
     const score = (c) => {
-      const d = Math.hypot(c.x - car.x, c.z - car.z);
-      if (d > HUNT_RANGE) return Infinity;
+      const { ang, d } = this._bearing(c.x, c.z);
+      if (d > (c === current ? range * 1.3 : range)) return Infinity;
+      if (c !== current && Math.abs(ang) > cone) return Infinity;
       return d * (c.isPlayer ? PREY_WEIGHT.player : PREY_WEIGHT[c.role] || 1);
     };
     let best = null, bs = Infinity;
@@ -154,9 +211,102 @@ export class Rival {
         best = c;
       }
     }
-    const cur = this.target;
-    if (cur && !cur.wrecked && best && cur !== best && score(cur) < bs * 1.35) return cur;
+    if (current && !current.wrecked && best && current !== best && score(current) < bs * 1.35) return current;
     return best;
+  }
+
+  /** Решить, гоняться ли за машиной: начать, продолжить или бросить. */
+  _huntDecision(dt, ctx) {
+    const car = this.car, a = this.def.aggr;
+    this.calmT -= dt;
+    if (a <= 0 || ctx.raceTime < HUNT_DELAY || this.tr.finished) return this._dropHunt(0);
+    this.retarget -= dt;
+    if (this.mode === 'hunt') {
+      const T = this.target;
+      // попал по жертве — терпение снова полное
+      if (T.health < this.targetHp - 0.5 && T.lastAttacker === car) this.patience = at(HUNT.patience, a);
+      this.targetHp = T.health;
+      const mutual = T.ai && T.ai.target === car;
+      this.patience -= dt * (mutual ? HUNT.mutual : 1);
+      if (T.wrecked || this.patience <= 0) return this._dropHunt(at(HUNT.cooldown, a));
+      if (this.retarget <= 0) {
+        this.retarget = 1.5;
+        const next = this._pickTarget(ctx.cars, T);
+        if (!next) return this._dropHunt(at(HUNT.cooldown, a) * 0.5);
+        if (next !== T) this._startHunt(next);
+      }
+      return;
+    }
+    if (this.calmT > 0 || this.retarget > 0) return;
+    this.retarget = 1.5;
+    const next = this._pickTarget(ctx.cars, null);
+    if (next && Math.random() < at(HUNT.chance, a)) this._startHunt(next);
+  }
+
+  _startHunt(T) {
+    this.mode = 'hunt';
+    this.target = T;
+    this.targetHp = T.health;
+    this.patience = at(HUNT.patience, this.def.aggr);
+    this.prey = null;
+  }
+
+  _dropHunt(calm) {
+    if (this.mode === 'hunt') {
+      this.mode = 'race';
+      this.calmT = calm;
+    }
+    this.target = null;
+  }
+
+  /** Пешеход, за которым стоит свернуть: впереди, на виду, лежачих — охотнее (их раздавить проще). */
+  _pickPrey(peds) {
+    const g = this.def.gore;
+    const range = at(GORE.range, g), cone = at(GORE.cone, g);
+    let best = null, bs = Infinity;
+    for (const p of peds.peds) {
+      if (p.state === ST.FREE || p.state === ST.DEAD || p.state === ST.FLYING) continue;
+      const { ang, d } = this._bearing(p.x, p.z);
+      if (d > range || Math.abs(ang) > cone) continue;
+      const lying = p.state === ST.DOWN || p.state === ST.GETUP;
+      const sc = d * (lying ? 0.6 : 1) * (1 + Math.abs(ang));
+      if (sc >= bs || !this._clearLine(p.x, p.z)) continue;
+      bs = sc;
+      best = p;
+    }
+    return best;
+  }
+
+  _goreDecision(dt, peds) {
+    const g = this.def.gore;
+    if (!peds || g <= 0) return;
+    if (this.mode === 'gore') {
+      const p = this.prey;
+      this.preyT += dt;
+      const gone = !peds.isLiving(p);
+      if (gone || this.preyT > at(GORE.give, g) || Math.hypot(p.x - this.preyX, p.z - this.preyZ) > 15) {
+        this.mode = 'race';
+        this.prey = null;
+        this.scanT = 0.3;
+      } else {
+        this.preyX = p.x;
+        this.preyZ = p.z;
+      }
+      return;
+    }
+    if (this.mode !== 'race') return;
+    this.scanT -= dt;
+    if (this.scanT > 0) return;
+    this.scanT = 0.4;
+    // мясник сворачивает всегда, гонщик — изредка и только за тем, кто почти на пути
+    if (Math.random() > Math.min(1, g * 2)) return;
+    const p = this._pickPrey(peds);
+    if (!p) return;
+    this.mode = 'gore';
+    this.prey = p;
+    this.preyT = 0;
+    this.preyX = p.x;
+    this.preyZ = p.z;
   }
 
   /** Цель за домами: ехать по улицам к перекрёстку, который ближе к цели. */
@@ -185,28 +335,44 @@ export class Rival {
     return best || { x: R[ix], z: R[iz] };
   }
 
-  /** Стоит ли стрелять: кто-то почти точно по курсу, в досягаемости и не за стеной. */
+  /** Стоит ли стрелять по машине: кто-то почти точно по курсу, в досягаемости и не за стеной. */
   _shouldFire(cars, shellSpeed) {
-    const car = this.car, role = this.def.role;
+    const car = this.car, a = this.def.aggr;
     const s = Math.sin(car.yaw), c = Math.cos(car.yaw);
+    const range = at(HUNT.fireRange, a), cone = at(HUNT.fireCone, a);
     for (const t of cars) {
       if (t === car || t.wrecked) continue;
       const d = Math.hypot(t.x - car.x, t.z - car.z);
-      if (d > FIRE_RANGE[role] || d < FIRE_MIN) continue;
+      if (d > range || d < FIRE_MIN) continue;
       const lead = d / shellSpeed;
       const dx = t.x + t.vx * lead - car.x, dz = t.z + t.vz * lead - car.z;
       const fwd = dx * s + dz * c;
       if (fwd <= 0) continue;
       const ang = Math.abs(Math.atan2(dx * -c + dz * s, fwd));
-      if (ang > FIRE_CONE[role] + 1.2 / d) continue;
-      if (!this.race.city.world.raycast(car.x, car.z, dx / Math.hypot(dx, dz), dz / Math.hypot(dx, dz), d, shotFilter)) return true;
+      if (ang > cone + 1.2 / d) continue;
+      if (!this.city.world.raycast(car.x, car.z, dx / Math.hypot(dx, dz), dz / Math.hypot(dx, dz), d, shotFilter)) return true;
     }
     return false;
   }
 
+  /** Мясник стреляет по пешеходам: кто-то стоит по курсу, стена не мешает и рядом с ним нет машин. */
+  _shouldFireAtPeds(peds, cars) {
+    const car = this.car;
+    const range = at(GORE.fireRange, this.def.gore);
+    if (range < FIRE_MIN + 4) return false;
+    const s = Math.sin(car.yaw), c = Math.cos(car.yaw);
+    const hit = peds.raycast(car.x, car.z, s, c, range, true);
+    if (!hit || hit.t < FIRE_MIN + 4) return false;
+    const hx = car.x + s * hit.t, hz = car.z + c * hit.t;
+    for (const o of cars) {
+      if (o !== car && !o.wrecked && Math.hypot(o.x - hx, o.z - hz) < GORE.clearance) return false;
+    }
+    return !this.city.world.raycast(car.x, car.z, s, c, hit.t, shotFilter);
+  }
+
   /**
    * ИИ: решить, как рулить и стрелять в этом кадре.
-   * ctx: { cars, running, raceTime, playerProgress, myProgress, shellSpeed }
+   * ctx: { cars, peds, running, raceTime, playerProgress, myProgress, shellSpeed }
    */
   think(dt, ctx) {
     const car = this.car, inp = this.inp, race = this.race, def = this.def;
@@ -223,26 +389,17 @@ export class Rival {
     const v = car.speed;
     const finished = this.tr.finished;
     let tx, tz, maxV;
-    let chasing = false;
 
-    // охотник выбирает цель
-    if (def.role === 'hunter' && ctx.raceTime > HUNT_DELAY) {
-      this.retarget -= dt;
-      if (this.retarget <= 0 || !this.target || this.target.wrecked) {
-        this.retarget = 1.5;
-        this.target = this._pickTarget(ctx.cars);
-      }
-    } else this.target = null;
+    this._huntDecision(dt, ctx);
+    if (this.mode !== 'hunt') this._goreDecision(dt, finished ? null : ctx.peds);
 
-    if (this.target) {
+    if (this.mode === 'hunt') {
       // погоня: напрямую с упреждением, а если цель за домами — по улицам
       const T = this.target;
       const d = Math.hypot(T.x - car.x, T.z - car.z) || 1;
       const lead = Math.min(1.2, d / ctx.shellSpeed);
       const lx = T.x + T.vx * lead, lz = T.z + T.vz * lead;
-      const ld = Math.hypot(lx - car.x, lz - car.z) || 1;
-      const blocked = this.city.world.raycast(car.x, car.z, (lx - car.x) / ld, (lz - car.z) / ld, ld, losFilter);
-      if (!blocked) {
+      if (this._clearLine(lx, lz)) {
         tx = lx;
         tz = lz;
       } else {
@@ -251,10 +408,16 @@ export class Rival {
         tz = n.z;
       }
       maxV = TOP_SPEED * def.speed;
-      chasing = true;
+    } else if (this.mode === 'gore') {
+      // за пешеходом: прямо на него, если за углом — бросаем (выбор заново)
+      const p = this.prey;
+      tx = p.x;
+      tz = p.z;
+      maxV = TOP_SPEED * def.speed;
+      if (!this._clearLine(tx, tz)) this.preyT += dt * 3;
     } else {
       // гонка по трассе; гонщики «на резинке»: отставший прибавляет, убежавший сбрасывает
-      if (def.role === 'racer') {
+      if (this.role === 'racer') {
         const gap = ctx.playerProgress - ctx.myProgress;
         const boostT = gap > 1.5 ? 1.06 : gap < -1.5 ? 0.88 : 1;
         this.boost += (boostT - this.boost) * Math.min(1, dt * 0.5);
@@ -266,15 +429,12 @@ export class Rival {
     }
 
     // руль: угол до цели
-    const s = Math.sin(car.yaw), c = Math.cos(car.yaw);
-    const dx = tx - car.x, dz = tz - car.z;
-    const fwd = dx * s + dz * c, right = dx * -c + dz * s;
-    const ang = Math.atan2(right, fwd);
+    const { ang } = this._bearing(tx, tz);
     let steer = clamp(ang * 2.2, -1, 1);
 
     // скорость: перед поворотами трассы тормозим заранее; в крутом развороте — медленно
     let target = maxV;
-    if (!chasing) {
+    if (this.mode === 'race') {
       for (const cn of race.cornersAhead(pr.s, 2)) {
         if (cn.angle < 0.3) continue;
         const vc = def.corner * (1.5 - 0.5 * Math.min(1, cn.angle / (Math.PI / 2)));
@@ -288,7 +448,10 @@ export class Rival {
     // застрял — сдать назад, крутя руль в обратную сторону; совсем застрял — на чекпоинт
     if (v < 1.5 && throttle > 0) this.stuckT += dt;
     else this.stuckT = Math.max(0, this.stuckT - dt * 2);
-    if (this.stuckT > 1.4 && this.reverseT <= 0) this.reverseT = rand(0.9, 1.4);
+    if (this.stuckT > 1.4 && this.reverseT <= 0) {
+      this.reverseT = rand(0.9, 1.4);
+      if (this.mode === 'gore') this.preyT += 2; // упёрлись в стену за пешеходом — скоро бросим
+    }
     if (this.reverseT > 0) {
       this.reverseT -= dt;
       throttle = 0;
@@ -303,10 +466,15 @@ export class Rival {
     inp.steer = steer;
     // пушка бьёт только по курсу — стреляем, когда кто-то прямо перед носом
     this.fireCD -= dt;
-    const canFire = def.role === 'hunter' ? this.target != null : this.fireCD <= 0;
-    if (canFire && car.reload <= 0 && this.reverseT <= 0) {
-      inp.fire = this._shouldFire(ctx.cars, ctx.shellSpeed);
-      if (inp.fire && def.role === 'racer') this.fireCD = rand(...RACER_FIRE_PAUSE);
+    this.goreCD -= dt;
+    if (car.reload <= 0 && this.reverseT <= 0) {
+      if ((this.mode === 'hunt' || this.fireCD <= 0) && this._shouldFire(ctx.cars, ctx.shellSpeed)) {
+        inp.fire = true;
+        if (this.mode !== 'hunt') this.fireCD = rand(...at2(HUNT.firePause, def.aggr));
+      } else if (this.goreCD <= 0 && ctx.peds && this._shouldFireAtPeds(ctx.peds, ctx.cars)) {
+        inp.fire = true;
+        this.goreCD = rand(...GORE.firePause);
+      }
     }
     return inp;
   }
@@ -320,6 +488,9 @@ export class Rival {
     car.vx = car.vz = car.angVel = 0;
     this.stuckT = 0;
     this.reverseT = 0;
+    this.mode = 'race';
+    this.target = null;
+    this.prey = null;
   }
 }
 
@@ -391,10 +562,14 @@ function collidePair(A, B, onHit) {
   if (onHit) onHit(A, B, -vn, px, pz, nx, nz);
 }
 
-/** Урон машине от удара другой машиной: зависит от того, чем ударили и куда. */
-export function carHitDamage(car, impact, px, pz) {
+/**
+ * Урон машине от удара другой машиной (other): зависит от того, чем ударили и куда.
+ * Таран лбом с кенгурятником в бок или зад — для тарана лоб и нужен, ему ничего; лоб в лоб — обоим немного.
+ */
+export function carHitDamage(car, other, impact, px, pz) {
   if (impact <= CAR_HIT.threshold) return 0;
   const zone = car.zoneAt(px, pz);
+  if (zone === 'front' && car.frontArmored && other.zoneAt(px, pz) !== 'front') return 0;
   let k = CAR_HIT.zone[zone];
   if (zone === 'front' && !car.frontArmored) k *= 1.8; // без кенгурятника лоб мягче
   return (impact - CAR_HIT.threshold) * CAR_HIT.scale * k;

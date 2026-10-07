@@ -200,11 +200,11 @@ export class Pedestrians {
   }
 
   // ------------------------------------------------------------------ жизненный цикл
-  reset(car) {
-    if (!this.player) this.player = car;
+  /** cars — все машины, первая — игрок. */
+  reset(cars) {
     for (const p of this.peds) this._free(p);
     this.gibs.clear();
-    for (let k = 0; k < this.target; k++) this._spawn(car, true);
+    for (let k = 0; k < this.target; k++) this._spawn(cars, true);
   }
 
   _free(p) {
@@ -219,15 +219,27 @@ export class Pedestrians {
     this.mLeg.setMatrixAt(i * 2 + 1, _zero);
   }
 
-  _spawn(car, initial = false) {
+  /**
+   * Новый пешеход — на случайном узле не слишком далеко от игрока (cars[0]), но там, где рядом нет ни одной
+   * машины: на глазах никто не возникает из воздуха. Если за 24 попытки такого места нет — не спавним.
+   */
+  _spawn(cars, initial = false) {
     const p = this.peds.find((x) => x.state === ST.FREE);
     if (!p) return;
-    let n = 0;
-    for (let tries = 0; tries < 16; tries++) {
-      n = Math.floor(Math.random() * this.nodes.length);
-      const d = Math.hypot(this.nodes[n].x - car.x, this.nodes[n].z - car.z);
-      if (d > (initial ? 25 : 45) && d < 170) break;
+    const player = cars[0];
+    let n = -1;
+    for (let tries = 0; tries < 24 && n < 0; tries++) {
+      const k = Math.floor(Math.random() * this.nodes.length);
+      const node = this.nodes[k];
+      const d = Math.hypot(node.x - player.x, node.z - player.z);
+      if (d < (initial ? 25 : 45) || d > 170) continue;
+      let clear = true;
+      for (let c = 1; c < cars.length && clear; c++) {
+        if (Math.hypot(node.x - cars[c].x, node.z - cars[c].z) < (initial ? 12 : 30)) clear = false;
+      }
+      if (clear) n = k;
     }
+    if (n < 0) return;
     const node = this.nodes[n];
     p.x = node.x + rand(-1, 1);
     p.z = node.z + rand(-1, 1);
@@ -867,7 +879,7 @@ export class Pedestrians {
     this.spawnTimer -= dt;
     if (alive + living < this.target && this.spawnTimer <= 0) {
       this.spawnTimer = 0.15;
-      this._spawn(player);
+      this._spawn(cars);
     }
 
     this.gibs.update(dt, ground, world, this.fx);

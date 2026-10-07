@@ -31,6 +31,11 @@ const P = {
   hbGrip: 1.5,
   steerLow: 0.6,
   steerHigh: 0.17,
+  latAccel: 26, // предел бокового ускорения, м/с² — на скорости руль ограничен им, а не углом
+  steerTime: [0.18, 0.5], // за сколько секунд руль доходит до упора: на месте / на максималке
+  steerReturn: 0.08, // а от упора к центру — всегда быстро, с любой скорости
+  yawResp: [9, 4], // как быстро машина отзывается на руль: на месте / на максималке
+  yawUnwind: 12, // а перестаёт крутиться, когда руль выпрямили, — всегда быстро
   restitution: 0.25,
   inertia: 1.9,
   damageThreshold: 8, // м/с ≈ 29 км/ч — ниже этого удар не повреждает
@@ -337,6 +342,7 @@ export class Car {
     this.vF = 0;
     this.vR = 0;
     this.health = 100;
+    this.kills = 0; // сбитые пешеходы — для победы «мясника»
     this.wrecked = false;
     this.wreckTime = 0;
     this.frontHits = 0;
@@ -451,8 +457,22 @@ export class Car {
     }
 
     const spd = Math.abs(vF);
-    const maxSteer = lerp(P.steerLow, P.steerHigh, clamp(spd / 32, 0, 1));
-    this.steer = moveToward(this.steer, st * maxSteer, 3.2 * h);
+    const k = clamp(spd / 32, 0, 1);
+    // на скорости руль «тупеет»: угол ограничен боковым ускорением, в поворот руль крутится медленнее, машина
+    // отзывается с ленцой. Но выпрямить руль и перестать поворачивать можно всегда быстро — колёса сами тянутся
+    // к центру, а при перекладке в другую сторону медленно набирается только новый поворот.
+    let maxSteer = lerp(P.steerLow, P.steerHigh, k);
+    if (spd > 1) maxSteer = Math.min(maxSteer, Math.atan((P.wheelBase * P.latAccel) / (spd * spd)));
+    const want = st * maxSteer;
+    let left = h;
+    if (this.steer * want < 0 || Math.abs(want) < Math.abs(this.steer)) {
+      const stop = this.steer * want < 0 ? 0 : want;
+      const fast = maxSteer / P.steerReturn;
+      const need = Math.abs(stop - this.steer) / fast;
+      this.steer = moveToward(this.steer, stop, fast * h);
+      left = Math.max(0, h - need);
+    }
+    if (left > 0) this.steer = moveToward(this.steer, want, (maxSteer / lerp(P.steerTime[0], P.steerTime[1], k)) * left);
 
     let a = 0;
     if (thr > 0) {
@@ -476,7 +496,9 @@ export class Car {
 
     let target = -(vF / P.wheelBase) * Math.tan(this.steer);
     if (hb && spd > 3) target *= 1.5;
-    this.angVel += (target - this.angVel) * Math.min(1, 9 * h);
+    const unwind = this.angVel * target < 0 || Math.abs(target) < Math.abs(this.angVel);
+    const resp = unwind ? P.yawUnwind : lerp(P.yawResp[0], P.yawResp[1], k);
+    this.angVel += (target - this.angVel) * Math.min(1, resp * h);
 
     // скорость собирается по старым осям — при повороте часть уходит в боковую и гасится сцеплением (занос)
     this.vx = fx * vF + rx * vR;
@@ -745,7 +767,8 @@ export class Car {
     for (const w of this.wheels) {
       if (w.part.detached) continue;
       w.spin.rotation.x += spinD;
-      if (w.front) w.pivot.rotation.y = this.steer;
+      // steer > 0 — поворот вправо, а вправо у машины — локальная −X
+      if (w.front) w.pivot.rotation.y = -this.steer;
     }
     // отдача ствола и вспышка
     this.recoilT = Math.max(0, this.recoilT - dt * 3.5);
