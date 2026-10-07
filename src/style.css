@@ -1147,3 +1147,121 @@ body.net .solo-only {
   color: var(--gold);
   word-break: break-all;
 }
+
+/* ------------------------------------------------------------- настройки заезда (меню, лобби) */
+.setup {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.seg-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.seg-row > span {
+  flex: 0 0 96px;
+  text-align: left;
+}
+
+.seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 1;
+}
+
+.panel .seg button {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 38px;
+  margin: 0;
+  padding: 7px 6px;
+  font-size: 13px;
+  border-radius: 8px;
+}
+
+.panel .seg button.on {
+  background: var(--accent);
+  border-color: #ff6b6b;
+  color: #fff;
+}
+
+.panel .seat-list button {
+  flex: 1 1 45%;
+}
+
+#solo-setup .crew-only {
+  display: none;
+}
+
+#solo-setup.crew .crew-only {
+  display: flex;
+}
+
+#solo-setup p.crew-only {
+  text-align: left;
+  margin: 2px 0 0;
+}
+
+#solo-setup.crew p.crew-only {
+  display: block;
+}
+
+.team-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 8px;
+  flex: none;
+  align-self: center;
+}
+
+.room-players div {
+  align-items: center;
+}
+
+.room-players b {
+  margin-right: auto;
+}
+
+/* прицел стрелка */
+#crosshair {
+  display: none;
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  transition: none;
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+#crosshair::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  margin: -2px 0 0 -2px;
+  border-radius: 50%;
+  background: var(--gold);
+}
+
+body.gunner #crosshair {
+  display: block;
+}
+
+body.gunner #btn-brake {
+  display: none;
+}

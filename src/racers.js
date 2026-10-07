@@ -1,4 +1,4 @@
-import { Car, HIT_Z, HIT_R, CAR_INERTIA } from './car.js';
+import { Car, HIT_Z, HIT_R, CAR_INERTIA, sameTeam } from './car.js';
 import { ST } from './pedestrians.js';
 import { CarTag } from './tag.js';
 import { clamp, lerp, rand } from './utils.js';
@@ -93,25 +93,35 @@ export const CAR_HIT = {
 
 const TOP_SPEED = 35; // ≈ максималка игрока, м/с
 
-/** Соперник: машина + ИИ-водитель + табличка над крышей. */
+/**
+ * Соперник: машина + ИИ-водитель + табличка над крышей.
+ * car — готовая машина: тогда это автопилот чужой машины (игрок сидит в пушке), без таблички и не «соперник».
+ */
 export class Rival {
-  constructor(scene, city, fx, audio, debris, quality, race, def, index) {
+  constructor(scene, city, fx, audio, debris, quality, race, def, index, car = null) {
     this.def = def;
     this.index = index;
     this.race = race;
     this.city = city;
+    this.inp = { throttle: 0, brake: 0, steer: 0, handbrake: false, fire: false };
+    if (car) {
+      this.car = car;
+      this.autopilot = true;
+      this.tag = null;
+      this._clear();
+      return;
+    }
     this.car = new Car(scene, city, fx, audio, debris, quality, {
       color: def.color, wing: true, isPlayer: false, number: def.number, name: def.name, wallDamage: 0.5,
     });
     this.car.role = roleOf(def);
     this.car.ai = this;
-    this.inp = { throttle: 0, brake: 0, steer: 0, handbrake: false, fire: false };
     this.tag = new CarTag(scene, this.car, def.name, def.color);
     this.reset();
   }
 
   get role() {
-    return this.car.role;
+    return roleOf(this.def);
   }
 
   get name() {
@@ -130,6 +140,11 @@ export class Rival {
   reset(slot = GRID[(this.index + 1) % GRID.length]) {
     this.slot = slot;
     this.car.reset(this.startPoint());
+    this._clear();
+  }
+
+  /** Сбросить ИИ (машину не трогает). */
+  _clear() {
     this.tr = this.race.newTracker();
     this.stuckT = 0;
     this.reverseT = 0;
@@ -148,11 +163,11 @@ export class Rival {
     this.fireCD = rand(...at2(HUNT.firePause, this.def.aggr));
     this.goreCD = rand(...GORE.firePause);
     this.out = false; // разбит — выбыл
-    this.tag.draw();
+    this.tag?.draw();
   }
 
   updateTag(player) {
-    this.tag.update(player);
+    this.tag?.update(player);
   }
 
   /** Угол от носа до точки (вправо +) и расстояние. */
@@ -181,7 +196,7 @@ export class Rival {
     };
     let best = null, bs = Infinity;
     for (const c of cars) {
-      if (c === car || c.wrecked) continue;
+      if (c === car || c.wrecked || sameTeam(c, car)) continue;
       const sc = score(c);
       if (sc < bs) {
         bs = sc;
@@ -318,7 +333,7 @@ export class Rival {
     const s = Math.sin(car.yaw), c = Math.cos(car.yaw);
     const range = at(HUNT.fireRange, a), cone = at(HUNT.fireCone, a);
     for (const t of cars) {
-      if (t === car || t.wrecked) continue;
+      if (t === car || t.wrecked || sameTeam(t, car)) continue;
       const d = Math.hypot(t.x - car.x, t.z - car.z);
       if (d > range || d < FIRE_MIN) continue;
       const lead = d / shellSpeed;

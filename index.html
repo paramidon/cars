@@ -56,6 +56,7 @@
         </div>
       </div>
       <div id="countdown" class="countdown"></div>
+      <div id="crosshair" aria-hidden="true"></div>
       <div id="speedo"><span id="speed">0</span><small>км/ч</small></div>
       <div id="messages"></div>
       <div id="fps"></div>
@@ -84,7 +85,13 @@
           <div><b>ПУШКА</b><span>бьёт строго по курсу — целься носом машины</span></div>
           <div><b>ДРИФТ</b><span>ручник для заносов</span></div>
         </div>
-        <p class="goal"><b>Три способа победить: прийти первым после 3 кругов, разбить все 4 машины соперников или первым сбить 50 пешеходов.</b> Если соперник успел раньше — проигрыш. Синий и фиолетовый рвутся к финишу (фиолетовый — задира), жёлтый охотится за машинами, зелёный МЯСНИК давит пешеходов. Ворота добавляют секунды, сбитые пешеходы — ещё чуть-чуть. Тарань лбом в бок или в зад — кенгурятнику это не вредит, а вот стенам и столбам он проигрывает. Разбил машину — подлатался.<br />Медленно — только собьёшь с ног, лежачего можно добить. Убийства подлатывают тачку, но не влетай на скорости в стены и толстые столбы.</p>
+        <p class="goal"><b>Три способа победить: прийти первым после 3 кругов, разбить все машины соперников или первым сбить 50 пешеходов.</b> Если соперник успел раньше — проигрыш. Синий и фиолетовый рвутся к финишу (фиолетовый — задира), жёлтый охотится за машинами, зелёный МЯСНИК давит пешеходов. Ворота добавляют секунды, сбитые пешеходы — ещё чуть-чуть. Тарань лбом в бок или в зад — кенгурятнику это не вредит, а вот стенам и столбам он проигрывает. Разбил машину — подлатался.<br />Медленно — только собьёшь с ног, лежачего можно добить. Убийства подлатывают тачку, но не влетай на скорости в стены и толстые столбы.</p>
+        <div id="solo-setup" class="setup">
+          <div class="seg-row"><span>Режим</span><div class="seg" data-key="mode"><button data-v="classic">КЛАССИКА</button><button data-v="crew">ЭКИПАЖ</button></div></div>
+          <div class="seg-row crew-only"><span>Ты</span><div class="seg" data-key="seat"><button data-v="driver">ЗА РУЛЁМ</button><button data-v="gunner">В ПУШКЕ</button></div></div>
+          <div class="seg-row"><span>Соперников</span><div class="seg" data-key="bots"><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button></div></div>
+          <p class="fine crew-only">Экипаж: у каждой машины водитель и стрелок, башня крутится на 360°. Второе место занимает бот — и у соперников тоже. В пушке: мышь (клик — захват), A/D или стик — поворот, ЛКМ / пробел — огонь.</p>
+        </div>
         <button id="btn-play" class="big">ПОЕХАЛИ!</button>
         <button id="btn-net">ИГРА ПО СЕТИ</button>
         <button id="btn-prev-crash" class="link hidden">В прошлый раз игра упала — показать ошибку</button>
@@ -123,11 +130,23 @@
         </div>
         <div id="lobby-rooms" class="hidden">
           <div id="room-list" class="room-list"></div>
+          <div id="create-setup" class="setup">
+            <div class="seg-row"><span>Режим</span><div class="seg" data-key="mode"><button data-v="classic">КЛАССИКА</button><button data-v="crew">ЭКИПАЖ</button></div></div>
+            <div class="seg-row"><span>Ботов</span><div class="seg" data-key="bots"><button data-v="0">0</button><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button></div></div>
+            <div class="seg-row"><span>Команды</span><div class="seg" data-key="teams"><button data-v="false">НЕТ</button><button data-v="true">2 КОМАНДЫ</button></div></div>
+          </div>
           <button id="btn-room-create" class="big">СОЗДАТЬ КОМНАТУ</button>
         </div>
         <div id="lobby-room" class="hidden">
           <h3 id="room-name" class="room-name"></h3>
+          <div id="room-setup" class="setup">
+            <div class="seg-row"><span>Режим</span><div class="seg" data-key="mode"><button data-v="classic">КЛАССИКА</button><button data-v="crew">ЭКИПАЖ</button></div></div>
+            <div class="seg-row"><span>Ботов</span><div class="seg" data-key="bots"><button data-v="0">0</button><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button></div></div>
+            <div class="seg-row"><span>Команды</span><div class="seg" data-key="teams"><button data-v="false">НЕТ</button><button data-v="true">2 КОМАНДЫ</button></div></div>
+          </div>
           <div id="room-players" class="room-players"></div>
+          <div id="room-team" class="setup"><div class="seg-row"><span>Твоя команда</span><div class="seg" data-key="team"><button data-v="1">КРАСНЫЕ</button><button data-v="2">СИНИЕ</button></div></div></div>
+          <div id="room-seat-row" class="setup"><div class="seg-row"><span>Твоё место</span><div id="room-seat" class="seg seat-list"></div></div></div>
           <button id="btn-room-start" class="big">СТАРТ</button>
           <p id="room-wait" class="fine">Ждём, пока хост начнёт заезд…</p>
           <button id="btn-room-leave">ВЫЙТИ ИЗ КОМНАТЫ</button>
@@ -143,7 +162,8 @@
                 <li><b>через VPN</b> (Radmin VPN, ZeroTier, Tailscale) или одну Wi-Fi сеть: адрес вида http://26.x.x.x:8080 — сервер печатает его при запуске.</li>
               </ul>
             </li>
-            <li>Один создаёт комнату, другой заходит, хост жмёт «СТАРТ». В комнату пускает только с той же версией игры.</li>
+            <li>Один создаёт комнату (режим, сколько ботов, команды), другой заходит, хост жмёт «СТАРТ». В комнату пускает только с той же версией игры.</li>
+            <li>В «экипаже» можно сесть в пушку к другу — он рулит, ты стреляешь; или играть каждый на своей тачке (второе место займёт бот).</li>
           </ol>
         </details>
         <p id="lobby-version" class="fine"></p>

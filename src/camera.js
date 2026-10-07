@@ -41,20 +41,21 @@ export class ChaseCamera {
     this.update(1 / 60, car);
   }
 
-  update(dt, car) {
+  /** aimYaw — сидим в башне: камера смотрит вдоль ствола, а не по курсу машины. */
+  update(dt, car, aimYaw = null) {
     const m = MODES[this.mode];
     const cam = this.camera;
     const portrait = cam.aspect < 1;
     const speed = car.speed;
 
     // направление: по курсу машины, при быстром заносе — немного по вектору скорости
-    let dirYaw = car.yaw;
-    if (speed > 6 && car.vF > 0) {
+    let dirYaw = aimYaw ?? car.yaw;
+    if (aimYaw == null && speed > 6 && car.vF > 0) {
       const velYaw = Math.atan2(car.vx, car.vz);
       dirYaw = car.yaw + Math.atan2(Math.sin(velYaw - car.yaw), Math.cos(velYaw - car.yaw)) * 0.35;
     }
     if (!this.inited) this.yaw = dirYaw;
-    this.yaw = dampAngle(this.yaw, dirYaw, car.wrecked ? 0.6 : 4.5, dt);
+    this.yaw = dampAngle(this.yaw, dirYaw, car.wrecked ? 0.6 : aimYaw != null ? 14 : 4.5, dt);
     if (car.wrecked) this.yaw += dt * 0.35;
 
     const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
@@ -75,7 +76,7 @@ export class ChaseCamera {
     }
 
     const tx = car.x - fx * dist, tz = car.z - fz * dist, ty = car.y + height;
-    const lookAhead = m.look + Math.min(speed * 0.2, 6);
+    const lookAhead = aimYaw != null ? m.look + 14 : m.look + Math.min(speed * 0.2, 6);
     const lx = car.x + fx * lookAhead, lz = car.z + fz * lookAhead, ly = car.y + 1.2;
 
     if (!this.inited) {

@@ -6,7 +6,9 @@ import { Breakables } from './world/props.js';
 import { FX } from './effects/fx.js';
 import { Debris } from './effects/debris.js';
 import { AudioFX } from './audio.js';
-import { Car } from './car.js';
+import { Car, sameTeam } from './car.js';
+import { BotGunner } from './gunner.js';
+import { wrapAngle } from './utils.js';
 import { Pedestrians } from './pedestrians.js';
 import { Artillery, CANNON } from './cannon.js';
 import { Input } from './input.js';
@@ -22,8 +24,8 @@ import { phrase } from './words.js';
 import { version } from '../package.json';
 
 const $ = (id) => document.getElementById(id);
-const NO_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: false, fire: false };
-const STOP_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: true, fire: false };
+const NO_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: false, fire: false, aim: 0, aimDX: 0 };
+const STOP_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: true, fire: false, aim: 0, aimDX: 0 };
 // сколько корпуса чинит убийство: давить выгоднее, чем стрелять
 const HEAL = { car: 6, gib: 8, crush: 8, explosion: 2 };
 const WRECK_HEAL = 15; // разбил машину тараном или из пушки — подлатался
@@ -34,6 +36,13 @@ const WIN_BONUS = 3000;
 const PLAYER_COLOR = '#e5262b';
 const SHADOW_EXTENT = 60;
 const SHADOW_MAP = 2048;
+const SOLO_KEY = 'cars-and-guts:solo';
+// автопилот моей машины, когда я сижу в пушке
+const AUTOPILOT = { name: 'АВТОПИЛОТ', color: '#b3121a', aggr: 0.1, gore: 0.12, speed: 0.95, corner: 12, lane: 0 };
+const AIM_MOUSE = 0.0032; // рад на пиксель мыши
+const AIM_KEYS = 2.6; // рад/с — поворот башни клавишами и стиком
+const AIM_DIST = 35; // м — прицел показывает, куда придёт снаряд на таком расстоянии
+const _aimV = new THREE.Vector3();
 const WIN_TEXT = { finish: 'ПОБЕДА! ПЕРВЫЙ!', annihilation: 'ВСЕ ТАЧКИ РАЗБИТЫ!', carnage: `${RACE.goreWin} ПЕШЕХОДОВ!` };
 const LOSE_TEXT = {
   finish: (n) => `${n} финишировал первым`,
@@ -83,14 +92,21 @@ class Game {
     this.debris = new Debris(scene, this.city.groundHeight, this.city.world);
     this.audio = new AudioFX();
     this.breakables = new Breakables(scene, this.city.world, this.city.props, this.city.groundHeight, this.debris, this.fx, this.audio, QUALITY);
-    this.car = new Car(scene, this.city, this.fx, this.audio, this.debris, QUALITY);
+    this.mainCar = new Car(scene, this.city, this.fx, this.audio, this.debris, QUALITY);
+    this.car = this.mainCar; // машина, в которой я сижу (по сети может быть чужая — если я в её пушке)
     this.carTag = new CarTag(scene, this.car);
     this.peds = new Pedestrians(scene, this.city, this.fx, this.audio, QUALITY);
     this.artillery = new Artillery(scene, this.city, this.fx, this.audio);
     this.race = new Race(scene, this.city, this.fx, this.audio);
     this.raceLaps = RACE.laps;
-    this.rivals = RIVALS.map((def, i) => new Rival(scene, this.city, this.fx, this.audio, this.debris, QUALITY, this.race, def, i));
+    this.allRivals = RIVALS.map((def, i) => new Rival(scene, this.city, this.fx, this.audio, this.debris, QUALITY, this.race, def, i));
+    this.rivals = [...this.allRivals]; // боты в этом заезде
     this.quality = QUALITY;
+    this.mode = 'classic'; // classic — пушка по курсу у водителя; crew — у каждой машины водитель и стрелок
+    this.seat = 'driver'; // где сижу я: driver | gunner
+    this.aimYaw = 0; // куда смотрит моя башня (мировой угол), когда я стрелок
+    this.autoDriver = null; // бот за рулём моей машины, когда я в пушке
+    this.solo = this._loadSolo();
     this.net = null; // сетевой заезд (Netplay) или null
     this.netPool = new Map(); // машины людей по сети — живут между заездами
     this.remotes = []; // { car, tag } людей в текущем сетевом заезде
@@ -175,43 +191,16 @@ class Game {
 
   // ------------------------------------------------------------ связи между системами
   _wire() {
-    const { car, peds, hud, cam, input } = this;
-    car.onBreakable = (c, car_) => this.breakables.hit(c.prop, car_);
-    car.onImpact = (impact, px, pz) => {
-      cam.shake(Math.min(0.85, impact / 22));
-      if (impact > 6) peds.alert(px, pz, 22);
-      if (impact > 20 && !car.wrecked) hud.popup(phrase('crash'), 'warn');
-    };
-    car.onDamage = (dmg) => {
-      hud.damageFlash(Math.min(0.85, 0.2 + dmg / 30));
-      if (car.health < 25 && car.health > 0 && !this.critWarned) {
-        this.critWarned = true;
-        hud.popup('КОРПУС КРИТИЧЕН!', 'warn');
-      }
-    };
-    car.onWrecked = () => {
-      this._wreckedBy(car)?.heal(WRECK_HEAL);
-      peds.explosion(car.x, car.z, 11, car);
-      cam.shake(1);
-      hud.damageFlash(1);
-      hud.popup('ТАЧКА РАЗБИТА!', 'big warn');
-      this._gameOver('wreck');
-    };
+    const { peds, cam, input } = this;
+    this._bindCar(this.mainCar);
     this.race.onEvent = (type, data) => this._raceEvent(type, data);
-    for (const r of this.rivals) {
-      const rc = r.car;
-      rc.listener = car;
-      rc.onBreakable = (c, car_) => this.breakables.hit(c.prop, car_);
-      rc.onImpact = (impact, px, pz) => {
-        if (impact > 6) peds.alert(px, pz, 18);
-      };
-      rc.onWrecked = () => this._carWrecked(rc);
-    }
+    for (const r of this.allRivals) this._bindCar(r.car);
     this._onCarHit = (a, b, impact, px, pz, nx, nz) => this._carHit(a, b, impact, px, pz, nx, nz);
     peds.onKill = (p, cause, speed) => this._kill(p, cause, speed);
     peds.onEvent = (type, p) => this._pedEvent(type, p);
-    this.artillery.onCarHit = (victim, shooter, dmg, direct) => this._shellHit(victim, shooter, dmg, direct);
+    this.artillery.onCarHit = (victim, shooter, dmg, direct, local) => this._shellHit(victim, shooter, dmg, direct, local);
     this.artillery.onBlast = (x, z, shooter) => {
+      const car = this.car;
       const d = Math.hypot(x - car.x, z - car.z);
       if (shooter === car) cam.shake(0.12);
       if (d < 40) cam.shake(0.5 * (1 - d / 40));
@@ -228,6 +217,17 @@ class Game {
       fn();
     });
     click('btn-play', () => this.start());
+    for (const seg of document.querySelectorAll('#solo-setup .seg')) {
+      seg.addEventListener('click', (e) => {
+        const b = e.target.closest('button[data-v]');
+        if (!b) return;
+        e.preventDefault();
+        const key = seg.dataset.key;
+        this.solo[key] = key === 'bots' ? Number(b.dataset.v) : b.dataset.v;
+        this._saveSolo();
+      });
+    }
+    this._syncSoloUI();
     click('btn-resume', () => this._setPaused(false));
     click('btn-restart', () => this._again());
     click('btn-net', () => this.lobby.open());
@@ -282,6 +282,139 @@ class Game {
     }
   }
 
+  /** Обработчики машины: что делать при ударе, уроне, взрыве — своей (в которой сижу) или чужой. */
+  _bindCar(car) {
+    car.onBreakable = (c, car_) => this.breakables.hit(c.prop, car_);
+    car.onImpact = (impact, px, pz) => {
+      const mine = car === this.car;
+      if (impact > 6) this.peds.alert(px, pz, mine ? 22 : 18);
+      if (!mine) return;
+      this.cam.shake(Math.min(0.85, impact / 22));
+      if (impact > 20 && !car.wrecked) this.hud.popup(phrase('crash'), 'warn');
+    };
+    car.onDamage = (dmg) => {
+      if (car === this.car) this._myDamage(dmg);
+    };
+    car.onWrecked = () => (car === this.car ? this._myWreck() : this._carWrecked(car));
+  }
+
+  _myDamage(dmg) {
+    this.hud.damageFlash(Math.min(0.85, 0.2 + dmg / 30));
+    if (this.car.health < 25 && this.car.health > 0 && !this.critWarned) {
+      this.critWarned = true;
+      this.hud.popup('КОРПУС КРИТИЧЕН!', 'warn');
+    }
+  }
+
+  _myWreck() {
+    const car = this.car;
+    this._wreckedBy(car)?.heal(WRECK_HEAL);
+    this.peds.explosion(car.x, car.z, 11, car);
+    this.cam.shake(1);
+    this.hud.damageFlash(1);
+    this.hud.popup('ТАЧКА РАЗБИТА!', 'big warn');
+    this._gameOver('wreck');
+  }
+
+  // ------------------------------------------------------------ кто где сидит
+  _loadSolo() {
+    const def = { mode: 'classic', seat: 'driver', bots: 4 };
+    try {
+      return { ...def, ...JSON.parse(localStorage.getItem(SOLO_KEY)) };
+    } catch {
+      return def;
+    }
+  }
+
+  _saveSolo() {
+    try {
+      localStorage.setItem(SOLO_KEY, JSON.stringify(this.solo));
+    } catch {
+      // не страшно
+    }
+    this._syncSoloUI();
+  }
+
+  _syncSoloUI() {
+    for (const seg of document.querySelectorAll('#solo-setup .seg')) {
+      for (const b of seg.querySelectorAll('button')) b.classList.toggle('on', b.dataset.v === String(this.solo[seg.dataset.key]));
+    }
+    $('solo-setup').classList.toggle('crew', this.solo.mode === 'crew');
+  }
+
+  /** Расстановка для игры одному: моя машина и боты по настройкам меню. */
+  _soloLineup() {
+    const { mode, bots } = this.solo;
+    const crew = mode === 'crew';
+    const seat = crew ? this.solo.seat : 'driver';
+    const car = this.mainCar;
+    car.crew = { driver: seat === 'driver' ? 'me' : 'bot', gunner: crew ? (seat === 'gunner' ? 'me' : 'bot') : null };
+    car.team = null;
+    car.remote = false;
+    car.netId = undefined;
+    car.name = 'ТЫ';
+    const rivals = this.allRivals.slice(0, Math.max(1, bots));
+    for (const r of rivals) {
+      r.car.crew = { driver: 'bot', gunner: crew ? 'bot' : null };
+      r.car.team = null;
+      r.car.remote = false;
+    }
+    return { car, seat, mode, rivals, others: [] };
+  }
+
+  /**
+   * Состав заезда: car — машина, где сижу я (seat — за рулём или в пушке); rivals — боты; others — машины
+   * людей по сети. У каждой машины car.crew = { driver, gunner }: 'me', 'bot', id игрока или null (нет пушки).
+   */
+  applyLineup({ car, seat, mode, rivals, others = [] }) {
+    this.mode = mode;
+    this.seat = seat;
+    for (const r of this.allRivals) {
+      const on = rivals.includes(r);
+      r.car.root.visible = on;
+      if (r.tag) r.tag.sprite.visible = on;
+      if (!on) r.car.x = r.car.z = 1e5; // не участвует — подальше от пешеходов и столкновений
+    }
+    this.rivals = rivals;
+    const mainUsed = car === this.mainCar || others.includes(this.mainCar);
+    this.mainCar.root.visible = mainUsed;
+    if (!mainUsed) this.mainCar.x = this.mainCar.z = 1e5;
+    this.car = car;
+    car.root.visible = true;
+    this.carTag.car = car;
+    this.setCars([car, ...others.filter((c) => c !== car), ...rivals.map((r) => r.car)]);
+    for (const c of this.cars) {
+      c.isPlayer = c === car; // звук мотора, перезарядка как у человека
+      c.listener = c === car ? null : car;
+    }
+    this.artillery.listener = car;
+    this.input.gunner = seat === 'gunner';
+    document.body.classList.toggle('gunner', seat === 'gunner');
+    this.autoDriver = seat === 'gunner' && !car.remote && car.crew?.driver === 'bot'
+      ? new Rival(this.scene, this.city, this.fx, this.audio, this.debris, QUALITY, this.race, AUTOPILOT, 0, car)
+      : null;
+    for (const c of this.cars) {
+      c.botGunner = mode === 'crew' && c.crew?.gunner === 'bot' && !c.remote ? new BotGunner(c, this.city.world, c.ai ? c.ai.def.gore : 0.4) : null;
+    }
+  }
+
+  /** Очки и сбитые — мои или всей команды (по сети). */
+  teamScore() {
+    return this.score + (this.net ? this.net.teamStat('score') : 0);
+  }
+
+  teamKills() {
+    return this.kills + (this.net ? this.net.teamStat('kills') : 0);
+  }
+
+  /** Стрелок: повернуть башню мышью / клавишами / стиком; мировой угол держится, как бы машина ни крутилась. */
+  _aim(dt, inp) {
+    const car = this.car;
+    if (car.wrecked) return;
+    this.aimYaw = wrapAngle(this.aimYaw - inp.aimDX * AIM_MOUSE - inp.aim * AIM_KEYS * dt);
+    car.turretYaw = wrapAngle(this.aimYaw - car.yaw);
+  }
+
   /** Заезд ещё идёт: одному — пока сам в игре; по сети — пока сервер не объявил победителя. */
   _live() {
     return this.net ? this.race.started && !this.net.result : this.state === 'play';
@@ -296,7 +429,8 @@ class Game {
   _kill(p, cause, speed) {
     const killer = p.killer || this.car;
     // чужая машина по сети задавила моего пешехода — у неё свои пешеходы и свой счёт
-    if (killer.remote) return;
+    // (кроме машины, в пушке которой сижу я: мои снаряды — мои очки)
+    if (killer.remote && killer !== this.car) return;
     if (!killer.wrecked) killer.kills++;
     if (killer !== this.car) {
       // сбил соперник: очков игроку нет, соперник подлатывается и приближается к победе мясника
@@ -329,7 +463,7 @@ class Game {
       this.hud.heal(Math.round(healed));
       if (this.car.health > 40) this.critWarned = false;
     }
-    if (this.state === 'play' && !this.car.wrecked && this.car.kills >= RACE.goreWin) this._victory('carnage', this.car);
+    if (this.state === 'play' && !this.car.wrecked && this.teamKills() >= RACE.goreWin) this._victory('carnage', this.car);
   }
 
   /** Соперник сбил пешехода: предупредить, если он близок к победе, или объявить его победу. */
@@ -348,7 +482,8 @@ class Game {
 
   /** Итог заезда: победил car (по сети чужой может быть неизвестен — тогда только имя). */
   _result(kind, car, name) {
-    if (car === this.car) {
+    // выиграл я, мой экипаж или моя команда
+    if (car === this.car || (car && sameTeam(car, this.car))) {
       if (this.state !== 'play') return;
       const bonus = Math.round(this.race.timeLeft) * 100;
       this.score += WIN_BONUS + bonus + (kind === 'finish' ? 1000 : 0);
@@ -413,6 +548,7 @@ class Game {
     this.winReason = '';
     this.debris.clear();
     this.breakables.reset();
+    if (!this.net) this.applyLineup(this._soloLineup());
     // места на старте — каждый заезд случайно
     let slotOf;
     if (slots) slotOf = (c) => GRID[slots[c.netId] ?? 0];
@@ -425,10 +561,13 @@ class Game {
       slotOf = (c) => free[this.cars.indexOf(c)];
     }
     this.startPoint = gridPoint(this.city, slotOf(this.car));
-    this.car.reset(this.startPoint);
     this.race.reset();
-    for (const r of this.rivals) r.reset(slotOf(r.car));
-    for (const rc of this.remotes) rc.car.reset(gridPoint(this.city, slotOf(rc.car)));
+    for (const c of this.cars) {
+      if (c.ai) c.ai.reset(slotOf(c));
+      else c.reset(gridPoint(this.city, slotOf(c)));
+    }
+    this.autoDriver?._clear();
+    this.aimYaw = this.car.yaw;
     this.peds.reset(this.cars);
     this._resetStats();
     this.cam.snap(this.car);
@@ -457,8 +596,7 @@ class Game {
     if (!this.net) return;
     this.net.dispose();
     this.net = null;
-    this.car.setColor('#b3121a');
-    this.setCars([this.car, ...this.rivals.map((r) => r.car)]);
+    this.mainCar.setColor('#b3121a');
     this.restart();
     this.state = 'menu';
     this.hud.show(false);
@@ -469,11 +607,13 @@ class Game {
     if (this.net) {
       // по сети мир не останавливается — только меню поверх
       this.netPaused = p && (this.state === 'play' || this.state === 'over');
+      if (this.netPaused) document.exitPointerLock?.();
       $('pause').classList.toggle('hidden', !this.netPaused);
       return;
     }
     if (p && this.state === 'play') {
       this.state = 'pause';
+      document.exitPointerLock?.();
       $('pause').classList.remove('hidden');
       this.audio.suspend();
     } else if (!p && this.state === 'pause') {
@@ -487,7 +627,7 @@ class Game {
 
   _unstuck() {
     const car = this.car;
-    if (car.wrecked) return;
+    if (car.wrecked || car.remote) return; // за рулём не я — переставлять машину не мне
     // в заезде — к последнему пройденному чекпоинту, лицом по маршруту
     const sp = this.race.respawnPoint(undefined, this.startPoint);
     car.x = sp.x;
@@ -506,6 +646,7 @@ class Game {
   _gameOver(kind) {
     if (this.state !== 'play') return;
     this.state = 'over';
+    document.exitPointerLock?.();
     this.overKind = kind;
     this.wreckAt = this.time;
     this.race.done = true;
@@ -562,12 +703,13 @@ class Game {
     const best = race.lapTimes.length ? fmt(Math.min(...race.lapTimes)) : '—';
     const rows = [
       ['Итог', won ? 'победа' : why || 'проигрыш'],
-      ['Соперников разбито', `${this.cars.filter((c) => c !== this.car && c.wrecked).length} из ${this.cars.length - 1}`],
+      ['Соперников разбито', `${this._enemies().filter((c) => c.wrecked).length} из ${this._enemies().length}`],
       ['Очки', this.score.toLocaleString('ru-RU')],
+      ...(this.teamScore() !== this.score ? [['Очки команды', this.teamScore().toLocaleString('ru-RU')]] : []),
       ['Кругов пройдено', laps],
       ['Время заезда', fmt(race.elapsed)],
       ['Лучший круг', best],
-      ['Сбито пешеходов', `${this.kills} из ${RACE.goreWin}`],
+      ['Сбито пешеходов', `${this.teamKills()} из ${RACE.goreWin}`],
       ['Лучшее комбо', `×${this.bestCombo}`],
       ['Макс. скорость', `${Math.round(this.maxSpeed * 3.6)} км/ч`],
     ];
@@ -621,8 +763,14 @@ class Game {
   }
 
   /** Удар машины о машину: урон по зонам, искры, звук, надписи. */
+  /** Все чужие машины: не я и не мои по команде. */
+  _enemies() {
+    return this.cars.filter((c) => c !== this.car && !sameTeam(c, this.car));
+  }
+
   _carHit(a, b, impact, px, pz, nx, nz) {
     const player = this.car;
+    const friends = sameTeam(a, b); // своих не бьём — только толкаемся
     if (a.ai && !a.remote) a.ai.onCarContact(b);
     if (b.ai && !b.remote) b.ai.onCarContact(a);
     const now = performance.now();
@@ -635,8 +783,8 @@ class Game {
     }
     if (a === player || b === player) this.cam.shake(Math.min(0.8, impact / 24));
     if (impact > 6) this.peds.alert(px, pz, 18);
-    const da = carHitDamage(a, b, impact, px, pz);
-    const db = carHitDamage(b, a, impact, px, pz);
+    const da = friends ? 0 : carHitDamage(a, b, impact, px, pz);
+    const db = friends ? 0 : carHitDamage(b, a, impact, px, pz);
     // по сети урон от тарана считает таранящий — у него своя машина точная, а чужая приходит с опозданием
     // и уже после удара; он и шлёт урон владельцу жертвы. Удар чужой машины по своей придёт так же, событием.
     this._ramDamage(a, b, da, px, pz, nx, nz, now);
@@ -664,10 +812,11 @@ class Game {
   }
 
   /** Снаряд попал в машину. */
-  _shellHit(victim, shooter, dmg, direct) {
+  /** local — снаряд выпущен с этого компьютера (выстрел напарника по сети очков мне не даёт). */
+  _shellHit(victim, shooter, dmg, direct, local = true) {
     const player = this.car;
     if (this.state !== 'play') return;
-    if (shooter === player && victim !== player && dmg >= 3) {
+    if (shooter === player && local && victim !== player && dmg >= 3) {
       this.score += Math.round(dmg) * 10;
       this.hud.popup(`${direct ? 'ПРЯМОЕ ПОПАДАНИЕ!' : 'ЗАДЕЛ!'} −${Math.round(dmg)}`, 'gold');
     }
@@ -703,13 +852,14 @@ class Game {
     } else {
       this.hud.popup(by ? `${by.name} РАЗБИЛ ${c.name}` : `${c.name} РАЗБИЛСЯ`, 'info');
     }
-    const left = this.cars.filter((o) => o !== player && !o.wrecked).length;
+    const left = this._enemies().filter((o) => !o.wrecked).length;
     if (left > 0) this.hud.popup(`ОСТАЛОСЬ ВРАГОВ: ${left}`, 'warn');
   }
 
   /** Все остальные машины разбиты — победа. */
   _checkAnnihilation() {
-    if (this.state !== 'play' || this.car.wrecked || !this.cars.every((c) => c === this.car || c.wrecked)) return;
+    const enemies = this._enemies();
+    if (this.state !== 'play' || this.car.wrecked || !enemies.length || !enemies.every((c) => c.wrecked)) return;
     this._victory('annihilation', this.car);
   }
 
@@ -746,13 +896,13 @@ class Game {
     const n = Math.max(1, Math.ceil(dt / (1 / 120)));
     const h = dt / n;
     for (let i = 0; i < n; i++) {
-      cars[0].physicsStep(h, playerInp);
+      if (!cars[0].remote) cars[0].physicsStep(h, playerInp); // в пушке чужой машины — её ведёт хозяин
       for (const r of this.rivals) if (!r.car.remote) r.car.physicsStep(h, r.inp);
       collideCars(cars, this._onCarHit);
     }
     cars[0].postUpdate(dt, playerInp);
     for (const r of this.rivals) r.car.postUpdate(dt, r.inp);
-    for (const rc of this.remotes) rc.car.postUpdate(dt, NO_INPUT);
+    for (const rc of this.remotes) if (rc.car !== cars[0]) rc.car.postUpdate(dt, NO_INPUT);
   }
 
   /** Снимок состояния для журнала ошибок. */
@@ -879,10 +1029,25 @@ class Game {
         const mine = this.standings.find((e) => e.rival === r);
         ctx.myProgress = mine ? mine.progress : 0;
         r.think(dt, ctx);
-        if (r.inp.fire) this._fire(r.car);
+        if (r.inp.fire && this.mode !== 'crew') this._fire(r.car); // в «экипаже» стреляет бот в башне
       }
-      if (this.state === 'play' && this.countdown <= 0 && inp.fire) this._fire(car);
-      this._physics(dt, inp);
+      // руль: сам, автопилот (я в пушке) или никто (машину ведёт хозяин по сети)
+      let drive = this.seat === 'driver' ? inp : NO_INPUT;
+      if (this.autoDriver) {
+        ctx.myProgress = ctx.playerProgress;
+        drive = this.state !== 'play' ? STOP_INPUT : this.countdown > 0 ? NO_INPUT : this.autoDriver.think(dt, ctx);
+      }
+      // пушки
+      const canShoot = this.state === 'play' && this.countdown <= 0 && !this.netPaused;
+      if (this.seat === 'gunner') {
+        if (this.state === 'play') this._aim(dt, inp);
+        if (canShoot && inp.fire) this._fire(car);
+      } else if (this.mode !== 'crew' && canShoot && inp.fire) this._fire(car);
+      if (this.mode === 'crew' && running) {
+        const gctx = { cars: this.cars, peds: this.peds, shellSpeed: CANNON.speed };
+        for (const c of this.cars) if (c.botGunner && c.botGunner.update(dt, gctx)) this._fire(c);
+      }
+      this._physics(dt, drive);
       this.artillery.update(dt);
       this.peds.update(dt, this.cars);
       this.breakables.update(dt);
@@ -893,11 +1058,15 @@ class Game {
         if (!r.car.remote) this._rivalEvent(r, this.race.track(r.tr, r.car));
         r.updateTag(car);
       }
-      for (const rc of this.remotes) rc.tag.update(car);
+      if (this.autoDriver) this.race.track(this.autoDriver.tr, car); // автопилоту — свой счётчик ворот (куда вернуть)
+      for (const rc of this.remotes) {
+        if (rc.car === car) rc.tag.sprite.visible = false; // над своей машиной — своя полоска
+        else rc.tag.update(car);
+      }
       this.carTag.update(car);
       this._updateStandings();
       this._checkAnnihilation();
-      cam.update(dt, car);
+      cam.update(dt, car, this.seat === 'gunner' && !car.wrecked ? this.aimYaw : null);
       this._followSun(car.x, car.z);
       this.comboTimer = Math.max(0, this.comboTimer - dt);
       if (this.comboTimer === 0) this.combo = 0;
@@ -935,7 +1104,18 @@ class Game {
     if (before > 0 && this.countdown === 0) this.race.start();
   }
 
+  /** Прицел стрелка: точка в AIM_DIST м по стволу — на экран. */
+  _crosshair() {
+    const el = $('crosshair');
+    if (this.seat !== 'gunner' || this.car.wrecked) return;
+    const m = this.car.muzzle();
+    _aimV.set(m.x + m.dx * AIM_DIST, m.y, m.z + m.dz * AIM_DIST).project(this.camera);
+    el.style.left = `${((_aimV.x + 1) / 2) * 100}%`;
+    el.style.top = `${((1 - _aimV.y) / 2) * 100}%`;
+  }
+
   render() {
+    this._crosshair();
     this.sky.position.copy(this.camera.position);
     const h = this.renderer.getDrawingBufferSize(this._dbs).y;
     const scale = h / (2 * Math.tan((this.camera.fov * Math.PI) / 360));

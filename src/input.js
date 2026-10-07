@@ -5,13 +5,17 @@ const BLOCK_DEFAULT = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'
 
 /**
  * Единый ввод: клавиатура + мышь, сенсорный джойстик + кнопки, геймпад.
- * Результат — state: { throttle, brake, steer, handbrake, fire }.
+ * Результат — state: { throttle, brake, steer, handbrake, fire, aim, aimDX }.
+ * Для стрелка в башне: aim — скорость поворота −1…1 (клавиши, стик), aimDX — сдвиг мыши в пикселях
+ * (мышь захватывается кликом, когда gunner = true).
  */
 export class Input {
   constructor(canvas, touchUI) {
     this.canvas = canvas;
     this.keys = new Set();
-    this.state = { throttle: 0, brake: 0, steer: 0, handbrake: false, fire: false };
+    this.state = { throttle: 0, brake: 0, steer: 0, handbrake: false, fire: false, aim: 0, aimDX: 0 };
+    this.gunner = false; // сидим в башне: клик захватывает мышь, пробел — тоже огонь
+    this.aimDX = 0;
     this.mouse = { x: 0, y: 0, down: false, lastMove: -1e9, over: false };
     this.touch = { joyId: null, jx: 0, jy: 0, fire: false, brake: false };
     this.usingTouch = false;
@@ -35,6 +39,7 @@ export class Input {
     });
 
     canvas.addEventListener('mousemove', (e) => {
+      if (document.pointerLockElement === canvas) this.aimDX += e.movementX;
       const r = canvas.getBoundingClientRect();
       this.mouse.x = ((e.clientX - r.left) / r.width) * 2 - 1;
       this.mouse.y = -((e.clientY - r.top) / r.height) * 2 + 1;
@@ -43,6 +48,13 @@ export class Input {
     });
     canvas.addEventListener('mouseleave', () => (this.mouse.over = false));
     canvas.addEventListener('mousedown', (e) => {
+      if (this.gunner && document.pointerLockElement !== canvas && !this.usingTouch) {
+        try {
+          canvas.requestPointerLock?.();
+        } catch {
+          // захват мыши запрещён — крутим башню клавишами
+        }
+      }
       if (e.button === 0) {
         this.mouse.down = true;
         this.mouse.lastMove = performance.now();
@@ -155,7 +167,9 @@ export class Input {
     this.steerSmooth = moveToward(this.steerSmooth, target, rate * dt);
     let steer = this.steerSmooth;
     let hb = k.has('Space');
-    let fire = this.mouse.down || FIRE_KEYS.some((c) => k.has(c));
+    let fire = this.mouse.down || FIRE_KEYS.some((c) => k.has(c)) || (this.gunner && k.has('Space'));
+    const turnKeys = (k.has('KeyD') || k.has('ArrowRight') || k.has('KeyE') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') || k.has('KeyQ') ? 1 : 0);
+    let aim = turnKeys;
 
     // сенсорный джойстик: направление стика ≈ куда ехать относительно машины
     if (this.touch.joyId !== null) {
@@ -164,6 +178,7 @@ export class Input {
       if (len > 0.15) {
         const sx = Math.abs(jx) < 0.1 ? 0 : jx;
         steer = Math.sign(sx) * Math.pow(Math.abs(sx), 1.3);
+        aim = steer;
         if (jy > 0.35) {
           brk = Math.max(brk, clamp(jy * 1.3, 0, 1));
         } else {
@@ -185,7 +200,9 @@ export class Input {
     }
     if (pad) {
       const ax0 = pad.axes[0] || 0;
-      if (Math.abs(ax0) > 0.15) steer = ax0;
+      if (Math.abs(ax0) > 0.15) steer = aim = ax0;
+      const ax2 = pad.axes[2] || 0; // правый стик — башня
+      if (Math.abs(ax2) > 0.15) aim = ax2;
       const b = (i) => pad.buttons[i] || { pressed: false, value: 0 };
       thr = Math.max(thr, b(7).value);
       brk = Math.max(brk, b(6).value);
@@ -205,6 +222,9 @@ export class Input {
     s.steer = clamp(steer, -1, 1);
     s.handbrake = hb;
     s.fire = fire;
+    s.aim = clamp(aim, -1, 1);
+    s.aimDX = this.aimDX;
+    this.aimDX = 0;
     return s;
   }
 }

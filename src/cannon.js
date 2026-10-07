@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { HIT_Z, HIT_R } from './car.js';
+import { HIT_Z, HIT_R, sameTeam } from './car.js';
 import { rayCircle } from './physics/collision.js';
 import { rand } from './utils.js';
 
@@ -19,6 +19,8 @@ export const CANNON = {
 };
 
 const shellFilter = (c) => c.kind !== 'breakable' && c.h >= 1.2;
+// «убийца» пешеходов от чужого выстрела по сети: у стрелявшего свои пешеходы и свой счёт
+const REMOTE_SHOT = { remote: true };
 
 /** Снаряды всех машин. */
 export class Artillery {
@@ -70,7 +72,7 @@ export class Artillery {
     const mesh = this.pool.find((x) => !x.visible) || this.shells.shift()?.mesh;
     mesh.visible = true;
     mesh.position.set(m.x, m.y, m.z);
-    this.shells.push({ x: m.x, y: m.y, z: m.z, dx: m.dx, dz: m.dz, v: m.v, dist: 0, owner: car, mesh, trail: 0 });
+    this.shells.push({ x: m.x, y: m.y, z: m.z, dx: m.dx, dz: m.dz, v: m.v, dist: 0, owner: car, mesh, trail: 0, local: !shot });
     if (!car.remote) {
       car.vx -= m.dx * CANNON.recoil;
       car.vz -= m.dz * CANNON.recoil;
@@ -94,7 +96,7 @@ export class Artillery {
         hitWall = true;
       }
       for (const car of this.cars) {
-        if (car === s.owner) continue;
+        if (car === s.owner || sameTeam(car, s.owner)) continue; // своих снаряд пролетает насквозь
         const sn = Math.sin(car.yaw), cs = Math.cos(car.yaw);
         for (const o of HIT_Z) {
           const ct = rayCircle(s.x, s.z, s.dx, s.dz, car.x + sn * o, car.z + cs * o, CANNON.carHitR);
@@ -116,7 +118,7 @@ export class Artillery {
       }
       if (hitWall || hitCar || hitPed || s.dist + step >= CANNON.range) {
         const x = s.x + s.dx * t, z = s.z + s.dz * t;
-        if (hitWall || hitCar || hitPed) this.blast(x, s.y, z, s.owner, hitCar);
+        if (hitWall || hitCar || hitPed) this.blast(x, s.y, z, s.owner, hitCar, s.local);
         else {
           this.fx.smoke(x, s.y, z, 0.6, 0.6);
           this.fx.smoke(x, s.y, z, 0.6, 0.6);
@@ -140,7 +142,7 @@ export class Artillery {
   }
 
   /** Взрыв снаряда: урон и толчок машинам, пешеходы в клочья или в полёт, уличная мелочь — в стороны. */
-  blast(x, y, z, shooter, directCar = null) {
+  blast(x, y, z, shooter, directCar = null, local = true) {
     const R = CANNON.radius;
     this.fx.blast(x, Math.max(0.6, y - 0.6), z);
     const lis = this.listener;
@@ -148,7 +150,7 @@ export class Artillery {
     this.audio.boom(Math.max(0.05, v));
     const now = performance.now();
     for (const car of this.cars) {
-      if (car.wrecked) continue;
+      if (car.wrecked || sameTeam(car, shooter)) continue; // дружественного огня нет
       const dx = car.x - x, dz = car.z - z;
       const d = Math.max(0, Math.hypot(dx, dz) - 1.1);
       const k = Math.max(0, 1 - d / R);
@@ -157,7 +159,7 @@ export class Artillery {
       const dmg = (direct ? CANNON.direct : 0) + CANNON.splash * k;
       if (car.remote) {
         // чужая машина по сети: урон и толчок посчитает её владелец, здесь — только надпись стрелку
-        if (car !== shooter && this.onCarHit) this.onCarHit(car, shooter, dmg, direct);
+        if (car !== shooter && this.onCarHit) this.onCarHit(car, shooter, dmg, direct, local);
         continue;
       }
       const l = Math.hypot(dx, dz) || 1;
@@ -169,10 +171,10 @@ export class Artillery {
       car.lastAttacker = shooter;
       car.lastAttackAt = now;
       car.applyDamage(dmg, x, z, nx, nz);
-      if (this.onCarHit) this.onCarHit(car, shooter, dmg, direct);
+      if (this.onCarHit) this.onCarHit(car, shooter, dmg, direct, local);
     }
     if (this.peds) {
-      this.peds.explosion(x, z, R, shooter);
+      this.peds.explosion(x, z, R, local ? shooter : REMOTE_SHOT);
       this.peds.alert(x, z, 30);
     }
     if (this.breakables) this.breakables.blast(x, z, R * 0.8);

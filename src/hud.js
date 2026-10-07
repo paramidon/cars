@@ -64,8 +64,8 @@ export class HUD {
 
   update(dt, game) {
     const { car } = game;
-    this._set('score', this.el.score, game.score.toLocaleString('ru-RU'));
-    this._set('kills', this.el.kills, `${game.kills}/${RACE.goreWin}`);
+    this._set('score', this.el.score, game.teamScore().toLocaleString('ru-RU'));
+    this._set('kills', this.el.kills, `${game.teamKills()}/${RACE.goreWin}`);
     this._set('speed', this.el.speed, String(Math.round(car.speed * 3.6)));
     const combo = game.combo > 1 && game.comboTimer > 0 ? `КОМБО ×${game.combo}` : '';
     this._set('combo', this.el.combo, combo);
@@ -106,7 +106,7 @@ export class HUD {
     }
     this._set('rl', this.el.raceLap, `КРУГ ${Math.min(race.lap, game.raceLaps)}/${game.raceLaps}`);
     this._set('rp', this.el.racePos, `${game.position}/${game.cars.length}`);
-    this._set('re', this.el.raceEnemies, String(game.cars.filter((c) => c !== car && !c.wrecked).length));
+    this._set('re', this.el.raceEnemies, String(game._enemies().filter((c) => !c.wrecked).length));
     // перезарядка пушки
     const p = Math.round((1 - Math.min(1, game.car.reload / game.reloadTime)) * 20) / 20;
     if (this.cache.gunP !== p) {

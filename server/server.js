@@ -14,7 +14,7 @@ import { WebSocketServer } from 'ws';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
 const PORT = Number(process.argv[2] || process.env.PORT || 8080);
-const MAX_PLAYERS = 4; // людей в комнате; соперники-боты добавляются к ним
+const MAX_PLAYERS = 4; // людей в комнате; соперники-боты (0–4, по настройке) добавляются к ним
 const PKG = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 const DIST_BUILD = (() => {
   try {
@@ -64,8 +64,45 @@ const server = http.createServer(async (req, res) => {
 });
 
 // ------------------------------------------------------------------ лобби и комнаты
-const clients = new Map(); // id → { id, ws, name, version, room }
-const rooms = new Map(); // id → { id, name, version, hostId, players: Set<id>, state, result, finished }
+const clients = new Map(); // id → { id, ws, name, version, room, team, car, seat }
+const rooms = new Map(); // id → { id, name, version, hostId, players: Set<id>, settings, state, result, finished }
+const MODES = ['classic', 'crew'];
+
+/** Настройки комнаты от клиента — в допустимые рамки. */
+function cleanSettings(s = {}, old = { bots: 4, mode: 'classic', teams: false }) {
+  return {
+    bots: Number.isInteger(s.bots) ? Math.max(0, Math.min(4, s.bots)) : old.bots,
+    mode: MODES.includes(s.mode) ? s.mode : old.mode,
+    teams: typeof s.teams === 'boolean' ? s.teams : old.teams,
+  };
+}
+
+/**
+ * Привести места игроков в порядок: в классике каждый за рулём своей машины; в «экипаже» можно сесть в пушку
+ * своей машины (за рулём бот) или подсесть на свободное место к другому. Подсевший — в команде хозяина машины.
+ */
+function fixSeats(room) {
+  const ps = [...room.players].map((id) => clients.get(id));
+  const crew = room.settings.mode === 'crew';
+  for (const p of ps) {
+    if (!crew || !p.car) {
+      p.car = p.id;
+      if (!crew) p.seat = 'driver';
+    }
+    if (p.seat !== 'gunner') p.seat = 'driver';
+    if (!room.settings.teams) p.team = 0;
+    else if (p.team !== 1 && p.team !== 2) p.team = 1;
+  }
+  for (const p of ps) {
+    if (p.car === p.id) continue;
+    const o = clients.get(p.car);
+    const taken = (seat) => ps.some((q) => q !== p && q.car === p.car && q.seat === seat);
+    if (!o || !room.players.has(o.id) || o.car !== o.id || taken(p.seat)) {
+      p.car = p.id;
+      p.seat = 'driver';
+    } else if (room.settings.teams) p.team = o.team;
+  }
+}
 let nextId = 1;
 
 const send = (c, msg) => {
@@ -83,14 +120,18 @@ function roomInfo(room) {
     host: room.hostId,
     state: room.state,
     max: MAX_PLAYERS,
-    players: [...room.players].map((id) => ({ id, name: clients.get(id).name })),
+    settings: room.settings,
+    players: [...room.players].map((id) => {
+      const c = clients.get(id);
+      return { id, name: c.name, team: c.team, car: c.car, seat: c.seat };
+    }),
   };
 }
 
 function roomList() {
   return [...rooms.values()].map((r) => {
     const i = roomInfo(r);
-    return { id: i.id, name: i.name, version: i.version, state: i.state, max: i.max, count: i.players.length, host: clients.get(r.hostId)?.name };
+    return { id: i.id, name: i.name, version: i.version, state: i.state, max: i.max, count: i.players.length, host: clients.get(r.hostId)?.name, settings: r.settings };
   });
 }
 
@@ -115,6 +156,7 @@ function leave(c, why = 'left') {
     rooms.delete(room.id);
     log(`комната «${room.name}» закрыта`);
   } else {
+    fixSeats(room);
     toRoom(room, { t: 'left', id: c.id, name: c.name });
     toRoom(room, { t: 'room', room: roomInfo(room) });
   }
@@ -142,9 +184,13 @@ function onMessage(c, msg) {
     case 'create': {
       if (!c.version) return;
       leave(c);
-      const r = { id: String(nextId++), name: String(msg.name || `Комната ${c.name}`).slice(0, 24), version: c.version, hostId: c.id, players: new Set([c.id]), state: 'lobby', result: null, finished: [] };
+      const r = { id: String(nextId++), name: String(msg.name || `Комната ${c.name}`).slice(0, 24), version: c.version, hostId: c.id, players: new Set([c.id]), settings: cleanSettings(msg.settings), state: 'lobby', result: null, finished: [] };
       rooms.set(r.id, r);
       c.room = r.id;
+      c.car = c.id;
+      c.seat = msg.seat === 'gunner' ? 'gunner' : 'driver';
+      c.team = 1;
+      fixSeats(r);
       send(c, { t: 'room', room: roomInfo(r) });
       pushRooms();
       log(`${c.name} создал комнату «${r.name}»`);
@@ -161,11 +207,33 @@ function onMessage(c, msg) {
       leave(c);
       r.players.add(c.id);
       c.room = r.id;
+      c.car = c.id;
+      c.seat = 'driver';
+      // в командах — в ту, где меньше людей
+      const count = (t) => [...r.players].filter((id) => clients.get(id).team === t).length;
+      c.team = count(2) < count(1) ? 2 : 1;
+      fixSeats(r);
       toRoom(r, { t: 'room', room: roomInfo(r) });
       pushRooms();
       log(`${c.name} вошёл в «${r.name}»`);
       return;
     }
+    case 'settings': // хост меняет настройки комнаты (до старта)
+      if (!room || room.hostId !== c.id || room.state !== 'lobby') return;
+      room.settings = cleanSettings(msg.settings, room.settings);
+      fixSeats(room);
+      toRoom(room, { t: 'room', room: roomInfo(room) });
+      pushRooms();
+      return;
+    case 'me': // игрок выбирает команду и место
+      if (!room || room.state !== 'lobby') return;
+      if (msg.team === 1 || msg.team === 2) c.team = msg.team;
+      if (typeof msg.car === 'string') c.car = msg.car;
+      if (msg.seat === 'driver' || msg.seat === 'gunner') c.seat = msg.seat;
+      // если на мою машину кто-то подсел, а я ушёл к другому — подсевшего вернёт fixSeats
+      fixSeats(room);
+      toRoom(room, { t: 'room', room: roomInfo(room) });
+      return;
     case 'leave':
       leave(c);
       send(c, { t: 'rooms', list: roomList() });

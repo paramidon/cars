@@ -66,6 +66,11 @@ const FRONT_ARMOR_WALL = 0.75;
 export const CAR_HALF_W = 1.05;
 const BLOOD_TRACK = 26; // сколько метров колесо мажет кровью после лужи
 export const CAR_HALF_L = 2.35;
+const GUN_Z = -0.35; // ось башни на крыше (вдоль машины)
+const BARREL = 2.25; // от оси башни до дульного среза
+
+/** Свои: одна команда (или один экипаж) — друг друга не бьют. */
+export const sameTeam = (a, b) => a !== b && a.team != null && a.team === b.team;
 
 const HARD = new Set(['building', 'wall', 'pole', 'tree', 'pillar', 'fountain', 'statue', 'pump']);
 const PEN = { nx: 0, nz: 0, depth: 0, px: 0, pz: 0 };
@@ -318,7 +323,14 @@ export class Car {
   /** Точка вылета снаряда в мире. */
   muzzle() {
     const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
-    return { x: this.x + s * 1.9, y: this.y + this.hop + 1.96, z: this.z + c * 1.9, dx: s, dz: c };
+    const a = this.yaw + this.turretYaw;
+    const dx = Math.sin(a), dz = Math.cos(a);
+    return { x: this.x + s * GUN_Z + dx * BARREL, y: this.y + this.hop + 1.96, z: this.z + c * GUN_Z + dz * BARREL, dx, dz };
+  }
+
+  /** Куда смотрит ствол (мировой угол). */
+  get aimYaw() {
+    return this.yaw + this.turretYaw;
   }
 
   /** Анимация выстрела: отдача ствола и вспышка. */
@@ -388,6 +400,7 @@ export class Car {
     this.lastImpact = 0;
     this.reload = 0;
     this.recoilT = 0;
+    this.turretYaw = 0; // поворот башни относительно машины (в режиме «экипаж» её крутит стрелок)
     this.flashT = 0;
     this.smokeAcc = 0;
 
@@ -805,6 +818,7 @@ export class Car {
     }
     // отдача ствола и вспышка
     this.recoilT = Math.max(0, this.recoilT - dt * 3.5);
+    this.cannon.rotation.y = this.turretYaw;
     this.barrel.position.z = -0.35 * Math.sin(Math.min(1, this.recoilT) * Math.PI * 0.5);
     this.flashT -= dt;
     this.flash.visible = this.flashT > 0;
