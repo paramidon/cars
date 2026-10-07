@@ -86,6 +86,7 @@
         </div>
         <p class="goal"><b>Два способа победить: прийти первым после 3 кругов или разбить все 4 машины соперников.</b> Если первым финиширует соперник — проигрыш. Гонщики (синий, фиолетовый) рвутся к финишу, охотники (зелёный, жёлтый) гоняются за всеми подряд. Ворота добавляют секунды, сбитые пешеходы — ещё чуть-чуть. Таранить лучше лбом в бок или в зад — лоб крепкий.<br />Медленно — только собьёшь с ног, лежачего можно добить. Убийства подлатывают тачку, но не влетай на скорости в стены и толстые столбы.</p>
         <button id="btn-play" class="big">ПОЕХАЛИ!</button>
+        <button id="btn-sound">НАСТРОЙКИ ЗВУКА</button>
         <button id="btn-prev-crash" class="link hidden">В прошлый раз игра упала — показать ошибку</button>
         <p class="fine">Мультяшное насилие. Все пешеходы — коробки.</p>
       </div>
@@ -97,6 +98,8 @@
         <button id="btn-resume" class="big">ПРОДОЛЖИТЬ</button>
         <button id="btn-unstuck">К ПОСЛЕДНЕМУ ЧЕКПОИНТУ</button>
         <button id="btn-restart2">НАЧАТЬ ЗАНОВО</button>
+        <button id="btn-sound2">НАСТРОЙКИ ЗВУКА</button>
+        <button id="btn-menu">ВЫЙТИ В МЕНЮ</button>
         <button id="btn-log" class="link">Журнал ошибок</button>
       </div>
     </div>
@@ -106,6 +109,21 @@
         <h2 id="result-title" class="red">ТАЧКА РАЗБИТА</h2>
         <div id="stats"></div>
         <button id="btn-restart" class="big">ЕЩЁ ЗАЕЗД</button>
+        <button id="btn-menu2">ВЫЙТИ В МЕНЮ</button>
+      </div>
+    </div>
+
+    <div id="sound" class="screen hidden">
+      <div class="panel">
+        <h2>ЗВУК</h2>
+        <div class="sound-set">
+          <label class="slider"><span>Общая громкость</span><input id="vol-master" data-bus="master" type="range" min="0" max="100" step="5" /><output id="vol-master-v">85%</output></label>
+          <label class="slider"><span>Мотор и шины</span><input id="vol-engine" data-bus="engine" type="range" min="0" max="100" step="5" /><output id="vol-engine-v">100%</output></label>
+          <label class="slider"><span>Эффекты: выстрелы, удары, крики</span><input id="vol-sfx" data-bus="sfx" type="range" min="0" max="100" step="5" /><output id="vol-sfx-v">100%</output></label>
+          <label class="check"><input id="snd-mute" type="checkbox" /><span>Выключить весь звук</span></label>
+        </div>
+        <p class="fine">Мотор слышно только в заезде. На ПК звук включается и выключается клавишей <kbd>M</kbd>.</p>
+        <button id="btn-sound-done" class="big">ГОТОВО</button>
       </div>
     </div>
 

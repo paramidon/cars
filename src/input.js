@@ -21,6 +21,11 @@ export class Input {
     this._padPrev = [];
 
     window.addEventListener('keydown', (e) => {
+      // ползунки и галочки настроек звука: стрелки и пробел — им, а не машине
+      if (e.target instanceof HTMLInputElement) {
+        if (e.code === 'Escape' && !e.repeat) this._actionKey(e.code);
+        return;
+      }
       if (BLOCK_DEFAULT.has(e.code)) e.preventDefault();
       if (!e.repeat) this._actionKey(e.code);
       this.keys.add(e.code);

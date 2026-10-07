@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import './style.css';
-import { QUALITY, IS_TOUCH, DEBUG } from './config.js';
+import { QUALITY, IS_TOUCH, DEBUG, MUTE } from './config.js';
 import { buildCity } from './world/city.js';
 import { Breakables } from './world/props.js';
 import { FX } from './effects/fx.js';
@@ -69,7 +69,7 @@ class Game {
     this.city = buildCity(scene, QUALITY);
     this.fx = new FX(scene, this.city.groundHeight, QUALITY);
     this.debris = new Debris(scene, this.city.groundHeight, this.city.world);
-    this.audio = new AudioFX();
+    this.audio = new AudioFX({ forceMute: MUTE });
     this.breakables = new Breakables(scene, this.city.world, this.city.props, this.city.groundHeight, this.debris, this.fx, this.audio, QUALITY);
     this.car = new Car(scene, this.city, this.fx, this.audio, this.debris, QUALITY);
     this.peds = new Pedestrians(scene, this.city, this.fx, this.audio, QUALITY);
@@ -101,6 +101,7 @@ class Game {
     this.peds.reset(this.car);
 
     this.state = 'menu';
+    this.soundOpen = null; // 'menu' | 'pause' — откуда открыли настройки звука
     this.overKind = null;
     this.countdown = 0;
     this.halted = false;
@@ -207,6 +208,25 @@ class Game {
     click('btn-resume', () => this._setPaused(false));
     click('btn-restart', () => this.restart());
     click('btn-restart2', () => this.restart());
+    click('btn-menu', () => this.toMenu());
+    click('btn-menu2', () => this.toMenu());
+    click('btn-sound', () => this._openSound());
+    click('btn-sound2', () => this._openSound());
+    click('btn-sound-done', () => this._closeSound());
+    for (const el of document.querySelectorAll('#sound input[type=range]')) {
+      el.addEventListener('input', () => {
+        this.audio.init();
+        this.audio.setVolume(el.dataset.bus, el.value / 100);
+        this._syncSoundUI();
+        this.audio.preview(el.dataset.bus);
+      });
+    }
+    $('snd-mute').addEventListener('change', (e) => {
+      this.audio.init();
+      this.audio.setMuted(e.target.checked);
+      this._syncSoundUI();
+    });
+    this._syncSoundUI();
     click('btn-unstuck', () => {
       this._unstuck();
       this._setPaused(false);
@@ -219,6 +239,8 @@ class Game {
     document.addEventListener('visibilitychange', () => {
       this.lastVisibilityChange = performance.now();
       if (document.hidden && this.state === 'play') this._setPaused(true);
+      if (document.hidden) this.audio.suspend();
+      else if (!this.halted) this.audio.resume();
     });
     this.renderer.domElement.addEventListener('webglcontextlost', (e) => {
       e.preventDefault();
@@ -235,10 +257,11 @@ class Game {
         break;
       case 'mute':
         this.audio.setMuted(!this.audio.muted);
-        $('btn-mute').classList.toggle('off', this.audio.muted);
+        this._syncSoundUI();
         break;
       case 'pause':
-        if (this.state === 'play') this._setPaused(true);
+        if (this.soundOpen) this._closeSound();
+        else if (this.state === 'play') this._setPaused(true);
         else if (this.state === 'pause') this._setPaused(false);
         break;
       case 'respawn':
@@ -246,7 +269,8 @@ class Game {
         else if (this.state === 'over' && this.wreckShown) this.restart();
         break;
       case 'confirm':
-        if (this.state === 'menu') this.start();
+        if (this.soundOpen) this._closeSound();
+        else if (this.state === 'menu') this.start();
         else if (this.state === 'over' && this.wreckShown) this.restart();
         else if (this.state === 'pause') this._setPaused(false);
         break;
@@ -323,9 +347,36 @@ class Game {
 
   restart() {
     this.audio.init();
+    this.audio.resume();
+    this._resetWorld();
+    this.cam.snap(this.car);
+    this.state = 'play';
+    this.countdown = RACE.countdown;
+    this.countShown = Infinity;
+    this._hideScreens();
+    this.hud.show(true);
+    this._syncTouchUI();
+  }
+
+  /** Бросить заезд и вернуться в главное меню (город с машинами на старте крутится на фоне). */
+  toMenu() {
+    this._resetWorld();
+    this.state = 'menu';
+    this.countdown = 0;
+    this._hideScreens();
+    $('menu').classList.remove('hidden');
+    this.hud.show(false);
+    this.audio.setEngineOn(false);
+    this.audio.resume();
+    this.timer.reset();
+    this._syncTouchUI();
+  }
+
+  _resetWorld() {
     this.fx.clear();
     this.artillery.clear();
     this.winner = null;
+    this.overKind = null;
     this.debris.clear();
     this.breakables.reset();
     this.car.reset(this.city.spawn);
@@ -333,25 +384,52 @@ class Game {
     for (const r of this.rivals) r.reset();
     this.peds.reset(this.car);
     this._resetStats();
-    this.cam.snap(this.car);
-    this.state = 'play';
-    this.overKind = null;
-    this.countdown = RACE.countdown;
-    this.countShown = Infinity;
-    $('wreck').classList.add('hidden');
-    $('pause').classList.add('hidden');
-    this.hud.show(true);
-    this._syncTouchUI();
+    this.hud.reset();
+  }
+
+  _hideScreens() {
+    for (const id of ['menu', 'pause', 'wreck', 'sound']) $(id).classList.add('hidden');
+    this.soundOpen = null;
+  }
+
+  // ------------------------------------------------------------ настройки звука
+  _openSound() {
+    // клик по кнопке — жест пользователя, можно завести звук и сразу дать послушать громкость
+    this.audio.init();
+    this.soundOpen = this.state === 'menu' ? 'menu' : 'pause';
+    $(this.soundOpen).classList.add('hidden');
+    $('sound').classList.remove('hidden');
+    this._syncSoundUI();
+  }
+
+  _closeSound() {
+    if (!this.soundOpen) return;
+    $('sound').classList.add('hidden');
+    $(this.soundOpen).classList.remove('hidden');
+    this.soundOpen = null;
+  }
+
+  _syncSoundUI() {
+    const s = this.audio.settings;
+    for (const bus of ['master', 'engine', 'sfx']) {
+      const v = Math.round(s[bus] * 100);
+      const el = $(`vol-${bus}`);
+      if (Number(el.value) !== v) el.value = v;
+      $(`vol-${bus}-v`).textContent = `${v}%`;
+    }
+    $('snd-mute').checked = s.muted;
+    $('sound').querySelector('.sound-set').classList.toggle('off', s.muted);
+    $('btn-mute').classList.toggle('off', s.muted);
   }
 
   _setPaused(p) {
     if (p && this.state === 'play') {
       this.state = 'pause';
       $('pause').classList.remove('hidden');
-      this.audio.suspend();
+      this.audio.setEngineOn(false); // контекст не глушим — в паузе можно крутить громкость
     } else if (!p && this.state === 'pause') {
       this.state = 'play';
-      $('pause').classList.add('hidden');
+      this._hideScreens();
       this.audio.resume();
       this.timer.reset();
     }
@@ -681,7 +759,8 @@ class Game {
     this.lastFrameAt = now;
     try {
       this.timer.update(now);
-      const dt = Math.min(this.timer.getDelta(), 1 / 20);
+      // после timer.reset() метка кадра бывает чуть раньше сброса — шаг не должен быть отрицательным
+      const dt = Math.min(Math.max(0, this.timer.getDelta()), 1 / 20);
       this.step(dt);
       this.render();
       this._adaptResolution(dt);
@@ -705,6 +784,7 @@ class Game {
   step(dt) {
     const input = this.input.update(dt);
     const { car, cam } = this;
+    this.audio.setEngineOn(this.state === 'play');
 
     if (this.state === 'play' || this.state === 'over') {
       this.time += dt;

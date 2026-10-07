@@ -61,6 +61,19 @@ export class HUD {
     this.el.hud.classList.toggle('hidden', !v);
   }
 
+  /** Убрать следы прошлого заезда: надписи, кровь на экране, отсчёт. */
+  reset() {
+    this.el.messages.replaceChildren();
+    this.splatAlpha = 0;
+    this.splat.style.opacity = 0;
+    this.splatCtx.clearRect(0, 0, this.splat.width, this.splat.height);
+    this.flashT = 0;
+    this.vignette.style.opacity = 0;
+    const cd = this.el.countdown;
+    cd.classList.remove('show', 'go');
+    cd.textContent = '';
+  }
+
   update(dt, game) {
     const { car } = game;
     this._set('score', this.el.score, game.score.toLocaleString('ru-RU'));
