@@ -25,13 +25,22 @@ export function roleOf(def) {
   return 'racer';
 }
 
-/** Стартовая решётка: [вбок, вперёд] от точки старта игрока, по направлению движения. */
-const GRID = [
-  [0, 7.5], // первый ряд, прямо перед игроком
-  [-7, 7.5], // первый ряд, соседняя полоса
-  [-7, 0], // рядом с игроком
-  [0, -7.5], // позади игрока
+/** Стартовая решётка: [вбок, вперёд] от точки старта города; места каждый заезд раздаются случайно. */
+export const GRID = [
+  [0, 0],
+  [0, 7.5],
+  [-7, 7.5],
+  [-7, 0],
+  [0, -7.5],
 ];
+
+/** Точка и курс места на решётке. */
+export function gridPoint(city, [side, ahead]) {
+  const sp = city.spawn;
+  const fx = Math.sin(sp.yaw), fz = Math.cos(sp.yaw);
+  const rx = -Math.cos(sp.yaw), rz = Math.sin(sp.yaw); // вправо
+  return { x: sp.x + fx * ahead + rx * side, z: sp.z + fz * ahead + rz * side, yaw: sp.yaw };
+}
 
 const HUNT_DELAY = 10; // с после старта все ещё едут по трассе — без свалки на старте
 /** Охота на машины: пары [при aggr = 0, при aggr = 1], между ними — линейно. */
@@ -58,6 +67,8 @@ const GORE = {
   clearance: 8, // по толпе не стреляет, если рядом с ней машина, м
 };
 const FIRE_MIN = 8; // в упор не стреляют
+// охотник не толкает жертву, а таранит раз за разом: после удара сдаёт назад и разгоняется снова
+const RAM = { back: [1.0, 1.5], charge: 1.5 }; // сколько с сдавать назад; сколько с после этого не отъезжать
 const at = (pair, k) => lerp(pair[0], pair[1], k);
 // пара диапазонов [[от, до] при 0, [от, до] при 1] → диапазон при k
 const at2 = (pairs, k) => [at([pairs[0][0], pairs[1][0]], k), at([pairs[0][1], pairs[1][1]], k)];
@@ -66,8 +77,11 @@ const shotFilter = (c) => c.kind !== 'breakable' && c.h >= 1.2;
 
 /** Удар машины о машину: лоб крепкий, бок и зад — слабые места. */
 export const CAR_HIT = {
+  // урон растёт быстрее скорости: scale · (встречная скорость − threshold)^power.
+  // Лбом в бок: 20 км/ч — ~1, 40 — ~9, 60 — ~22, 80 — ~38, 100 — ~57, 130 — ~90
   threshold: 4.5, // м/с встречной скорости, ниже — без урона
-  scale: 2.4,
+  scale: 0.41,
+  power: 1.5,
   // front — только лоб в лоб; если таранишь лбом в бок или зад, лоб с кенгурятником не страдает вовсе
   zone: { front: 0.3, side: 1.25, rear: 1.0 },
   restitution: 0.3,
@@ -105,18 +119,18 @@ export class Rival {
   }
 
   startPoint() {
-    const sp = this.city.spawn;
-    const [side, ahead] = GRID[this.index % GRID.length];
-    const fx = Math.sin(sp.yaw), fz = Math.cos(sp.yaw);
-    const rx = -Math.cos(sp.yaw), rz = Math.sin(sp.yaw); // вправо
-    return { x: sp.x + fx * ahead + rx * side, z: sp.z + fz * ahead + rz * side, yaw: sp.yaw };
+    return gridPoint(this.city, this.slot);
   }
 
-  reset() {
+  /** slot — место на решётке (GRID). */
+  reset(slot = GRID[(this.index + 1) % GRID.length]) {
+    this.slot = slot;
     this.car.reset(this.startPoint());
     this.tr = this.race.newTracker();
     this.stuckT = 0;
     this.reverseT = 0;
+    this.backT = 0; // отъезд назад для нового тарана
+    this.chargeT = 0; // пока > 0, новый отъезд не начинаем — даём разогнаться
     this.boost = 1;
     this.mode = 'race'; // race — по трассе, hunt — за машиной, gore — за пешеходом
     this.target = null;
@@ -420,6 +434,15 @@ export class Rival {
       if (this.reverseT <= 0) this.stuckT = 0.6;
     }
     if (this.stuckT > 5) this.respawn();
+    // протаранил жертву — сдать назад, держа её в прицеле (задним ходом руль наоборот), и ударить снова
+    this.chargeT -= dt;
+    if (this.backT > 0) {
+      this.backT -= dt;
+      throttle = 0;
+      brake = 1;
+      steer = -clamp(ang * 2.2, -1, 1);
+      if (this.mode !== 'hunt') this.backT = 0;
+    }
 
     inp.throttle = throttle;
     inp.brake = brake;
@@ -437,6 +460,13 @@ export class Rival {
       }
     }
     return inp;
+  }
+
+  /** Машина упёрлась в другую (зовётся из столкновений): если это жертва — отъехать для нового тарана. */
+  onCarContact(other) {
+    if (this.mode !== 'hunt' || other !== this.target || this.backT > 0 || this.chargeT > 0) return;
+    this.backT = rand(...RAM.back);
+    this.chargeT = this.backT + RAM.charge;
   }
 
   respawn() {
@@ -532,5 +562,5 @@ export function carHitDamage(car, other, impact, px, pz) {
   if (zone === 'front' && car.frontArmored && other.zoneAt(px, pz) !== 'front') return 0;
   let k = CAR_HIT.zone[zone];
   if (zone === 'front' && !car.frontArmored) k *= 1.8; // без кенгурятника лоб мягче
-  return (impact - CAR_HIT.threshold) * CAR_HIT.scale * k;
+  return (impact - CAR_HIT.threshold) ** CAR_HIT.power * CAR_HIT.scale * k;
 }

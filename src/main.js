@@ -13,7 +13,7 @@ import { Input } from './input.js';
 import { ChaseCamera } from './camera.js';
 import { HUD } from './hud.js';
 import { Race, RACE } from './race.js';
-import { Rival, RIVALS, collideCars, carHitDamage } from './racers.js';
+import { Rival, RIVALS, GRID, gridPoint, collideCars, carHitDamage } from './racers.js';
 import { CarTag } from './tag.js';
 import { CrashReporter } from './crash.js';
 import { phrase } from './words.js';
@@ -358,9 +358,16 @@ class Game {
     this.winReason = '';
     this.debris.clear();
     this.breakables.reset();
-    this.car.reset(this.city.spawn);
+    // места на старте — каждый заезд случайно
+    const slots = [...GRID];
+    for (let i = slots.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [slots[i], slots[j]] = [slots[j], slots[i]];
+    }
+    this.startPoint = gridPoint(this.city, slots[0]);
+    this.car.reset(this.startPoint);
     this.race.reset();
-    for (const r of this.rivals) r.reset();
+    this.rivals.forEach((r, i) => r.reset(slots[i + 1]));
     this.peds.reset(this.cars);
     this._resetStats();
     this.cam.snap(this.car);
@@ -392,7 +399,7 @@ class Game {
     const car = this.car;
     if (car.wrecked) return;
     // в заезде — к последнему пройденному чекпоинту, лицом по маршруту
-    const sp = this.race.respawnPoint();
+    const sp = this.race.respawnPoint(undefined, this.startPoint);
     car.x = sp.x;
     car.z = sp.z;
     car.yaw = sp.yaw;
@@ -529,6 +536,8 @@ class Game {
   /** Удар машины о машину: урон по зонам, искры, звук, надписи. */
   _carHit(a, b, impact, px, pz, nx, nz) {
     const player = this.car;
+    if (a.ai) a.ai.onCarContact(b);
+    if (b.ai) b.ai.onCarContact(a);
     const now = performance.now();
     const y = Math.min(a.y, b.y) + 0.8;
     if (impact > 2) this.fx.sparks(px, y, pz, nx, nz, Math.min(24, Math.floor(impact * 1.2)));

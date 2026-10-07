@@ -14,7 +14,7 @@ export const QUALITY = {
   shadows: !LOW,
   antialias: !LOW,
   pixelRatio: Math.min(window.devicePixelRatio || 1, LOW ? 1.5 : 2),
-  pedCount: Number(params.get('peds')) || (LOW ? 45 : 70),
+  pedCount: Number(params.get('peds')) || (LOW ? 54 : 84),
   maxParticles: LOW ? 1500 : 3000,
   maxDecals: LOW ? 350 : 700,
   maxMarks: LOW ? 400 : 900,
