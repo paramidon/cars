@@ -334,6 +334,40 @@ body {
   color: var(--muted);
 }
 
+.gun {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.gun .bar {
+  width: 150px;
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  overflow: hidden;
+}
+
+.gun .fill {
+  height: 100%;
+  width: calc(var(--p, 1) * 100%);
+  background: var(--muted);
+}
+
+.gun.ready .fill {
+  background: var(--gold);
+}
+
+body.touch .gun .bar {
+  width: 110px;
+}
+
+/* кнопка пушки на телефоне: заполняется по мере перезарядки */
+#btn-fire:not(.ready) {
+  background: conic-gradient(#ff5a4f calc(var(--p, 1) * 360deg), rgba(40, 40, 40, 0.75) 0);
+}
+
 /* ------------------------------------------------------------- гонка */
 .standings {
   display: flex;
@@ -945,6 +979,9 @@ body.touch.portrait #rotate-hint {
 }
 
 @media (max-height: 460px) {
+  #messages {
+    top: 27%; /* ниже строки гоночной панели */
+  }
   .panel {
     max-height: calc(100vh - 32px);
     overflow-y: auto;

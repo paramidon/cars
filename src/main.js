@@ -8,7 +8,7 @@ import { Debris } from './effects/debris.js';
 import { AudioFX } from './audio.js';
 import { Car } from './car.js';
 import { Pedestrians } from './pedestrians.js';
-import { MachineGun } from './weapon.js';
+import { Artillery, CANNON } from './cannon.js';
 import { Input } from './input.js';
 import { ChaseCamera } from './camera.js';
 import { HUD } from './hud.js';
@@ -22,9 +22,9 @@ const $ = (id) => document.getElementById(id);
 const NO_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: false, fire: false };
 const STOP_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: true, fire: false };
 // сколько корпуса чинит убийство: давить выгоднее, чем стрелять
-const HEAL = { car: 6, gib: 8, crush: 8, gun: 2 };
+const HEAL = { car: 6, gib: 8, crush: 8, explosion: 2 };
 const BEST_KEY = 'cars-and-guts:best';
-const PLACE_BONUS = [3000, 1500, 600, 200];
+const WIN_BONUS = 3000;
 const PLAYER_COLOR = '#e5262b';
 const SHADOW_EXTENT = 60;
 const SHADOW_MAP = 2048;
@@ -73,12 +73,16 @@ class Game {
     this.breakables = new Breakables(scene, this.city.world, this.city.props, this.city.groundHeight, this.debris, this.fx, this.audio, QUALITY);
     this.car = new Car(scene, this.city, this.fx, this.audio, this.debris, QUALITY);
     this.peds = new Pedestrians(scene, this.city, this.fx, this.audio, QUALITY);
-    this.gun = new MachineGun(scene, this.car, this.city, this.peds, this.fx, this.audio);
+    this.artillery = new Artillery(scene, this.city, this.fx, this.audio);
     this.race = new Race(scene, this.city, this.fx, this.audio);
     this.raceLaps = RACE.laps;
     this.rivals = RIVALS.map((def, i) => new Rival(scene, this.city, this.fx, this.audio, this.debris, QUALITY, this.race, def, i));
     this.cars = [this.car, ...this.rivals.map((r) => r.car)];
-    this.gun.rivals = this.rivals.map((r) => r.car);
+    this.artillery.cars = this.cars;
+    this.artillery.peds = this.peds;
+    this.artillery.breakables = this.breakables;
+    this.artillery.listener = this.car;
+    this.reloadTime = CANNON.reload;
     this.standings = [];
     this.position = 1;
     this.hud = new HUD(this.city);
@@ -90,10 +94,6 @@ class Game {
       fire: $('btn-fire'),
       brake: $('btn-brake'),
     });
-    this.raycaster = new THREE.Raycaster();
-    this.aimPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -1);
-    this.aim = { mode: 'auto', x: 0, z: 0 };
-    this._aimHit = new THREE.Vector3();
     this._dbs = new THREE.Vector2();
 
     this._wire();
@@ -186,7 +186,12 @@ class Game {
     this._onCarHit = (a, b, impact, px, pz, nx, nz) => this._carHit(a, b, impact, px, pz, nx, nz);
     peds.onKill = (p, cause, speed) => this._kill(p, cause, speed);
     peds.onEvent = (type, p) => this._pedEvent(type, p);
-    this.gun.onShot = () => cam.shake(0.015);
+    this.artillery.onCarHit = (victim, shooter, dmg, direct) => this._shellHit(victim, shooter, dmg, direct);
+    this.artillery.onBlast = (x, z, shooter) => {
+      const d = Math.hypot(x - car.x, z - car.z);
+      if (shooter === car) cam.shake(0.12);
+      if (d < 40) cam.shake(0.5 * (1 - d / 40));
+    };
 
     input.onTouchDetected = () => {
       document.body.classList.add('touch');
@@ -319,6 +324,8 @@ class Game {
   restart() {
     this.audio.init();
     this.fx.clear();
+    this.artillery.clear();
+    this.winner = null;
     this.debris.clear();
     this.breakables.reset();
     this.car.reset(this.city.spawn);
@@ -377,6 +384,7 @@ class Game {
     this.race.done = true;
     this.race._style();
     if (kind === 'finish') this._saveBest();
+    else this.newRecord = false;
   }
 
   _loadBest() {
@@ -407,15 +415,23 @@ class Game {
       return `${m}:${s2.toFixed(1).padStart(4, '0')}`;
     };
     const race = this.race;
-    const place = race.place;
-    const titles = { wreck: 'ТАЧКА РАЗБИТА', timeout: 'ВРЕМЯ ВЫШЛО', finish: place === 1 ? 'ПОБЕДА!' : `${place}-Е МЕСТО` };
+    const won = this.overKind === 'finish' || this.overKind === 'annihilation';
+    const titles = {
+      wreck: 'ТАЧКА РАЗБИТА',
+      timeout: 'ВРЕМЯ ВЫШЛО',
+      lost: 'ПОРАЖЕНИЕ',
+      finish: 'ПОБЕДА! ПЕРВЫЙ НА ФИНИШЕ',
+      annihilation: 'ПОБЕДА! ВСЕ ТАЧКИ РАЗБИТЫ',
+    };
     const title = $('result-title');
     title.textContent = titles[this.overKind] || 'КОНЕЦ';
-    title.className = this.overKind === 'finish' && place <= 2 ? 'gold' : 'red';
+    title.className = won ? 'gold' : 'red';
+    const why = { lost: this.winner ? `${this.winner.name} финишировал первым` : '' }[this.overKind] || '';
     const laps = this.overKind === 'finish' ? `${RACE.laps}/${RACE.laps}` : `${race.lap - 1}/${RACE.laps}`;
     const best = race.lapTimes.length ? fmt(Math.min(...race.lapTimes)) : '—';
     const rows = [
-      ['Место', this.overKind === 'finish' ? `${place} из ${this.cars.length}` : 'сход'],
+      ['Итог', won ? 'победа' : why || 'проигрыш'],
+      ['Соперников разбито', `${this.rivals.filter((r) => r.car.wrecked).length} из ${this.rivals.length}`],
       ['Очки', this.score.toLocaleString('ru-RU')],
       ['Кругов пройдено', laps],
       ['Время заезда', fmt(race.elapsed)],
@@ -427,7 +443,7 @@ class Game {
     if (this.overKind === 'finish') rows.splice(3, 0, ['Рекорд трассы', this.newRecord ? 'НОВЫЙ!' : fmt(this.best.time)]);
     const table = this.standings
       .map((e, i) => {
-        const st = e.finished ? `финиш ${fmt(e.time)}` : e.car.wrecked ? 'разбит' : e.player && this.overKind !== 'finish' ? 'сход' : `круг ${Math.min(e.lap, RACE.laps)}`;
+        const st = e.finished ? `финиш ${fmt(e.time)}` : e.car.wrecked ? 'разбит' : `круг ${Math.min(e.lap, RACE.laps)}`;
         return `<div class="st-row${e.player ? ' me' : ''}"><i style="background:${e.color}"></i><span>${i + 1}. ${e.name}</span><b>${st}</b></div>`;
       })
       .join('');
@@ -454,9 +470,8 @@ class Game {
     } else if (type === 'finish') {
       // остаток времени и место — в очки
       const bonus = Math.round(this.race.timeLeft) * 100;
-      const placeBonus = PLACE_BONUS[data.place - 1] || 0;
-      this.score += 1000 + bonus + placeBonus;
-      hud.popup(data.place === 1 ? 'ПОБЕДА!' : `ФИНИШ: ${data.place}-Е МЕСТО`, 'gold big');
+      this.score += 1000 + bonus + WIN_BONUS;
+      hud.popup('ПОБЕДА! ПЕРВЫЙ!', 'gold big');
       if (bonus) hud.popup(`ЗАПАС ВРЕМЕНИ +${bonus}`, 'gold');
       audio.finish();
       this.cam.shake(0.3);
@@ -505,6 +520,17 @@ class Game {
     }
   }
 
+  /** Снаряд попал в машину. */
+  _shellHit(victim, shooter, dmg, direct) {
+    const player = this.car;
+    if (this.state !== 'play') return;
+    if (shooter === player && victim !== player && dmg >= 3) {
+      this.score += Math.round(dmg) * 10;
+      this.hud.popup(`${direct ? 'ПРЯМОЕ ПОПАДАНИЕ!' : 'ЗАДЕЛ!'} −${Math.round(dmg)}`, 'gold');
+    }
+    if (victim === player) this.cam.shake(direct ? 0.7 : 0.35);
+  }
+
   _rivalWrecked(r) {
     const c = r.car, player = this.car;
     r.out = true;
@@ -517,7 +543,23 @@ class Game {
       this.hud.popup(`${r.name} ВЫБИТ! +1000`, 'gold big');
       this.car.heal(15);
       this.hud.heal(15);
-    } else this.hud.popup(`${r.name} РАЗБИЛСЯ`, 'info');
+    } else {
+      const by = this.rivals.find((o) => o.car === c.lastAttacker && performance.now() - c.lastAttackAt < 4000);
+      this.hud.popup(by ? `${by.name} РАЗБИЛ ${r.name}` : `${r.name} РАЗБИЛСЯ`, 'info');
+    }
+    const left = this.rivals.filter((o) => !o.car.wrecked).length;
+    if (left > 0) this.hud.popup(`ОСТАЛОСЬ ВРАГОВ: ${left}`, 'warn');
+  }
+
+  /** Все соперники разбиты — победа. */
+  _checkAnnihilation() {
+    if (this.state !== 'play' || this.car.wrecked || !this.rivals.every((r) => r.car.wrecked)) return;
+    const bonus = Math.round(this.race.timeLeft) * 100;
+    this.score += WIN_BONUS + bonus;
+    this.hud.popup('ВСЕ ТАЧКИ РАЗБИТЫ!', 'gold big');
+    this.hud.popup('ПОБЕДА!', 'gold big');
+    this.audio.finish();
+    this._gameOver('annihilation');
   }
 
   /** Места в гонке: финишировавшие по порядку, остальные — по пройденному пути. */
@@ -539,7 +581,13 @@ class Game {
 
   _rivalEvent(r, ev) {
     if (!ev || this.state !== 'play') return;
-    if (ev.type === 'finish') this.hud.popup(`${r.name} ФИНИШИРОВАЛ ${ev.place}-М`, 'warn');
+    if (ev.type === 'finish') {
+      // соперник пришёл первым — гонка проиграна
+      this.winner = r;
+      this.hud.popup(`${r.name} ФИНИШИРОВАЛ ПЕРВЫМ`, 'big warn');
+      this.audio.timeout();
+      this._gameOver('lost');
+    }
     else if (ev.type === 'lap' && ev.lap === RACE.laps) this.hud.popup(`${r.name}: ПОСЛЕДНИЙ КРУГ`, 'info');
   }
 
@@ -571,7 +619,8 @@ class Game {
       countdown: r1(this.countdown),
       car: { x: r1(car.x), z: r1(car.z), yaw: r1(car.yaw), speed: r1(car.speed), health: r1(car.health), wrecked: car.wrecked },
       race: { lap: race.lap, next: race.next, timeLeft: r1(race.timeLeft), elapsed: r1(race.elapsed), done: race.done, position: this.position },
-      rivals: this.rivals.map((r) => ({ name: r.name, x: r1(r.car.x), z: r1(r.car.z), speed: r1(r.car.speed), health: r1(r.car.health), lap: r.tr.lap, next: r.tr.next, stuck: r1(r.stuckT) })),
+      rivals: this.rivals.map((r) => ({ name: r.name, role: r.role, x: r1(r.car.x), z: r1(r.car.z), speed: r1(r.car.speed), health: r1(r.car.health), lap: r.tr.lap, next: r.tr.next, stuck: r1(r.stuckT), target: r.target ? r.target.name : null })),
+      shells: this.artillery.shells.length,
       score: this.score,
       kills: this.kills,
       pedsByState: counts,
@@ -592,20 +641,6 @@ class Game {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     document.body.classList.toggle('portrait', h > w);
-  }
-
-  _updateAim() {
-    if (!this.input.mouseAim) {
-      this.aim.mode = 'auto';
-      return;
-    }
-    this.aimPlane.constant = -(this.car.y + 1.2);
-    this.raycaster.setFromCamera(this.input.mouse, this.camera);
-    if (this.raycaster.ray.intersectPlane(this.aimPlane, this._aimHit)) {
-      this.aim.mode = 'mouse';
-      this.aim.x = this._aimHit.x;
-      this.aim.z = this._aimHit.z;
-    } else this.aim.mode = 'auto';
   }
 
   _followSun(x, z) {
@@ -685,13 +720,16 @@ class Game {
       }
       const running = this.race.started;
       const me = this.standings.find((e) => e.player);
+      const ctx = { cars: this.cars, running, raceTime: this.race.clock, playerProgress: me ? me.progress : 0, myProgress: 0, shellSpeed: CANNON.speed };
       for (const r of this.rivals) {
         const mine = this.standings.find((e) => e.rival === r);
-        r.think(dt, car, running, me ? me.progress : 0, mine ? mine.progress : 0);
+        ctx.myProgress = mine ? mine.progress : 0;
+        r.think(dt, ctx);
+        if (r.inp.fire) this.artillery.fire(r.car);
       }
+      if (this.state === 'play' && this.countdown <= 0 && inp.fire) this.artillery.fire(car);
       this._physics(dt, inp);
-      this._updateAim();
-      this.gun.update(dt, inp.fire, this.aim);
+      this.artillery.update(dt);
       this.peds.update(dt, this.cars);
       this.breakables.update(dt);
       this.debris.update(dt);
@@ -702,6 +740,7 @@ class Game {
         r.updateTag(car);
       }
       this._updateStandings();
+      this._checkAnnihilation();
       cam.update(dt, car);
       this._followSun(car.x, car.z);
       this.comboTimer = Math.max(0, this.comboTimer - dt);
@@ -710,7 +749,7 @@ class Game {
       if (this.state === 'over' && !this.wreckShown && this.time - this.wreckAt > 2.8) this._showWreck();
     } else if (this.state === 'menu') {
       this.time += dt;
-      for (const r of this.rivals) r.think(dt, car, false, 0, 0);
+      for (const r of this.rivals) r.think(dt, { cars: this.cars, running: false });
       this._physics(dt, NO_INPUT);
       for (const r of this.rivals) r.updateTag(car);
       this.peds.update(dt, this.cars);

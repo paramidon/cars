@@ -549,11 +549,12 @@ export class Pedestrians {
     p.still = false;
   }
 
-  /** Пули: ближайший пешеход на луче. */
-  raycast(ox, oz, dx, dz, maxT) {
+  /** Ближайший пешеход на луче (снаряды). standingOnly — лежачих не задевает. */
+  raycast(ox, oz, dx, dz, maxT, standingOnly = false) {
     let best = null, bt = maxT;
     for (const p of this.peds) {
       if (p.state === ST.FREE) continue;
+      if (standingOnly && this.isLying(p)) continue;
       const r = this.isLying(p) ? 0.7 : 0.45;
       const t = rayCircle(ox, oz, dx, dz, p.x, p.z, r);
       if (t >= 0 && t < bt) {
@@ -564,69 +565,7 @@ export class Pedestrians {
     return best ? { ped: best, t: bt } : null;
   }
 
-  bulletHit(p, dx, dz, hx, hz) {
-    p.killer = this.player;
-    const g = this.city.groundHeight(p.x, p.z);
-    const y = this.isLying(p) ? g + 0.25 : p.state === ST.FLYING ? p.cy : g + rand(1.0, 1.6);
-    this.fx.bloodSpray(hx, y, hz, dx, dz, 8);
-    if (Math.random() < 0.5) this.fx.bloodSplat(p.x + dx * rand(0.5, 2), p.z + dz * rand(0.5, 2), rand(0.5, 1.1));
-    if (this.isAlive(p)) {
-      p.health -= 34;
-      if (p.health <= 0) {
-        p.cause = 'gun';
-        p.yaw = Math.atan2(-dx, -dz);
-        p.state = ST.FLYING;
-        p.vx = dx * rand(2, 4);
-        p.vz = dz * rand(2, 4);
-        p.vy = rand(1.5, 3);
-        p.cy = g + 1.0;
-        p.tumX = 0;
-        p.tumZ = 0;
-        p.wX = -rand(3, 5);
-        p.wZ = rand(-1, 1);
-        p.airT = 0;
-        p.bounces = 2;
-        p.flail = rand(0, 10);
-        this.audio.splat(0.45);
-        if (Math.random() < 0.5) this.audio.scream();
-        if (this.onKill) this.onKill(p, 'gun', 0);
-      } else {
-        p.x += dx * 0.15;
-        p.z += dz * 0.15;
-        this._panic(p, p.x - dx * 5, p.z - dz * 5, 0, 0, false);
-      }
-    } else if (p.state === ST.DOWN || p.state === ST.GETUP || (p.state === ST.FLYING && p.knocked)) {
-      // сбитого с ног можно добить
-      p.health -= 34;
-      if (p.state === ST.FLYING) {
-        p.vx += dx * 2;
-        p.vz += dz * 2;
-      } else {
-        p.vx += dx * 0.5;
-        p.vz += dz * 0.5;
-        p.still = false;
-      }
-      if (p.health <= 0) {
-        this.audio.splat(0.45);
-        this._finish(p, 'gun', 0);
-      }
-    } else if (p.state === ST.FLYING) {
-      p.vx += dx * 2;
-      p.vz += dz * 2;
-      p.vy += 1;
-    } else if (p.state === ST.DEAD) {
-      p.vx += dx * 0.8;
-      p.vz += dz * 0.8;
-      p.slide = 1;
-      p.still = false;
-      if (++p.shots > 14) {
-        this._gib(p, dx * 6, dz * 6);
-        if (this.onEvent) this.onEvent('mince', p);
-      }
-    }
-  }
-
-  /** Взрыв машины: ближних рвёт, дальних раскидывает. */
+  /** Взрыв: ближних рвёт, дальних раскидывает. */
   explosion(x, z, radius, source = null) {
     for (const p of this.peds) {
       if (p.state === ST.FREE) continue;

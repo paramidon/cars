@@ -26,6 +26,10 @@
           <span class="lbl">КОРПУС</span>
           <div class="bar"><div id="health-fill"></div></div>
         </div>
+        <div id="gun" class="gun ready">
+          <span class="lbl">ПУШКА</span>
+          <div class="bar"><div class="fill"></div></div>
+        </div>
         <div id="combo"></div>
         <div id="standings" class="standings"></div>
       </div>
@@ -45,7 +49,7 @@
       </div>
       <div id="race" class="race">
         <div id="race-time" class="race-time">0:00</div>
-        <div class="race-sub"><span class="race-pos-wrap">МЕСТО <b id="race-pos">4/4</b></span><span id="race-lap">КРУГ 1/3</span><span id="race-cp">ЧП 1/7</span></div>
+        <div class="race-sub"><span class="race-pos-wrap">МЕСТО <b id="race-pos">4/4</b></span><span class="race-pos-wrap">ВРАГИ <b id="race-enemies">4</b></span><span id="race-lap">КРУГ 1/3</span><span id="race-cp">ЧП 1/7</span></div>
         <div class="race-nav">
           <svg id="race-arrow" class="race-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l8 14h-5v6H9v-6H4z" /></svg>
           <span id="race-dist">0 м</span>
@@ -62,7 +66,7 @@
         <div id="joy-base"><div id="joy-knob"></div></div>
       </div>
       <button id="btn-brake" class="tbtn">ДРИФТ</button>
-      <button id="btn-fire" class="tbtn fire">ОГОНЬ</button>
+      <button id="btn-fire" class="tbtn fire ready">ПУШКА</button>
     </div>
 
     <div id="menu" class="screen">
@@ -72,15 +76,15 @@
         <div class="controls desk">
           <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / стрелки<span>руль, газ, тормоз/назад</span></div>
           <div><kbd>Пробел</kbd><span>ручник, занос</span></div>
-          <div><kbd>ЛКМ</kbd> / <kbd>F</kbd><span>пулемёт (мышь — прицел)</span></div>
+          <div><kbd>ЛКМ</kbd> / <kbd>F</kbd><span>пушка — бьёт строго по курсу, перезарядка ~1 с</span></div>
           <div><kbd>C</kbd> <kbd>R</kbd> <kbd>M</kbd> <kbd>Esc</kbd><span>камера, к чекпоинту, звук, пауза</span></div>
         </div>
         <div class="controls mobile">
           <div><b>Левый палец</b><span>джойстик: куда тянешь — туда едешь</span></div>
-          <div><b>ОГОНЬ</b><span>пулемёт сам наводится на пешеходов впереди</span></div>
+          <div><b>ПУШКА</b><span>бьёт строго по курсу — целься носом машины</span></div>
           <div><b>ДРИФТ</b><span>ручник для заносов</span></div>
         </div>
-        <p class="goal"><b>Цель — прийти первым: 3 круга против трёх соперников, пока не кончилось время.</b> Ворота добавляют секунды, сбитые пешеходы — ещё чуть-чуть. Таранить соперников лучше лбом в бок или в зад — лоб крепкий.<br />Медленно — только собьёшь с ног, лежачего можно добить. Убийства подлатывают тачку, но не влетай на скорости в стены и толстые столбы.</p>
+        <p class="goal"><b>Два способа победить: прийти первым после 3 кругов или разбить все 4 машины соперников.</b> Если первым финиширует соперник — проигрыш. Гонщики (синий, фиолетовый) рвутся к финишу, охотники (зелёный, жёлтый) гоняются за всеми подряд. Ворота добавляют секунды, сбитые пешеходы — ещё чуть-чуть. Таранить лучше лбом в бок или в зад — лоб крепкий.<br />Медленно — только собьёшь с ног, лежачего можно добить. Убийства подлатывают тачку, но не влетай на скорости в стены и толстые столбы.</p>
         <button id="btn-play" class="big">ПОЕХАЛИ!</button>
         <button id="btn-prev-crash" class="link hidden">В прошлый раз игра упала — показать ошибку</button>
         <p class="fine">Мультяшное насилие. Все пешеходы — коробки.</p>

@@ -186,6 +186,19 @@ export class Breakables {
     return true;
   }
 
+  /** Взрыв: всё ломаемое рядом летит в стороны. */
+  blast(x, z, r) {
+    for (const it of this.items) {
+      if (!it.alive) continue;
+      const dx = it.x - x, dz = it.z - z;
+      const d = Math.hypot(dx, dz);
+      if (d > r) continue;
+      const k = (1 - d / r) * 14 + 4;
+      const nx = dx / (d || 1), nz = dz / (d || 1);
+      this.hit(it, { vx: nx * k, vz: nz * k, vol: () => 0.5 });
+    }
+  }
+
   update(dt) {
     for (let i = this.water.length - 1; i >= 0; i--) {
       const w = this.water[i];

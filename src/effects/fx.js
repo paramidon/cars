@@ -147,6 +147,23 @@ export class FX {
     this.blood.add(x, this.groundHeight(x, z) + 0.02, z, 0, 1, 0, 7, 7, Math.random() * 6, 0.05, 0.04, 0.04, 0.85);
   }
 
+  /** Разрыв снаряда — меньше, чем взрыв машины. */
+  blast(x, y, z) {
+    for (let i = 0; i < 34; i++) {
+      const a = Math.random() * Math.PI * 2, s = rand(2, 9);
+      this.glow.spawn(x, y + rand(0, 0.6), z, Math.cos(a) * s, rand(1, 7), Math.sin(a) * s,
+        rand(0.3, 0.7), rand(0.5, 1.2), 1, 0.8, 0.3, 1, 2, 2, -0.3, KIND.FIRE);
+    }
+    for (let i = 0; i < 14; i++) {
+      const a = Math.random() * Math.PI * 2, s = rand(0.5, 3);
+      this.normal.spawn(x, y + rand(0, 1), z, Math.cos(a) * s, rand(1, 4), Math.sin(a) * s,
+        rand(1.5, 3), rand(1.1, 2), 0.16, 0.15, 0.14, 0.65, -0.4, 1.2, 2, KIND.SMOKE);
+    }
+    this.sparks(x, y, z, 0, 0, 18);
+    this.dust(x, y, z, 6);
+    this.blood.add(x, this.groundHeight(x, z) + 0.02, z, 0, 1, 0, 3.2, 3.2, Math.random() * 6, 0.06, 0.05, 0.05, 0.75);
+  }
+
   glass(x, y, z, count = 14) {
     for (let i = 0; i < count; i++) {
       this.normal.spawn(x, y, z, rand(-4, 4), rand(1, 5), rand(-4, 4), rand(1, 2), rand(0.05, 0.1), 0.7, 0.85, 0.95, 0.9, 18, 0.5, 0, KIND.BOUNCE);

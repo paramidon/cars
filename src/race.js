@@ -9,7 +9,7 @@ export const RACE = {
   radius: 11, // радиус засчитывания чекпоинта, м
   countdown: 3, // обратный отсчёт перед стартом, с
   // секунды за убийства
-  killTime: { car: 2, gib: 3, crush: 2, gun: 1, explosion: 0 },
+  killTime: { car: 2, gib: 3, crush: 2, explosion: 1 },
 };
 
 const GATE_HALF = 7.6; // полуширина ворот (дорога 14 м)

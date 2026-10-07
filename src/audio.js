@@ -190,6 +190,21 @@ export class AudioFX {
     this._noise({ dur: 0.06, gain: 0.12, type: 'highpass', freq: 3000 });
   }
 
+  /** Выстрел пушки. */
+  cannon(v = 1) {
+    if (!this.ready || v < 0.03) return;
+    this._noise({ dur: 0.45, gain: 0.75 * v, type: 'lowpass', freq: 1600, freqEnd: 120 });
+    this._tone({ freq: 110, freqEnd: 38, dur: 0.35, gain: 0.8 * v });
+  }
+
+  /** Разрыв снаряда. */
+  boom(v = 1) {
+    if (!this.ready || v < 0.03) return;
+    this._noise({ dur: 1.0, gain: 1.0 * v, type: 'lowpass', freq: 2000, freqEnd: 70 });
+    this._tone({ freq: 70, freqEnd: 26, dur: 0.7, gain: 0.85 * v });
+    this._noise({ dur: 0.1, gain: 0.3 * v, type: 'bandpass', freq: 900, q: 1, delay: 0.12 });
+  }
+
   /** 3-2-1 — короткие писки, старт — длинный высокий. */
   countdown(n) {
     if (!this.ready) return;

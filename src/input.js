@@ -142,12 +142,6 @@ export class Input {
     hold(brake, 'brake');
   }
 
-  /** Активна ли наводка мышью (недавно двигали мышью над канвасом или жмут ЛКМ). */
-  get mouseAim() {
-    if (this.usingTouch) return false;
-    return this.mouse.down || (this.mouse.over && performance.now() - this.mouse.lastMove < 2500);
-  }
-
   update(dt) {
     const k = this.keys;
     let thr = k.has('KeyW') || k.has('ArrowUp') ? 1 : 0;

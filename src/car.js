@@ -82,8 +82,8 @@ function numberTexture(num, color) {
 
 export class Car {
   /**
-   * opts: color — цвет кузова, turret — пулемёт на крыше (у игрока), isPlayer — звук мотора и визга шин,
-   * number — номер на крыше, wallDamage — множитель урона о стены/столбы.
+   * opts: color — цвет кузова, isPlayer — звук мотора и визга шин, wing — антикрыло с номером (соперники),
+   * number — номер на антикрыле, wallDamage — множитель урона о стены/столбы.
    */
   constructor(scene, city, fx, audio, debris, quality, opts = {}) {
     this.scene = scene;
@@ -93,7 +93,7 @@ export class Car {
     this.audio = audio;
     this.debris = debris;
     this.quality = quality;
-    this.opts = { color: '#b3121a', turret: true, isPlayer: true, number: null, wallDamage: 1, ...opts };
+    this.opts = { color: '#b3121a', isPlayer: true, wing: false, number: null, wallDamage: 1, ...opts };
     this.isPlayer = this.opts.isPlayer;
     this.isCar = true;
     this.name = this.opts.name || 'ТЫ';
@@ -208,23 +208,24 @@ export class Car {
       return { ...w, pivot, spin, part };
     });
 
-    if (!this.opts.turret) {
-      this.turret = null;
-      if (this.opts.number != null) {
-        const plate = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.9), new THREE.MeshLambertMaterial({ map: numberTexture(this.opts.number, this.opts.color) }));
-        plate.rotation.x = -Math.PI / 2;
-        plate.position.set(0, 1.665, -0.3);
-        body.add(plate);
-      }
-      // антикрыло — чтобы соперников было видно издалека
+    if (this.opts.wing) {
+      // антикрыло с номером — чтобы соперников было видно и различимо издалека
       const strut = new THREE.BoxGeometry(0.08, 0.36, 0.25);
-      const wing = new THREE.Mesh(
+      const wing = new THREE.Group();
+      wing.add(new THREE.Mesh(
         mergeGeometries([placed(new THREE.BoxGeometry(1.9, 0.08, 0.5), 0, 1.42, -1.95), placed(strut, -0.7, 1.22, -1.9), placed(strut, 0.7, 1.22, -1.9)]),
         this.paint,
-      );
+      ));
+      if (this.opts.number != null) {
+        const plate = new THREE.Mesh(new THREE.PlaneGeometry(0.46, 0.42), new THREE.MeshLambertMaterial({ map: numberTexture(this.opts.number, this.opts.color) }));
+        plate.rotation.x = -Math.PI / 2;
+        plate.position.set(0, 1.465, -1.95);
+        wing.add(plate);
+      }
       body.add(wing);
       this._part(wing, 'wing');
-    } else this._buildTurret(body);
+    }
+    this._buildCannon(body);
 
     // мягкая тень под машиной
     const blob = new THREE.Mesh(
@@ -243,53 +244,59 @@ export class Car {
     });
   }
 
-  _buildTurret(body) {
-    // турель с пулемётом
-    const turret = (this.turret = new THREE.Group());
-    turret.position.set(0, 1.66, -0.35);
-    body.add(turret);
-    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.36, 0.16, 12), this.dark);
-    base.position.y = 0.08;
-    turret.add(base);
-    const housing = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.34, 0.75), new THREE.MeshLambertMaterial({ color: 0x3d4a2f }));
-    housing.position.set(0, 0.32, 0);
-    turret.add(housing);
-    const ammo = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.26, 0.42), new THREE.MeshLambertMaterial({ color: 0x5c6b3a }));
-    ammo.position.set(0.37, 0.3, -0.05);
-    turret.add(ammo);
-    const barrels = (this.barrels = new THREE.Group());
-    barrels.position.set(0, 0.32, 0.38);
-    const brlGeo = new THREE.CylinderGeometry(0.045, 0.045, 1.05, 6);
-    brlGeo.rotateX(Math.PI / 2);
-    brlGeo.translate(0, 0, 0.52);
-    for (let k = 0; k < 3; k++) {
-      const a = (k / 3) * Math.PI * 2;
-      const b = new THREE.Mesh(brlGeo, this.dark);
-      b.position.set(Math.cos(a) * 0.075, Math.sin(a) * 0.075, 0);
-      barrels.add(b);
-    }
-    const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.08, 10), this.metal);
-    ring.rotation.x = Math.PI / 2;
-    ring.position.z = 0.9;
-    barrels.add(ring);
-    turret.add(barrels);
+  /** Пушка на крыше: неподвижная, смотрит строго вперёд по курсу. */
+  _buildCannon(body) {
+    const gun = (this.cannon = new THREE.Group());
+    gun.position.set(0, 1.66, -0.35);
+    body.add(gun);
+    const olive = new THREE.MeshLambertMaterial({ color: 0x3d4a2f });
+    gun.add(new THREE.Mesh(
+      mergeGeometries([placed(new THREE.BoxGeometry(0.62, 0.22, 0.8), 0, 0.11, 0), placed(new THREE.BoxGeometry(0.5, 0.2, 0.55), 0, 0.31, -0.05)]),
+      olive,
+    ));
+    // ствол отдельной группой — для отдачи
+    const barrel = (this.barrel = new THREE.Group());
+    barrel.position.set(0, 0.3, 0);
+    const tube = new THREE.CylinderGeometry(0.1, 0.12, 1.7, 10);
+    tube.rotateX(Math.PI / 2);
+    const brake = new THREE.CylinderGeometry(0.16, 0.16, 0.24, 10);
+    brake.rotateX(Math.PI / 2);
+    barrel.add(new THREE.Mesh(mergeGeometries([placed(tube, 0, 0, 0.75), placed(brake, 0, 0, 1.62)]), this.dark));
+    gun.add(barrel);
     const flashMat = new THREE.MeshBasicMaterial({ map: flashTexture(), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
     const flash = (this.flash = new THREE.Group());
-    const fp = new THREE.PlaneGeometry(0.9, 0.9);
+    const fp = new THREE.PlaneGeometry(1.5, 1.5);
     const f1 = new THREE.Mesh(fp, flashMat);
     const f2 = new THREE.Mesh(fp, flashMat);
     f2.rotation.y = Math.PI / 2;
     const f3 = new THREE.Mesh(fp, flashMat);
     f3.rotation.x = Math.PI / 2;
     flash.add(f1, f2, f3);
-    flash.position.set(0, 0.32, 1.55);
+    flash.position.set(0, 0, 2.1);
     flash.visible = false;
-    turret.add(flash);
-    this._part(turret, 'turret');
-    if (!this.quality.low) {
-      this.muzzleLight = new THREE.PointLight(0xffb050, 0, 9, 2);
-      this.muzzleLight.position.set(0, 0.4, 1.6);
-      turret.add(this.muzzleLight);
+    barrel.add(flash);
+    this._part(gun, 'cannon');
+    if (this.isPlayer && !this.quality.low) {
+      this.muzzleLight = new THREE.PointLight(0xffb050, 0, 14, 2);
+      this.muzzleLight.position.set(0, 0.1, 2.2);
+      barrel.add(this.muzzleLight);
+    }
+  }
+
+  /** Точка вылета снаряда в мире. */
+  muzzle() {
+    const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
+    return { x: this.x + s * 1.9, y: this.y + this.hop + 1.96, z: this.z + c * 1.9, dx: s, dz: c };
+  }
+
+  /** Анимация выстрела: отдача ствола и вспышка. */
+  kick() {
+    this.recoilT = 1;
+    this.flashT = 0.07;
+    if (this.flash) {
+      this.flash.rotation.z = Math.random() * Math.PI;
+      const k = 0.8 + Math.random() * 0.5;
+      this.flash.scale.set(k, k, k * 1.3);
     }
   }
 
@@ -345,7 +352,9 @@ export class Car {
     this.braking = false;
     this.slip = 0;
     this.lastImpact = 0;
-    this.turretYaw = 0;
+    this.reload = 0;
+    this.recoilT = 0;
+    this.flashT = 0;
     this.smokeAcc = 0;
 
     for (const d of this.deformables) {
@@ -620,7 +629,7 @@ export class Car {
     this.audio.explosion(Math.max(0.15, this.vol()));
     this.hopVel = 6;
     const byKind = (k) => this.parts.filter((p) => p.kind === k);
-    for (const top of [...byKind('turret'), ...byKind('wing')]) this._detach(top, this.vx * 0.4 + rand(-3, 3), 11, this.vz * 0.4 + rand(-3, 3));
+    for (const top of [...byKind('cannon'), ...byKind('wing')]) this._detach(top, this.vx * 0.4 + rand(-3, 3), 11, this.vz * 0.4 + rand(-3, 3));
     for (const p of [...byKind('front'), ...byKind('rear')]) this._detach(p, this.vx * 0.4 + rand(-5, 5), rand(5, 9), this.vz * 0.4 + rand(-5, 5));
     const ws = byKind('wheel');
     for (const p of [ws[0], ws[3]]) this._detach(p, rand(-6, 6), rand(4, 8), rand(-6, 6));
@@ -738,6 +747,11 @@ export class Car {
       w.spin.rotation.x += spinD;
       if (w.front) w.pivot.rotation.y = this.steer;
     }
-    if (this.turret) this.turret.rotation.y = this.turretYaw;
+    // отдача ствола и вспышка
+    this.recoilT = Math.max(0, this.recoilT - dt * 3.5);
+    this.barrel.position.z = -0.35 * Math.sin(Math.min(1, this.recoilT) * Math.PI * 0.5);
+    this.flashT -= dt;
+    this.flash.visible = this.flashT > 0;
+    if (this.muzzleLight) this.muzzleLight.intensity = this.flashT > 0 ? 60 : 0;
   }
 }

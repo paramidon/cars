@@ -26,6 +26,9 @@ export class HUD {
       countdown: $('countdown'),
       racePos: $('race-pos'),
       standings: $('standings'),
+      raceEnemies: $('race-enemies'),
+      gun: $('gun'),
+      fire: $('btn-fire'),
     };
     this.mm = $('minimap');
     this.mmCtx = this.mm.getContext('2d');
@@ -102,6 +105,16 @@ export class HUD {
     }
     this._set('rl', this.el.raceLap, `КРУГ ${Math.min(race.lap, game.raceLaps)}/${game.raceLaps}`);
     this._set('rp', this.el.racePos, `${game.position}/${game.cars.length}`);
+    this._set('re', this.el.raceEnemies, String(game.rivals.filter((r) => !r.car.wrecked).length));
+    // перезарядка пушки
+    const p = Math.round((1 - Math.min(1, game.car.reload / game.reloadTime)) * 20) / 20;
+    if (this.cache.gunP !== p) {
+      this.cache.gunP = p;
+      for (const el of [this.el.gun, this.el.fire]) {
+        el.style.setProperty('--p', p);
+        el.classList.toggle('ready', p >= 1);
+      }
+    }
     if (this.frame % 10 === 0) this._standings(game);
     this._set('rc', this.el.raceCp, race.target.finish ? 'К ФИНИШУ' : `ЧП ${race.next + 1}/${race.totalCps - 1}`);
     const cp = race.target;
