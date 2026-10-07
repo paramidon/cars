@@ -268,7 +268,13 @@ class Game {
       const el = document.documentElement;
       const req = el.requestFullscreen || el.webkitRequestFullscreen;
       if (req && !document.fullscreenElement) {
-        Promise.resolve(req.call(el)).then(() => screen.orientation?.lock?.('landscape')).catch(() => {});
+        try {
+          Promise.resolve(req.call(el))
+            .then(() => screen.orientation?.lock?.('landscape'))
+            .catch(() => {});
+        } catch {
+          // полноэкранный режим недоступен — играем как есть
+        }
       }
     }
     $('menu').classList.add('hidden');

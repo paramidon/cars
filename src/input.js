@@ -179,8 +179,14 @@ export class Input {
     if (this.touch.brake) hb = true;
 
     // геймпад
-    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-    const pad = pads && Array.from(pads).find((p) => p && p.connected);
+    let pad = null;
+    try {
+      // в некоторых встраиваниях Gamepad API запрещён и бросает исключение
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      pad = pads ? Array.from(pads).find((p) => p && p.connected) : null;
+    } catch {
+      pad = null;
+    }
     if (pad) {
       const ax0 = pad.axes[0] || 0;
       if (Math.abs(ax0) > 0.15) steer = ax0;
