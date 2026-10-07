@@ -459,14 +459,14 @@ body.touch .standings {
 .race-nav {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 14px;
+  gap: 8px;
+  font-size: 16px;
   color: var(--text);
 }
 
 .race-arrow {
-  width: 30px;
-  height: 30px;
+  width: 56px;
+  height: 56px;
   fill: var(--gold);
   stroke: #000;
   stroke-width: 1.2;

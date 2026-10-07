@@ -1,6 +1,6 @@
-import * as THREE from 'three';
 import { Car, HIT_Z, HIT_R, CAR_INERTIA } from './car.js';
 import { ST } from './pedestrians.js';
+import { CarTag } from './tag.js';
 import { clamp, lerp, rand } from './utils.js';
 
 /**
@@ -75,15 +75,6 @@ export const CAR_HIT = {
 
 const TOP_SPEED = 35; // ≈ максималка игрока, м/с
 
-function tagTexture() {
-  const c = document.createElement('canvas');
-  c.width = 256;
-  c.height = 64;
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  return t;
-}
-
 /** Соперник: машина + ИИ-водитель + табличка над крышей. */
 export class Rival {
   constructor(scene, city, fx, audio, debris, quality, race, def, index) {
@@ -97,11 +88,7 @@ export class Rival {
     this.car.role = roleOf(def);
     this.car.ai = this;
     this.inp = { throttle: 0, brake: 0, steer: 0, handbrake: false, fire: false };
-    this.tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: tagTexture(), transparent: true, depthWrite: false }));
-    this.tag.scale.set(4.4, 1.1, 1);
-    this.tag.renderOrder = 6;
-    scene.add(this.tag);
-    this._tagHp = -1;
+    this.tag = new CarTag(scene, this.car, def.name, def.color);
     this.reset();
   }
 
@@ -143,39 +130,11 @@ export class Rival {
     this.fireCD = rand(...at2(HUNT.firePause, this.def.aggr));
     this.goreCD = rand(...GORE.firePause);
     this.out = false; // разбит — выбыл
-    this._drawTag();
-  }
-
-  _drawTag() {
-    const tex = this.tag.material.map;
-    const g = tex.image.getContext('2d');
-    const hp = Math.max(0, Math.round(this.car.health));
-    g.clearRect(0, 0, 256, 64);
-    g.font = 'bold 26px "Russo One", "Arial Black", sans-serif';
-    g.textAlign = 'center';
-    g.lineWidth = 5;
-    g.strokeStyle = 'rgba(0,0,0,0.8)';
-    g.fillStyle = this.car.wrecked ? '#9a9a9a' : this.def.color;
-    const label = this.car.wrecked ? `${this.def.name} — СХОД` : this.def.name;
-    g.strokeText(label, 128, 28);
-    g.fillStyle = this.car.wrecked ? '#cccccc' : '#ffffff';
-    g.fillText(label, 128, 28);
-    if (!this.car.wrecked) {
-      g.fillStyle = 'rgba(0,0,0,0.6)';
-      g.fillRect(48, 40, 160, 14);
-      g.fillStyle = hp > 60 ? '#5fd35f' : hp > 30 ? '#f5b82e' : '#ff3b30';
-      g.fillRect(50, 42, 156 * (hp / 100), 10);
-    }
-    tex.needsUpdate = true;
-    this._tagHp = hp;
+    this.tag.draw();
   }
 
   updateTag(player) {
-    const c = this.car;
-    this.tag.position.set(c.x, c.y + 3.1 + c.hop, c.z);
-    const d = Math.hypot(c.x - player.x, c.z - player.z);
-    this.tag.visible = d < 110;
-    if (Math.round(c.health) !== this._tagHp || (c.wrecked && this._tagHp !== 0)) this._drawTag();
+    this.tag.update(player);
   }
 
   /** Угол от носа до точки (вправо +) и расстояние. */

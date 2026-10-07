@@ -18,6 +18,16 @@ function placed(geo, x, y, z, color = null) {
   return g;
 }
 
+/** Предельная скорость поворота (рад/с) на скорости v (м/с) — по таблице P.yawCap. */
+function yawCap(v) {
+  const T = P.yawCap;
+  if (v <= T[0][0]) return T[0][1];
+  for (let i = 1; i < T.length; i++) {
+    if (v <= T[i][0]) return lerp(T[i - 1][1], T[i][1], (v - T[i - 1][0]) / (T[i][0] - T[i - 1][0]));
+  }
+  return T[T.length - 1][1];
+}
+
 const P = {
   engine: 13,
   speedCurve: 40, // тяга падает квадратично к этой скорости
@@ -29,12 +39,16 @@ const P = {
   wheelBase: 2.7,
   grip: 9,
   hbGrip: 1.5,
-  steerLow: 0.6,
-  steerHigh: 0.17,
-  latAccel: 26, // предел бокового ускорения, м/с² — на скорости руль ограничен им, а не углом
-  steerTime: [0.18, 0.5], // за сколько секунд руль доходит до упора: на месте / на максималке
+  steerLow: 0.6, // наибольший угол колёс, рад
+  // предельная скорость поворота машины от скорости: [м/с, рад/с], между точками — линейно.
+  // Растёт только до ~40 км/ч (на малом ходу машина и так поворачивает медленно), дальше плавно падает.
+  yawCap: [[11, 2.1], [17, 1.85], [22, 1.5], [28, 1.2], [35, 0.97]], // 40 км/ч 120°/с … 125 км/ч 56°/с
+  // руль «тяжелеет» плавной S-кривой между hardFrom и hardTo; параметры ниже — [лёгкий руль, тяжёлый]
+  hardFrom: 10, // м/с ≈ 35 км/ч
+  hardTo: 35, // м/с ≈ 125 км/ч
+  steerTime: [0.18, 0.4], // за сколько секунд руль доходит до упора
   steerReturn: 0.08, // а от упора к центру — всегда быстро, с любой скорости
-  yawResp: [9, 4], // как быстро машина отзывается на руль: на месте / на максималке
+  yawResp: [9, 5], // как быстро машина отзывается на руль
   yawUnwind: 12, // а перестаёт крутиться, когда руль выпрямили, — всегда быстро
   restitution: 0.25,
   inertia: 1.9,
@@ -457,12 +471,13 @@ export class Car {
     }
 
     const spd = Math.abs(vF);
-    const k = clamp(spd / 32, 0, 1);
-    // на скорости руль «тупеет»: угол ограничен боковым ускорением, в поворот руль крутится медленнее, машина
-    // отзывается с ленцой. Но выпрямить руль и перестать поворачивать можно всегда быстро — колёса сами тянутся
-    // к центру, а при перекладке в другую сторону медленно набирается только новый поворот.
-    let maxSteer = lerp(P.steerLow, P.steerHigh, k);
-    if (spd > 1) maxSteer = Math.min(maxSteer, Math.atan((P.wheelBase * P.latAccel) / (spd * spd)));
+    const t = clamp((spd - P.hardFrom) / (P.hardTo - P.hardFrom), 0, 1);
+    const hard = t * t * (3 - 2 * t);
+    // на скорости руль «тупеет»: угол такой, чтобы машина крутилась не быстрее yawCap, в поворот руль крутится
+    // медленнее, машина отзывается с ленцой. Но выпрямить руль и перестать поворачивать можно всегда быстро —
+    // колёса сами тянутся к центру, а при перекладке в другую сторону медленно набирается только новый поворот.
+    let maxSteer = P.steerLow;
+    if (spd > 1) maxSteer = Math.min(maxSteer, Math.atan((yawCap(spd) * P.wheelBase) / spd));
     const want = st * maxSteer;
     let left = h;
     if (this.steer * want < 0 || Math.abs(want) < Math.abs(this.steer)) {
@@ -472,7 +487,7 @@ export class Car {
       this.steer = moveToward(this.steer, stop, fast * h);
       left = Math.max(0, h - need);
     }
-    if (left > 0) this.steer = moveToward(this.steer, want, (maxSteer / lerp(P.steerTime[0], P.steerTime[1], k)) * left);
+    if (left > 0) this.steer = moveToward(this.steer, want, (maxSteer / lerp(P.steerTime[0], P.steerTime[1], hard)) * left);
 
     let a = 0;
     if (thr > 0) {
@@ -497,7 +512,7 @@ export class Car {
     let target = -(vF / P.wheelBase) * Math.tan(this.steer);
     if (hb && spd > 3) target *= 1.5;
     const unwind = this.angVel * target < 0 || Math.abs(target) < Math.abs(this.angVel);
-    const resp = unwind ? P.yawUnwind : lerp(P.yawResp[0], P.yawResp[1], k);
+    const resp = unwind ? P.yawUnwind : lerp(P.yawResp[0], P.yawResp[1], hard);
     this.angVel += (target - this.angVel) * Math.min(1, resp * h);
 
     // скорость собирается по старым осям — при повороте часть уходит в боковую и гасится сцеплением (занос)

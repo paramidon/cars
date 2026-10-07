@@ -14,6 +14,7 @@ import { ChaseCamera } from './camera.js';
 import { HUD } from './hud.js';
 import { Race, RACE } from './race.js';
 import { Rival, RIVALS, collideCars, carHitDamage } from './racers.js';
+import { CarTag } from './tag.js';
 import { CrashReporter } from './crash.js';
 import { phrase } from './words.js';
 import { version } from '../package.json';
@@ -75,6 +76,7 @@ class Game {
     this.audio = new AudioFX();
     this.breakables = new Breakables(scene, this.city.world, this.city.props, this.city.groundHeight, this.debris, this.fx, this.audio, QUALITY);
     this.car = new Car(scene, this.city, this.fx, this.audio, this.debris, QUALITY);
+    this.carTag = new CarTag(scene, this.car);
     this.peds = new Pedestrians(scene, this.city, this.fx, this.audio, QUALITY);
     this.artillery = new Artillery(scene, this.city, this.fx, this.audio);
     this.race = new Race(scene, this.city, this.fx, this.audio);
@@ -481,8 +483,18 @@ class Game {
     this._syncTouchUI();
   }
 
+  /** Проехал ворота — подлатался. */
+  _gateHeal() {
+    const healed = this.car.heal(RACE.cpHeal);
+    if (healed > 0) {
+      this.hud.heal(Math.round(healed));
+      if (this.car.health > 40) this.critWarned = false;
+    }
+  }
+
   _raceEvent(type, data) {
     const { hud, audio } = this;
+    if (type === 'checkpoint' || type === 'lap') this._gateHeal();
     if (type === 'checkpoint') {
       const b = Math.round(data.bonus);
       this.score += 50;
@@ -579,6 +591,11 @@ class Game {
       this.score += 1000;
       this.hud.popup(`${r.name} ВЫБИТ! +1000`, 'gold big');
       if (healed > 0) this.hud.heal(Math.round(healed));
+      const added = this.race.addTime(RACE.wreckTime);
+      if (added > 0) {
+        this.hud.popup(`+${added} С`, 'gold');
+        this.hud.timeBonus(added);
+      }
       if (player.health > 40) this.critWarned = false;
     } else {
       this.hud.popup(by ? `${by.ai.name} РАЗБИЛ ${r.name}` : `${r.name} РАЗБИЛСЯ`, 'info');
@@ -617,6 +634,7 @@ class Game {
 
   _rivalEvent(r, ev) {
     if (!ev || this.state !== 'play') return;
+    if (ev.type === 'checkpoint' || ev.type === 'lap') r.car.heal(RACE.cpHeal);
     if (ev.type === 'finish') {
       // соперник пришёл первым — гонка проиграна
       this.winner = r;
@@ -776,6 +794,7 @@ class Game {
         this._rivalEvent(r, this.race.track(r.tr, r.car));
         r.updateTag(car);
       }
+      this.carTag.update(car);
       this._updateStandings();
       this._checkAnnihilation();
       cam.update(dt, car);
@@ -789,6 +808,7 @@ class Game {
       for (const r of this.rivals) r.think(dt, { cars: this.cars, running: false });
       this._physics(dt, NO_INPUT);
       for (const r of this.rivals) r.updateTag(car);
+      this.carTag.update(car);
       this.peds.update(dt, this.cars);
       this.fx.update(dt);
       this.race.update(dt, car);

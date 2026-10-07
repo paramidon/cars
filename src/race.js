@@ -11,6 +11,8 @@ export const RACE = {
   countdown: 3, // обратный отсчёт перед стартом, с
   // секунды за убийства
   killTime: { car: 2, gib: 3, crush: 2, explosion: 1 },
+  wreckTime: 12, // секунды за разбитую машину соперника — стимул охотиться
+  cpHeal: 6, // корпус за каждые ворота (и игроку, и соперникам) — стимул ехать по кругу
 };
 
 const GATE_HALF = 7.6; // полуширина ворот (дорога 14 м)
@@ -429,7 +431,7 @@ export class Race {
       return { type: 'lap', lap: tr.lap };
     }
     tr.next++;
-    return null;
+    return { type: 'checkpoint' };
   }
 
   _pass(cp, car) {
