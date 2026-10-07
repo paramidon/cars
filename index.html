@@ -86,6 +86,7 @@
         </div>
         <p class="goal"><b>Три способа победить: прийти первым после 3 кругов, разбить все 4 машины соперников или первым сбить 50 пешеходов.</b> Если соперник успел раньше — проигрыш. Синий и фиолетовый рвутся к финишу (фиолетовый — задира), жёлтый охотится за машинами, зелёный МЯСНИК давит пешеходов. Ворота добавляют секунды, сбитые пешеходы — ещё чуть-чуть. Тарань лбом в бок или в зад — кенгурятнику это не вредит, а вот стенам и столбам он проигрывает. Разбил машину — подлатался.<br />Медленно — только собьёшь с ног, лежачего можно добить. Убийства подлатывают тачку, но не влетай на скорости в стены и толстые столбы.</p>
         <button id="btn-play" class="big">ПОЕХАЛИ!</button>
+        <button id="btn-net">ИГРА ПО СЕТИ</button>
         <button id="btn-prev-crash" class="link hidden">В прошлый раз игра упала — показать ошибку</button>
         <p class="fine">Мультяшное насилие. Все пешеходы — коробки.</p>
       </div>
@@ -96,7 +97,8 @@
         <h2>ПАУЗА</h2>
         <button id="btn-resume" class="big">ПРОДОЛЖИТЬ</button>
         <button id="btn-unstuck">К ПОСЛЕДНЕМУ ЧЕКПОИНТУ</button>
-        <button id="btn-restart2">НАЧАТЬ ЗАНОВО</button>
+        <button id="btn-restart2" class="solo-only">НАЧАТЬ ЗАНОВО</button>
+        <button id="btn-net-leave2" class="net-only">ВЫЙТИ ИЗ КОМНАТЫ</button>
         <button id="btn-log" class="link">Журнал ошибок</button>
       </div>
     </div>
@@ -106,6 +108,46 @@
         <h2 id="result-title" class="red">ТАЧКА РАЗБИТА</h2>
         <div id="stats"></div>
         <button id="btn-restart" class="big">ЕЩЁ ЗАЕЗД</button>
+        <button id="btn-net-lobby" class="net-only">В ЛОББИ</button>
+        <button id="btn-net-leave" class="net-only">ВЫЙТИ ИЗ КОМНАТЫ</button>
+      </div>
+    </div>
+
+    <div id="lobby" class="screen hidden">
+      <div class="panel lobby">
+        <h2>ИГРА ПО СЕТИ</h2>
+        <div id="lobby-connect">
+          <label class="field">Имя <input id="net-name" maxlength="16" placeholder="Как тебя звать" autocomplete="nickname" /></label>
+          <label id="net-server-row" class="field">Сервер <input id="net-server" placeholder="localhost:8080 или https://….trycloudflare.com" autocomplete="url" /></label>
+          <button id="btn-net-connect" class="big">ПОДКЛЮЧИТЬСЯ</button>
+        </div>
+        <div id="lobby-rooms" class="hidden">
+          <div id="room-list" class="room-list"></div>
+          <button id="btn-room-create" class="big">СОЗДАТЬ КОМНАТУ</button>
+        </div>
+        <div id="lobby-room" class="hidden">
+          <h3 id="room-name" class="room-name"></h3>
+          <div id="room-players" class="room-players"></div>
+          <button id="btn-room-start" class="big">СТАРТ</button>
+          <p id="room-wait" class="fine">Ждём, пока хост начнёт заезд…</p>
+          <button id="btn-room-leave">ВЫЙТИ ИЗ КОМНАТЫ</button>
+        </div>
+        <p id="lobby-status" class="lobby-status"></p>
+        <details class="lobby-help">
+          <summary>Как сыграть с другом без белого IP</summary>
+          <ol>
+            <li>Тот, у кого игра, запускает сервер: <code>npm run serve</code> — он соберёт игру и откроет её на порту 8080.</li>
+            <li>Друг открывает игру прямо с этого сервера — тогда версия у вас совпадёт сама:
+              <ul>
+                <li><b>через интернет</b>: <code>cloudflared tunnel --url http://localhost:8080</code> выдаст ссылку https://….trycloudflare.com — её и скинуть;</li>
+                <li><b>через VPN</b> (Radmin VPN, ZeroTier, Tailscale) или одну Wi-Fi сеть: адрес вида http://26.x.x.x:8080 — сервер печатает его при запуске.</li>
+              </ul>
+            </li>
+            <li>Один создаёт комнату, другой заходит, хост жмёт «СТАРТ». В комнату пускает только с той же версией игры.</li>
+          </ol>
+        </details>
+        <p id="lobby-version" class="fine"></p>
+        <button id="btn-lobby-back" class="link">Назад в меню</button>
       </div>
     </div>
 

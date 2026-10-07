@@ -1,16 +1,19 @@
 {
   "name": "cars-and-guts",
   "private": true,
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Cars & Guts — аркадная гонка-давилка в духе Carmageddon на three.js",
   "type": "module",
   "scripts": {
     "dev": "vite --host",
     "build": "vite build && node scripts/inline.mjs",
-    "preview": "vite preview --host"
+    "preview": "vite preview --host",
+    "server": "node server/server.js",
+    "serve": "npm run build && node server/server.js"
   },
   "dependencies": {
-    "three": "^0.186.1"
+    "three": "^0.186.1",
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "vite": "^8.3.3"

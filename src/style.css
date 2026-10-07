@@ -1010,3 +1010,140 @@ body.touch.portrait #rotate-hint {
     font-size: 34px;
   }
 }
+
+/* ------------------------------------------------------------- игра по сети */
+body:not(.net) .net-only,
+body.net .solo-only {
+  display: none !important;
+}
+
+.lobby .field {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 10px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.lobby input {
+  font: inherit;
+  font-size: 16px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  width: 100%;
+}
+
+.lobby input:focus {
+  outline: 2px solid var(--gold);
+  outline-offset: 1px;
+}
+
+.room-list {
+  display: grid;
+  gap: 6px;
+}
+
+.panel button.room-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  text-align: left;
+  margin: 0;
+  font-size: 16px;
+}
+
+.room-item span {
+  display: grid;
+}
+
+.room-item small,
+.room-item em {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  letter-spacing: 0;
+  color: var(--muted);
+  font-style: normal;
+}
+
+.room-item b {
+  margin-left: auto;
+  font-weight: normal;
+}
+
+.room-item em {
+  width: 100%;
+  color: #ff8a80;
+}
+
+.panel button:disabled {
+  opacity: 0.5;
+  cursor: default;
+  transform: none;
+}
+
+.room-name {
+  font-family: var(--font-display);
+  font-weight: normal;
+  font-size: 22px;
+  margin: 0 0 10px;
+  color: var(--gold);
+}
+
+.room-players div {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.room-players span {
+  color: var(--muted);
+}
+
+.room-players b {
+  font-weight: normal;
+  font-family: var(--font-display);
+}
+
+.lobby-status {
+  min-height: 1.2em;
+  margin: 12px 0 0;
+  font-size: 14px;
+  color: var(--ok);
+}
+
+.lobby-status.bad {
+  color: #ff8a80;
+}
+
+.lobby-help {
+  margin: 14px 0 0;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.lobby-help summary {
+  cursor: pointer;
+  color: var(--text);
+}
+
+.lobby-help ol {
+  padding-left: 20px;
+  margin: 8px 0 0;
+}
+
+.lobby-help code {
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--gold);
+  word-break: break-all;
+}

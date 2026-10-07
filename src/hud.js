@@ -106,7 +106,7 @@ export class HUD {
     }
     this._set('rl', this.el.raceLap, `КРУГ ${Math.min(race.lap, game.raceLaps)}/${game.raceLaps}`);
     this._set('rp', this.el.racePos, `${game.position}/${game.cars.length}`);
-    this._set('re', this.el.raceEnemies, String(game.rivals.filter((r) => !r.car.wrecked).length));
+    this._set('re', this.el.raceEnemies, String(game.cars.filter((c) => c !== car && !c.wrecked).length));
     // перезарядка пушки
     const p = Math.round((1 - Math.min(1, game.car.reload / game.reloadTime)) * 20) / 20;
     if (this.cache.gunP !== p) {
@@ -293,9 +293,9 @@ export class HUD {
       ctx.stroke();
       ctx.globalAlpha = 1;
     }
-    // соперники — цветные стрелки; далеко — на краю круга
-    for (const r of game.rivals) {
-      const rc = r.car;
+    // соперники (боты и люди по сети) — цветные стрелки; далеко — на краю круга
+    for (const rc of game.cars) {
+      if (rc === car) continue;
       let [sx, sy] = toScreen(rc.x, rc.z);
       const ox = sx - cx, oy = sy - cy;
       const d = Math.hypot(ox, oy);
@@ -307,7 +307,7 @@ export class HUD {
       ctx.save();
       ctx.translate(sx, sy);
       ctx.rotate(-(rc.yaw - car.yaw));
-      ctx.fillStyle = rc.wrecked ? '#555' : r.color;
+      ctx.fillStyle = rc.wrecked ? '#555' : rc.opts.color;
       ctx.strokeStyle = '#000';
       ctx.lineWidth = 1.5;
       const k = edge ? 0.7 : 1;

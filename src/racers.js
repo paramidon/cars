@@ -32,6 +32,9 @@ export const GRID = [
   [-7, 7.5],
   [-7, 0],
   [0, -7.5],
+  [-7, -7.5],
+  [0, -15],
+  [-7, -15],
 ];
 
 /** Точка и курс места на решётке. */
@@ -77,11 +80,12 @@ const shotFilter = (c) => c.kind !== 'breakable' && c.h >= 1.2;
 
 /** Удар машины о машину: лоб крепкий, бок и зад — слабые места. */
 export const CAR_HIT = {
-  // урон растёт быстрее скорости: scale · (встречная скорость − threshold)^power.
-  // Лбом в бок: 20 км/ч — ~1, 40 — ~9, 60 — ~22, 80 — ~38, 100 — ~57, 130 — ~90
+  // урон линейно растёт со встречной скоростью, а выше knee — втрое медленнее, чтобы с одного удара не разбить.
+  // Лбом в бок: 20 км/ч — −3, 40 — −20, 60 — −36, 80 — −48, 100 — −55, 130 — −68, 160 — −81
   threshold: 4.5, // м/с встречной скорости, ниже — без урона
-  scale: 0.41,
-  power: 1.5,
+  scale: 2.4,
+  knee: 45, // выше этого урон растёт медленнее
+  over: 0.35, // во сколько раз медленнее
   // front — только лоб в лоб; если таранишь лбом в бок или зад, лоб с кенгурятником не страдает вовсе
   zone: { front: 0.3, side: 1.25, rear: 1.0 },
   restitution: 0.3,
@@ -173,7 +177,7 @@ export class Rival {
       const { ang, d } = this._bearing(c.x, c.z);
       if (d > (c === current ? range * 1.3 : range)) return Infinity;
       if (c !== current && Math.abs(ang) > cone) return Infinity;
-      return d * (c.isPlayer ? PREY_WEIGHT.player : PREY_WEIGHT[c.role] || 1);
+      return d * (c.human ? PREY_WEIGHT.player : PREY_WEIGHT[c.role] || 1);
     };
     let best = null, bs = Infinity;
     for (const c of cars) {
@@ -494,7 +498,9 @@ export function collideCars(cars, onHit) {
   }
 }
 
+/** Чужие машины по сети (remote) не двигаем: их сдвинет и толкнёт их владелец, у себя — тем же ударом. */
 function collidePair(A, B, onHit) {
+  if (A.remote && B.remote) return;
   const ddx = B.x - A.x, ddz = B.z - A.z;
   if (ddx * ddx + ddz * ddz > 36) return;
   const sa = Math.sin(A.yaw), ca = Math.cos(A.yaw), sb = Math.sin(B.yaw), cb = Math.cos(B.yaw);
@@ -517,11 +523,12 @@ function collidePair(A, B, onHit) {
   }
   if (best <= 0) return;
   const { nx, nz, depth, px, pz } = _c;
-  // развести поровну
-  A.x += nx * depth * 0.5;
-  A.z += nz * depth * 0.5;
-  B.x -= nx * depth * 0.5;
-  B.z -= nz * depth * 0.5;
+  // развести поровну (если одна чужая — своя отходит целиком)
+  const wa = A.remote ? 0 : B.remote ? 1 : 0.5, wb = 1 - wa;
+  A.x += nx * depth * wa;
+  A.z += nz * depth * wa;
+  B.x -= nx * depth * wb;
+  B.z -= nz * depth * wb;
 
   const rAx = px - A.x, rAz = pz - A.z, rBx = px - B.x, rBz = pz - B.z;
   const vAx = A.vx + A.angVel * rAz, vAz = A.vz - A.angVel * rAx;
@@ -531,24 +538,25 @@ function collidePair(A, B, onHit) {
   const I = CAR_INERTIA;
   const rnA = rAz * nx - rAx * nz, rnB = rBz * nx - rBx * nz;
   const j = (-(1 + CAR_HIT.restitution) * vn) / (2 + (rnA * rnA) / I + (rnB * rnB) / I);
-  A.vx += j * nx;
-  A.vz += j * nz;
-  A.angVel += (rnA * j) / I;
-  B.vx -= j * nx;
-  B.vz -= j * nz;
-  B.angVel -= (rnB * j) / I;
+  const ka = A.remote ? 0 : 1, kb = B.remote ? 0 : 1;
+  A.vx += j * nx * ka;
+  A.vz += j * nz * ka;
+  A.angVel += ((rnA * j) / I) * ka;
+  B.vx -= j * nx * kb;
+  B.vz -= j * nz * kb;
+  B.angVel -= ((rnB * j) / I) * kb;
   // трение металла о металл
   const tx = -nz, tz = nx;
   const vt = (vAx - vBx) * tx + (vAz - vBz) * tz;
   const rtA = rAz * tx - rAx * tz, rtB = rBz * tx - rBx * tz;
   let jt = -vt / (2 + (rtA * rtA) / I + (rtB * rtB) / I);
   jt = clamp(jt, -0.4 * j, 0.4 * j);
-  A.vx += jt * tx;
-  A.vz += jt * tz;
-  A.angVel += (rtA * jt) / I;
-  B.vx -= jt * tx;
-  B.vz -= jt * tz;
-  B.angVel -= (rtB * jt) / I;
+  A.vx += jt * tx * ka;
+  A.vz += jt * tz * ka;
+  A.angVel += ((rtA * jt) / I) * ka;
+  B.vx -= jt * tx * kb;
+  B.vz -= jt * tz * kb;
+  B.angVel -= ((rtB * jt) / I) * kb;
   if (onHit) onHit(A, B, -vn, px, pz, nx, nz);
 }
 
@@ -562,5 +570,6 @@ export function carHitDamage(car, other, impact, px, pz) {
   if (zone === 'front' && car.frontArmored && other.zoneAt(px, pz) !== 'front') return 0;
   let k = CAR_HIT.zone[zone];
   if (zone === 'front' && !car.frontArmored) k *= 1.8; // без кенгурятника лоб мягче
-  return (impact - CAR_HIT.threshold) ** CAR_HIT.power * CAR_HIT.scale * k;
+  const dmg = (impact - CAR_HIT.threshold) * CAR_HIT.scale * k;
+  return dmg > CAR_HIT.knee ? CAR_HIT.knee + (dmg - CAR_HIT.knee) * CAR_HIT.over : dmg;
 }

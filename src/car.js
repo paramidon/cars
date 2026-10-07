@@ -115,6 +115,8 @@ export class Car {
     this.quality = quality;
     this.opts = { color: '#b3121a', isPlayer: true, wing: false, number: null, wallDamage: 1, ...opts };
     this.isPlayer = this.opts.isPlayer;
+    this.human = this.isPlayer; // за рулём человек (своя машина или чужая по сети) — боты охотятся охотнее
+    this.remote = false; // чужая машина по сети: положение приходит снимками, физику и урон считает владелец
     this.isCar = true;
     this.name = this.opts.name || 'ТЫ';
     this.listener = null; // машина игрока — звуки чужих машин тише с расстоянием
@@ -300,6 +302,16 @@ export class Car {
       this.muzzleLight = new THREE.PointLight(0xffb050, 0, 14, 2);
       this.muzzleLight.position.set(0, 0.1, 2.2);
       barrel.add(this.muzzleLight);
+    }
+  }
+
+  /** Перекрасить кузов (в сетевой игре у каждого свой цвет). */
+  setColor(hex) {
+    this.opts.color = hex;
+    this.paintColor.set(hex);
+    if (!this.wrecked) {
+      this.paint.color.copy(this.paintColor);
+      this.cabinMat.color.copy(this.paintColor);
     }
   }
 

@@ -49,29 +49,37 @@ export class Artillery {
     this.shells.length = 0;
   }
 
-  /** Выстрел машины прямо по курсу. Возвращает true, если пушка была заряжена. */
-  fire(car) {
-    if (car.wrecked || car.reload > 0) return false;
-    car.reload = car.isPlayer ? CANNON.reload : CANNON.botReload;
-    const m = car.muzzle();
-    if (!car.isPlayer) {
-      // бот целится хуже человека
-      const a = Math.atan2(m.dx, m.dz) + rand(-CANNON.botSpread, CANNON.botSpread);
-      m.dx = Math.sin(a);
-      m.dz = Math.cos(a);
+  /**
+   * Выстрел машины прямо по курсу. Возвращает выстрел { x, y, z, dx, dz, v } или null, если пушка не заряжена.
+   * shot — готовый выстрел чужой машины по сети: летит отсюда, без перезарядки и отдачи.
+   */
+  fire(car, shot = null) {
+    if (car.wrecked || (!shot && car.reload > 0)) return null;
+    let m = shot;
+    if (!m) {
+      car.reload = car.isPlayer ? CANNON.reload : CANNON.botReload;
+      m = car.muzzle();
+      if (!car.isPlayer) {
+        // бот целится хуже человека
+        const a = Math.atan2(m.dx, m.dz) + rand(-CANNON.botSpread, CANNON.botSpread);
+        m.dx = Math.sin(a);
+        m.dz = Math.cos(a);
+      }
+      m.v = CANNON.speed + Math.max(0, car.vx * m.dx + car.vz * m.dz);
     }
-    const fwd = Math.max(0, car.vx * m.dx + car.vz * m.dz);
     const mesh = this.pool.find((x) => !x.visible) || this.shells.shift()?.mesh;
     mesh.visible = true;
     mesh.position.set(m.x, m.y, m.z);
-    this.shells.push({ x: m.x, y: m.y, z: m.z, dx: m.dx, dz: m.dz, v: CANNON.speed + fwd, dist: 0, owner: car, mesh, trail: 0 });
-    car.vx -= m.dx * CANNON.recoil;
-    car.vz -= m.dz * CANNON.recoil;
+    this.shells.push({ x: m.x, y: m.y, z: m.z, dx: m.dx, dz: m.dz, v: m.v, dist: 0, owner: car, mesh, trail: 0 });
+    if (!car.remote) {
+      car.vx -= m.dx * CANNON.recoil;
+      car.vz -= m.dz * CANNON.recoil;
+    }
     car.kick();
     for (let i = 0; i < 6; i++) this.fx.muzzleSmoke(m.x + m.dx * rand(0, 1), m.y, m.z + m.dz * rand(0, 1));
     this.fx.sparks(m.x, m.y, m.z, m.dx, m.dz, 6);
     this.audio.cannon(car.vol());
-    return true;
+    return m;
   }
 
   update(dt) {
@@ -147,6 +155,11 @@ export class Artillery {
       const direct = car === directCar;
       if (!direct && k <= 0) continue;
       const dmg = (direct ? CANNON.direct : 0) + CANNON.splash * k;
+      if (car.remote) {
+        // чужая машина по сети: урон и толчок посчитает её владелец, здесь — только надпись стрелку
+        if (car !== shooter && this.onCarHit) this.onCarHit(car, shooter, dmg, direct);
+        continue;
+      }
       const l = Math.hypot(dx, dz) || 1;
       const nx = dx / l, nz = dz / l;
       car.vx += nx * CANNON.push * Math.max(k, direct ? 0.6 : 0);

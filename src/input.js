@@ -21,6 +21,8 @@ export class Input {
     this._padPrev = [];
 
     window.addEventListener('keydown', (e) => {
+      // печатают в поле (имя, адрес сервера в лобби) — это не управление
+      if (e.target instanceof HTMLInputElement) return;
       if (BLOCK_DEFAULT.has(e.code)) e.preventDefault();
       if (!e.repeat) this._actionKey(e.code);
       this.keys.add(e.code);
