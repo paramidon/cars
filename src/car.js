@@ -1,0 +1,620 @@
+import * as THREE from 'three';
+import { clamp, lerp, moveToward, rand } from './utils.js';
+import { circleVsCollider } from './physics/collision.js';
+import { flashTexture, blobShadowTexture } from './world/textures.js';
+
+const P = {
+  engine: 13,
+  speedCurve: 40, // тяга падает квадратично к этой скорости
+  brake: 26,
+  reverseAccel: 8,
+  maxReverse: 11,
+  roll: 0.6,
+  drag: 0.002,
+  wheelBase: 2.7,
+  grip: 9,
+  hbGrip: 1.5,
+  steerLow: 0.6,
+  steerHigh: 0.17,
+  restitution: 0.25,
+  inertia: 1.9,
+  damageThreshold: 6.5, // м/с ≈ 23 км/ч — ниже этого удар не повреждает
+  damageScale: 3.4,
+};
+
+// машина в коллизиях — три круга вдоль корпуса
+const HIT_Z = [-1.3, 0, 1.3];
+const HIT_R = 1.0;
+export const CAR_HALF_W = 1.05;
+export const CAR_HALF_L = 2.35;
+
+const HARD = new Set(['building', 'wall', 'pole', 'tree', 'pillar', 'fountain', 'statue', 'pump']);
+const PEN = { nx: 0, nz: 0, depth: 0, px: 0, pz: 0 };
+const _p = new THREE.Vector3();
+const _q = new THREE.Quaternion();
+const _s = new THREE.Vector3();
+
+const WHEELS = [
+  { x: 0.95, z: 1.42, front: true },
+  { x: -0.95, z: 1.42, front: true },
+  { x: 0.95, z: -1.38, front: false },
+  { x: -0.95, z: -1.38, front: false },
+];
+
+export class Car {
+  constructor(scene, city, fx, audio, debris, quality) {
+    this.scene = scene;
+    this.city = city;
+    this.world = city.world;
+    this.fx = fx;
+    this.audio = audio;
+    this.debris = debris;
+    this.quality = quality;
+    this.onBreakable = null; // (collider, car) => boolean
+    this.onImpact = null; // (impact) => void
+    this.onWrecked = null;
+    this.onDamage = null;
+    this._build();
+    this.reset(city.spawn);
+  }
+
+  // ------------------------------------------------------------------ модель
+  _build() {
+    const root = (this.root = new THREE.Group());
+    const body = (this.body = new THREE.Group());
+    root.add(body);
+    this.scene.add(root);
+
+    this.paintColor = new THREE.Color('#b3121a');
+    this.paint = new THREE.MeshPhongMaterial({ color: this.paintColor, shininess: 70, specular: 0x555555 });
+    this.cabinMat = new THREE.MeshPhongMaterial({ color: this.paintColor, vertexColors: true, shininess: 90, specular: 0x777777 });
+    this.dark = new THREE.MeshLambertMaterial({ color: 0x222326 });
+    this.metal = new THREE.MeshPhongMaterial({ color: 0x9aa0a6, shininess: 80, specular: 0x888888 });
+    this.headMat = new THREE.MeshBasicMaterial({ color: 0xfff6d8 });
+    this.tailMat = new THREE.MeshBasicMaterial({ color: 0x7a0b0b });
+    this.parts = [];
+
+    // кузов
+    const bodyGeo = new THREE.BoxGeometry(2.0, 0.6, 4.3, 8, 3, 16);
+    const bp = bodyGeo.attributes.position;
+    for (let i = 0; i < bp.count; i++) {
+      let x = bp.getX(i), y = bp.getY(i), z = bp.getZ(i);
+      if (y > 0 && z > 0.9) y -= (z - 0.9) * 0.14; // капот к носу ниже
+      if (y > 0 && z < -1.6) y -= (-1.6 - z) * 0.1;
+      if (y > 0) x *= 0.96;
+      bp.setXYZ(i, x, y, z);
+    }
+    bodyGeo.computeVertexNormals();
+    const bodyMesh = new THREE.Mesh(bodyGeo, this.paint);
+    bodyMesh.position.y = 0.78;
+    body.add(bodyMesh);
+
+    // кабина: крыша цвета кузова, бока — тёмное стекло (через вертекс-цвета)
+    const cabGeo = new THREE.BoxGeometry(1.76, 0.58, 2.1, 6, 3, 8);
+    const cp = cabGeo.attributes.position, cn = cabGeo.attributes.normal;
+    const colors = [];
+    for (let i = 0; i < cp.count; i++) {
+      let x = cp.getX(i), y = cp.getY(i), z = cp.getZ(i);
+      if (y > 0) {
+        x *= 0.86;
+        z = z * 0.72 - 0.08;
+      }
+      cp.setXYZ(i, x, y, z);
+      const roof = cn.getY(i) > 0.5;
+      if (roof) colors.push(1, 1, 1);
+      else colors.push(0.09, 0.1, 0.13);
+    }
+    cabGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    cabGeo.computeVertexNormals();
+    const cabMesh = new THREE.Mesh(cabGeo, this.cabinMat);
+    cabMesh.position.set(0, 1.37, -0.25);
+    body.add(cabMesh);
+    this.deformables = [bodyMesh, cabMesh].map((m) => ({ mesh: m, orig: Float32Array.from(m.geometry.attributes.position.array) }));
+
+    // днище
+    const under = new THREE.Mesh(new THREE.BoxGeometry(1.86, 0.25, 3.9), this.dark);
+    under.position.y = 0.47;
+    body.add(under);
+
+    // фары
+    for (const x of [-0.62, 0.62]) {
+      const h = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.14, 0.06), this.headMat);
+      h.position.set(x, 0.83, 2.16);
+      body.add(h);
+      const t = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.14, 0.06), this.tailMat);
+      t.position.set(x, 0.86, -2.16);
+      body.add(t);
+    }
+
+    // кенгурятник с шипами — фирменная деталь
+    const bar = new THREE.Group();
+    const b1 = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.14, 0.14), this.metal);
+    b1.position.set(0, 0.62, 2.3);
+    bar.add(b1);
+    const b2 = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.1, 0.1), this.metal);
+    b2.position.set(0, 0.92, 2.2);
+    bar.add(b2);
+    for (const x of [-0.6, 0.6]) {
+      const v = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.42, 0.1), this.metal);
+      v.position.set(x, 0.77, 2.25);
+      bar.add(v);
+    }
+    const spikeGeo = new THREE.ConeGeometry(0.075, 0.45, 6);
+    spikeGeo.rotateX(Math.PI / 2);
+    for (let k = 0; k < 6; k++) {
+      const s = new THREE.Mesh(spikeGeo, this.metal);
+      s.position.set(-0.9 + k * 0.36, 0.62, 2.55);
+      bar.add(s);
+    }
+    body.add(bar);
+    this._part(bar, 'front');
+
+    const rear = new THREE.Mesh(new THREE.BoxGeometry(2.04, 0.22, 0.2), this.dark);
+    rear.position.set(0, 0.58, -2.2);
+    body.add(rear);
+    this._part(rear, 'rear');
+
+    // колёса
+    const tyreGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.34, 16);
+    tyreGeo.rotateZ(Math.PI / 2);
+    const rimGeo = new THREE.CylinderGeometry(0.25, 0.25, 0.36, 8);
+    rimGeo.rotateZ(Math.PI / 2);
+    const tyreMat = new THREE.MeshLambertMaterial({ color: 0x18181a });
+    this.wheels = WHEELS.map((w) => {
+      const pivot = new THREE.Group();
+      pivot.position.set(w.x, 0.42, w.z);
+      const spin = new THREE.Group();
+      spin.add(new THREE.Mesh(tyreGeo, tyreMat));
+      spin.add(new THREE.Mesh(rimGeo, this.metal));
+      pivot.add(spin);
+      root.add(pivot);
+      const part = this._part(pivot, 'wheel');
+      return { ...w, pivot, spin, part };
+    });
+
+    // турель с пулемётом
+    const turret = (this.turret = new THREE.Group());
+    turret.position.set(0, 1.66, -0.35);
+    body.add(turret);
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.36, 0.16, 12), this.dark);
+    base.position.y = 0.08;
+    turret.add(base);
+    const housing = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.34, 0.75), new THREE.MeshLambertMaterial({ color: 0x3d4a2f }));
+    housing.position.set(0, 0.32, 0);
+    turret.add(housing);
+    const ammo = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.26, 0.42), new THREE.MeshLambertMaterial({ color: 0x5c6b3a }));
+    ammo.position.set(0.37, 0.3, -0.05);
+    turret.add(ammo);
+    const barrels = (this.barrels = new THREE.Group());
+    barrels.position.set(0, 0.32, 0.38);
+    const brlGeo = new THREE.CylinderGeometry(0.045, 0.045, 1.05, 6);
+    brlGeo.rotateX(Math.PI / 2);
+    brlGeo.translate(0, 0, 0.52);
+    for (let k = 0; k < 3; k++) {
+      const a = (k / 3) * Math.PI * 2;
+      const b = new THREE.Mesh(brlGeo, this.dark);
+      b.position.set(Math.cos(a) * 0.075, Math.sin(a) * 0.075, 0);
+      barrels.add(b);
+    }
+    const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.08, 10), this.metal);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.z = 0.9;
+    barrels.add(ring);
+    turret.add(barrels);
+    const flashMat = new THREE.MeshBasicMaterial({ map: flashTexture(), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+    const flash = (this.flash = new THREE.Group());
+    const fp = new THREE.PlaneGeometry(0.9, 0.9);
+    const f1 = new THREE.Mesh(fp, flashMat);
+    const f2 = new THREE.Mesh(fp, flashMat);
+    f2.rotation.y = Math.PI / 2;
+    const f3 = new THREE.Mesh(fp, flashMat);
+    f3.rotation.x = Math.PI / 2;
+    flash.add(f1, f2, f3);
+    flash.position.set(0, 0.32, 1.55);
+    flash.visible = false;
+    turret.add(flash);
+    this._part(turret, 'turret');
+    if (!this.quality.low) {
+      this.muzzleLight = new THREE.PointLight(0xffb050, 0, 9, 2);
+      this.muzzleLight.position.set(0, 0.4, 1.6);
+      turret.add(this.muzzleLight);
+    }
+
+    // мягкая тень под машиной
+    const blob = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.8, 5.2),
+      new THREE.MeshBasicMaterial({ map: blobShadowTexture(), transparent: true, depthWrite: false }),
+    );
+    blob.rotation.x = -Math.PI / 2;
+    blob.position.y = 0.03;
+    blob.renderOrder = 1;
+    root.add(blob);
+
+    root.traverse((o) => {
+      if (o.isMesh && o !== blob && o.parent !== flash) {
+        o.castShadow = this.quality.shadows;
+      }
+    });
+  }
+
+  _part(obj, kind) {
+    const part = { obj, kind, parent: obj.parent, pos: obj.position.clone(), quat: obj.quaternion.clone(), detached: false };
+    this.parts.push(part);
+    return part;
+  }
+
+  _detach(part, vx, vy, vz) {
+    if (part.detached) return;
+    part.detached = true;
+    const o = part.obj;
+    o.updateWorldMatrix(true, false);
+    o.matrixWorld.decompose(_p, _q, _s);
+    this.scene.add(o);
+    o.position.copy(_p);
+    o.quaternion.copy(_q);
+    this.debris.spawn(o, {
+      mode: 'fly',
+      vx, vy, vz,
+      wx: rand(-9, 9), wy: rand(-6, 6), wz: rand(-9, 9),
+      radius: part.kind === 'wheel' ? 0.42 : 0.2,
+      persistent: true,
+    });
+  }
+
+  // ------------------------------------------------------------------ состояние
+  reset(sp) {
+    this.x = sp.x;
+    this.z = sp.z;
+    this.y = this.city.groundHeight(sp.x, sp.z);
+    this.yaw = sp.yaw;
+    this.vx = 0;
+    this.vz = 0;
+    this.angVel = 0;
+    this.steer = 0;
+    this.vF = 0;
+    this.vR = 0;
+    this.health = 100;
+    this.wrecked = false;
+    this.wreckTime = 0;
+    this.frontHits = 0;
+    this.rearHits = 0;
+    this.bloodyWheels = 0;
+    this.markDist = 0;
+    this.bloodDist = 0;
+    this.roll = 0;
+    this.rollVel = 0;
+    this.pitch = 0;
+    this.pitchVel = 0;
+    this.hop = 0;
+    this.hopVel = 0;
+    this.throttle = 0;
+    this.braking = false;
+    this.slip = 0;
+    this.lastImpact = 0;
+    this.turretYaw = 0;
+    this.smokeAcc = 0;
+
+    for (const d of this.deformables) {
+      const pos = d.mesh.geometry.attributes.position;
+      pos.array.set(d.orig);
+      pos.needsUpdate = true;
+      d.mesh.geometry.computeVertexNormals();
+    }
+    for (const part of this.parts) {
+      if (part.detached) {
+        this.debris.remove(part.obj);
+        this.scene.remove(part.obj);
+        part.parent.add(part.obj);
+        part.detached = false;
+      }
+      part.obj.position.copy(part.pos);
+      part.obj.quaternion.copy(part.quat);
+    }
+    this.paint.color.copy(this.paintColor);
+    this.cabinMat.color.copy(this.paintColor);
+    this.headMat.color.set(0xfff6d8);
+    this.tailMat.color.set(0x7a0b0b);
+    this._syncMesh(0);
+  }
+
+  get speed() {
+    return Math.hypot(this.vx, this.vz);
+  }
+
+  /** Направления: вперёд (fx, fz) и вправо (rx, rz). */
+  axes() {
+    const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
+    return { fx: s, fz: c, rx: -c, rz: s };
+  }
+
+  // ------------------------------------------------------------------ физика
+  update(dt, input) {
+    const n = Math.max(1, Math.ceil(dt / (1 / 120)));
+    const h = dt / n;
+    for (let i = 0; i < n; i++) {
+      this._step(h, input);
+      this._collide();
+    }
+    this._afterPhysics(dt, input);
+  }
+
+  _step(h, inp) {
+    const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
+    const fx = s, fz = c, rx = -c, rz = s;
+    let vF = this.vx * fx + this.vz * fz;
+    let vR = this.vx * rx + this.vz * rz;
+    let thr = inp.throttle, brk = inp.brake, st = inp.steer, hb = inp.handbrake;
+    if (this.wrecked) {
+      thr = 0;
+      brk = 0;
+      st = 0;
+      hb = true;
+    }
+
+    const spd = Math.abs(vF);
+    const maxSteer = lerp(P.steerLow, P.steerHigh, clamp(spd / 32, 0, 1));
+    this.steer = moveToward(this.steer, st * maxSteer, 3.2 * h);
+
+    let a = 0;
+    if (thr > 0) {
+      if (vF < -0.5) a += P.brake * thr;
+      else a += P.engine * thr * Math.max(0, 1 - (vF / P.speedCurve) ** 2);
+    }
+    this.braking = false;
+    if (brk > 0) {
+      if (vF > 0.5) {
+        a -= P.brake * brk;
+        this.braking = true;
+      } else if (vF > -P.maxReverse) a -= P.reverseAccel * brk;
+    }
+    vF += a * h;
+    const res = (P.roll + P.drag * vF * vF + (hb ? 7 : 0) + (this.wrecked ? 5 : 0)) * h;
+    if (vF > res) vF -= res;
+    else if (vF < -res) vF += res;
+    else if (thr === 0 && brk === 0) vF = 0;
+
+    vR *= Math.exp(-(hb ? P.hbGrip : P.grip) * h);
+
+    let target = -(vF / P.wheelBase) * Math.tan(this.steer);
+    if (hb && spd > 3) target *= 1.5;
+    this.angVel += (target - this.angVel) * Math.min(1, 9 * h);
+
+    // скорость собирается по старым осям — при повороте часть уходит в боковую и гасится сцеплением (занос)
+    this.vx = fx * vF + rx * vR;
+    this.vz = fz * vF + rz * vR;
+    this.yaw += this.angVel * h;
+    this.x += this.vx * h;
+    this.z += this.vz * h;
+    this.vF = vF;
+    this.vR = vR;
+    this.accel = a;
+    this.throttle = thr;
+    this.handbrake = hb;
+  }
+
+  _collide() {
+    const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
+    let maxImpact = 0, inx = 0, inz = 0, ipx = 0, ipz = 0, hitC = null;
+    for (let k = 0; k < HIT_Z.length; k++) {
+      const oz = HIT_Z[k];
+      const cx = this.x + s * oz, cz = this.z + c * oz;
+      const list = this.world.queryCircle(cx, cz, HIT_R);
+      for (let j = 0; j < list.length; j++) {
+        const col = list[j];
+        if (!circleVsCollider(cx, cz, HIT_R, col, PEN)) continue;
+        if (col.kind === 'breakable') {
+          if (this.speed > 2.5 && this.onBreakable && this.onBreakable(col, this)) continue;
+        }
+        this.x += PEN.nx * PEN.depth;
+        this.z += PEN.nz * PEN.depth;
+        const rX = PEN.px - this.x, rZ = PEN.pz - this.z;
+        const vpx = this.vx + this.angVel * rZ, vpz = this.vz - this.angVel * rX;
+        const vn = vpx * PEN.nx + vpz * PEN.nz;
+        if (vn >= 0) continue;
+        const rn = rZ * PEN.nx - rX * PEN.nz;
+        const jn = (-(1 + P.restitution) * vn) / (1 + (rn * rn) / P.inertia);
+        this.vx += jn * PEN.nx;
+        this.vz += jn * PEN.nz;
+        this.angVel += (jn * rn) / P.inertia;
+        // трение вдоль стены
+        const tx = -PEN.nz, tz = PEN.nx;
+        const vt = vpx * tx + vpz * tz;
+        const rt = rZ * tx - rX * tz;
+        let jt = -vt / (1 + (rt * rt) / P.inertia);
+        const mf = 0.3 * jn;
+        jt = clamp(jt, -mf, mf);
+        this.vx += jt * tx;
+        this.vz += jt * tz;
+        this.angVel += (jt * rt) / P.inertia;
+        if (-vn > maxImpact) {
+          maxImpact = -vn;
+          inx = PEN.nx;
+          inz = PEN.nz;
+          ipx = PEN.px;
+          ipz = PEN.pz;
+          hitC = col;
+        }
+      }
+    }
+    if (maxImpact > 0) this._impact(maxImpact, inx, inz, ipx, ipz, hitC);
+  }
+
+  _impact(impact, nx, nz, px, pz, col) {
+    const now = performance.now();
+    const y = this.y + 0.8;
+    if (impact > 2.5) {
+      this.fx.sparks(px, y, pz, nx, nz, Math.min(30, Math.floor(impact * 1.5)));
+      if (now - this.lastImpact > 120) this.audio.crash(Math.min(1.2, impact / 18));
+      this.lastImpact = now;
+    }
+    if (impact > 5) this.fx.dust(px, y - 0.3, pz, 5);
+    if (this.onImpact) this.onImpact(impact, px, pz);
+    if (!HARD.has(col.kind) || impact < P.damageThreshold || this.wrecked) return;
+    const mult = col.kind === 'pole' || col.kind === 'pillar' || col.kind === 'tree' ? 1.25 : 1;
+    const dmg = (impact - P.damageThreshold) * P.damageScale * mult;
+    this.applyDamage(dmg, px, pz, nx, nz);
+  }
+
+  applyDamage(dmg, px, pz, nx, nz) {
+    if (this.wrecked) return;
+    this.health = Math.max(0, this.health - dmg);
+    const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
+    const dx = px - this.x, dz = pz - this.z;
+    const lx = dx * c - dz * s, lz = dx * s + dz * c;
+    const nlx = nx * c - nz * s, nlz = nx * s + nz * c;
+    this._deform(lx, lz, nlx, nlz, Math.min(0.5, 0.06 + dmg * 0.012));
+    if (lz > 1.2) this.frontHits += dmg;
+    if (lz < -1.2) this.rearHits += dmg;
+    const part = (k) => this.parts.find((p) => p.kind === k);
+    if (this.frontHits > 30) this._detach(part('front'), this.vx * 0.5 + nx * 3, 3, this.vz * 0.5 + nz * 3);
+    if (this.rearHits > 30) this._detach(part('rear'), this.vx * 0.5 + nx * 3, 2.5, this.vz * 0.5 + nz * 3);
+    if (dmg > 14) {
+      this.fx.glass(px, this.y + 1.3, pz, Math.min(30, Math.floor(dmg)));
+      this.audio.glass();
+    }
+    if (this.onDamage) this.onDamage(dmg);
+    if (this.health <= 0) this.explode();
+  }
+
+  _deform(lx, lz, nlx, nlz, amount) {
+    const R = 1.35;
+    for (const d of this.deformables) {
+      const geo = d.mesh.geometry;
+      const arr = geo.attributes.position.array;
+      const o = d.orig;
+      const mx = d.mesh.position.x, my = d.mesh.position.y, mz = d.mesh.position.z;
+      for (let i = 0; i < arr.length; i += 3) {
+        const vx = arr[i] + mx, vy = arr[i + 1] + my, vz = arr[i + 2] + mz;
+        const ddx = vx - lx, ddz = vz - lz, ddy = vy - 0.9;
+        const d2 = ddx * ddx + ddz * ddz + ddy * ddy * 0.4;
+        if (d2 > R * R) continue;
+        const f = 1 - Math.sqrt(d2) / R;
+        const k = amount * f * f * (0.75 + Math.random() * 0.5);
+        arr[i] += nlx * k;
+        arr[i + 2] += nlz * k;
+        arr[i + 1] -= k * 0.35 * Math.random();
+        const ex = arr[i] - o[i], ey = arr[i + 1] - o[i + 1], ez = arr[i + 2] - o[i + 2];
+        const e = Math.hypot(ex, ey, ez);
+        if (e > 0.6) {
+          arr[i] = o[i] + (ex / e) * 0.6;
+          arr[i + 1] = o[i + 1] + (ey / e) * 0.6;
+          arr[i + 2] = o[i + 2] + (ez / e) * 0.6;
+        }
+      }
+      geo.attributes.position.needsUpdate = true;
+      geo.computeVertexNormals();
+    }
+  }
+
+  explode() {
+    if (this.wrecked) return;
+    this.wrecked = true;
+    this.health = 0;
+    this.wreckTime = 0;
+    this.paint.color.set(0x1d1a18);
+    this.cabinMat.color.set(0x2a2522);
+    this.headMat.color.set(0x222222);
+    this.tailMat.color.set(0x220000);
+    this.fx.explosion(this.x, this.y + 0.8, this.z);
+    this.fx.glass(this.x, this.y + 1.4, this.z, 40);
+    this.audio.explosion();
+    this.hopVel = 6;
+    const byKind = (k) => this.parts.filter((p) => p.kind === k);
+    const tur = byKind('turret')[0];
+    this._detach(tur, this.vx * 0.4 + rand(-3, 3), 11, this.vz * 0.4 + rand(-3, 3));
+    for (const p of [...byKind('front'), ...byKind('rear')]) this._detach(p, this.vx * 0.4 + rand(-5, 5), rand(5, 9), this.vz * 0.4 + rand(-5, 5));
+    const ws = byKind('wheel');
+    for (const p of [ws[0], ws[3]]) this._detach(p, rand(-6, 6), rand(4, 8), rand(-6, 6));
+    if (this.onWrecked) this.onWrecked();
+  }
+
+  // ------------------------------------------------------------------ визуал и эффекты
+  _afterPhysics(dt, input) {
+    const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
+    const speed = this.speed;
+
+    // высота над землёй (бордюр) и подскоки
+    const gy = this.city.groundHeight(this.x, this.z);
+    const dy = gy - this.y;
+    if (Math.abs(dy) > 0.05) this.pitchVel += -dy * 6 * Math.sign(this.vF || 1);
+    this.y += dy * Math.min(1, dt * 20);
+    this.hopVel -= 20 * dt;
+    this.hop = Math.max(0, this.hop + this.hopVel * dt);
+    if (this.hop === 0) this.hopVel = 0;
+
+    // крен и тангаж на пружинах
+    const lat = this.vF * this.angVel;
+    const rollT = clamp(lat * 0.012, -0.11, 0.11);
+    const pitchT = clamp(-(this.accel || 0) * 0.005, -0.07, 0.07);
+    this.rollVel += ((rollT - this.roll) * 90 - this.rollVel * 11) * dt;
+    this.pitchVel += ((pitchT - this.pitch) * 90 - this.pitchVel * 11) * dt;
+    this.roll += this.rollVel * dt;
+    this.pitch += this.pitchVel * dt;
+
+    this._syncMesh(dt);
+    this.tailMat.color.set(this.wrecked ? 0x220000 : this.braking ? 0xff2020 : 0x7a0b0b);
+
+    // занос, следы шин
+    const slip = Math.abs(this.vR);
+    const skidding = !this.wrecked && ((slip > 3.2 && speed > 4) || (this.handbrake && speed > 5) || (this.braking && this.vF > 9));
+    this.slip = skidding ? clamp(slip / 10 + (this.handbrake ? 0.4 : 0) + (this.braking ? 0.3 : 0), 0, 1) : 0;
+    this.audio.skid(this.slip);
+    const travel = speed * dt;
+    this.markDist += travel;
+    this.bloodDist += travel;
+    const markYaw = Math.atan2(this.vx, this.vz);
+    if (skidding && this.markDist > 0.25) {
+      const len = this.markDist + 0.1;
+      this.markDist = 0;
+      for (let i = 2; i < 4; i++) {
+        const w = WHEELS[i];
+        const wx = this.x + w.x * c + w.z * s, wz = this.z - w.x * s + w.z * c;
+        this.fx.tireMark(wx, wz, markYaw, len, 0.05, 0.05, 0.05, 0.55);
+        if (Math.random() < 0.35) this.fx.tireSmoke(wx, this.y + 0.2, wz);
+      }
+    } else if (!skidding) this.markDist = 0;
+
+    if (this.bloodyWheels > 0 && this.bloodDist > 0.35 && speed > 1) {
+      const len = this.bloodDist + 0.05;
+      this.bloodDist = 0;
+      const op = Math.min(1, this.bloodyWheels / 2.5) * 0.7;
+      for (const w of WHEELS) {
+        const wx = this.x + w.x * c + w.z * s, wz = this.z - w.x * s + w.z * c;
+        this.fx.tireMark(wx, wz, markYaw, len, 0.55, 0.02, 0.02, op);
+      }
+      this.bloodyWheels -= len * 0.14;
+    } else if (speed <= 1) this.bloodDist = 0;
+
+    // дым и огонь от повреждений
+    if (this.health < 55 || this.wrecked) {
+      this.wreckTime += this.wrecked ? dt : 0;
+      const k = this.wrecked ? 1 : 1 - this.health / 55;
+      this.smokeAcc += dt * (4 + k * 18);
+      const hx = this.x + s * 1.5, hz = this.z + c * 1.5;
+      while (this.smokeAcc > 1) {
+        this.smokeAcc -= 1;
+        this.fx.smoke(hx + rand(-0.4, 0.4), this.y + 1.1 + this.hop, hz + rand(-0.4, 0.4), k, 0.7 + k * 0.7);
+      }
+      if ((this.health < 25 || this.wrecked) && Math.random() < dt * (this.wrecked ? 50 : 22)) {
+        this.fx.fire(hx, this.y + 1.0 + this.hop, hz, this.wrecked ? 1.1 : 0.7);
+        if (this.wrecked) this.fx.fire(this.x + rand(-0.6, 0.6), this.y + 1.3 + this.hop, this.z + rand(-1, 1), 1.2);
+      }
+    }
+
+    this.audio.engine(speed, this.wrecked ? 0 : input.throttle, !this.wrecked);
+  }
+
+  _syncMesh(dt) {
+    const r = this.root;
+    r.position.set(this.x, this.y + this.hop, this.z);
+    r.rotation.y = this.yaw;
+    this.body.rotation.set(this.pitch, 0, this.roll);
+    const spinD = (this.vF * dt) / 0.42;
+    for (const w of this.wheels) {
+      if (w.part.detached) continue;
+      w.spin.rotation.x += spinD;
+      if (w.front) w.pivot.rotation.y = this.steer;
+    }
+    this.turret.rotation.y = this.turretYaw;
+  }
+}

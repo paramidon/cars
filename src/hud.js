@@ -1,0 +1,200 @@
+import { ST } from './pedestrians.js';
+import { rand } from './utils.js';
+
+const $ = (id) => document.getElementById(id);
+
+/** HUD: очки, корпус, спидометр, всплывающие надписи, кровь на экране, миникарта. */
+export class HUD {
+  constructor(city) {
+    this.city = city;
+    this.el = {
+      hud: $('hud'),
+      score: $('score'),
+      kills: $('kills'),
+      combo: $('combo'),
+      health: $('health-fill'),
+      healthWrap: $('health'),
+      speed: $('speed'),
+      messages: $('messages'),
+      fps: $('fps'),
+    };
+    this.mm = $('minimap');
+    this.mmCtx = this.mm.getContext('2d');
+    this.splat = $('splatter');
+    this.splatCtx = this.splat.getContext('2d');
+    this.splatAlpha = 0;
+    this.vignette = $('vignette');
+    this.flashT = 0;
+    this.cache = {};
+    this.frame = 0;
+    this._resizeSplat();
+    window.addEventListener('resize', () => this._resizeSplat());
+  }
+
+  _resizeSplat() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    this.splat.width = Math.floor(window.innerWidth * dpr);
+    this.splat.height = Math.floor(window.innerHeight * dpr);
+    this.splatAlpha = 0;
+    this.splat.style.opacity = 0;
+  }
+
+  _set(key, el, value) {
+    if (this.cache[key] === value) return;
+    this.cache[key] = value;
+    el.textContent = value;
+  }
+
+  show(v) {
+    this.el.hud.classList.toggle('hidden', !v);
+  }
+
+  update(dt, game) {
+    const { car } = game;
+    this._set('score', this.el.score, game.score.toLocaleString('ru-RU'));
+    this._set('kills', this.el.kills, String(game.kills));
+    this._set('speed', this.el.speed, String(Math.round(car.speed * 3.6)));
+    const combo = game.combo > 1 && game.comboTimer > 0 ? `КОМБО ×${game.combo}` : '';
+    this._set('combo', this.el.combo, combo);
+    const hp = Math.max(0, Math.round(car.health));
+    if (this.cache.hp !== hp) {
+      this.cache.hp = hp;
+      this.el.health.style.width = `${hp}%`;
+      this.el.health.style.background = hp > 60 ? '#5fd35f' : hp > 30 ? '#f5b82e' : '#ff3b30';
+      this.el.healthWrap.classList.toggle('critical', hp <= 25);
+    }
+
+    // кровь на «стекле»
+    if (this.splatAlpha > 0) {
+      this.splatAlpha = Math.max(0, this.splatAlpha - dt * 0.45);
+      this.splat.style.opacity = this.splatAlpha.toFixed(3);
+      if (this.splatAlpha === 0) this.splatCtx.clearRect(0, 0, this.splat.width, this.splat.height);
+    }
+    if (this.flashT > 0) {
+      this.flashT = Math.max(0, this.flashT - dt * 2.5);
+      this.vignette.style.opacity = this.flashT.toFixed(3);
+    }
+
+    this.frame++;
+    if (this.frame % 2 === 0) this._minimap(game);
+  }
+
+  setFps(v) {
+    if (this.el.fps) this.el.fps.textContent = `${v} FPS`;
+  }
+
+  popup(text, cls = '') {
+    const d = document.createElement('div');
+    d.className = `msg ${cls}`;
+    d.textContent = text;
+    this.el.messages.appendChild(d);
+    while (this.el.messages.children.length > 4) this.el.messages.firstChild.remove();
+    setTimeout(() => d.remove(), 1700);
+  }
+
+  damageFlash(strength = 0.6) {
+    this.flashT = Math.min(1, Math.max(this.flashT, strength));
+  }
+
+  /** Брызги крови на экране. */
+  splatter(intensity = 1) {
+    const c = this.splatCtx;
+    const W = this.splat.width, H = this.splat.height;
+    if (this.splatAlpha < 0.05) c.clearRect(0, 0, W, H);
+    const n = Math.floor(3 + intensity * 6);
+    const unit = Math.min(W, H);
+    for (let i = 0; i < n; i++) {
+      const x = rand(0.05, 0.95) * W;
+      const y = rand(0.05, 0.75) * H;
+      const r = unit * rand(0.02, 0.07) * (0.6 + intensity * 0.5);
+      const g = c.createRadialGradient(x, y, r * 0.1, x, y, r);
+      g.addColorStop(0, 'rgba(110,0,0,0.95)');
+      g.addColorStop(0.7, 'rgba(150,8,8,0.85)');
+      g.addColorStop(1, 'rgba(150,8,8,0)');
+      c.fillStyle = g;
+      c.beginPath();
+      c.arc(x, y, r, 0, Math.PI * 2);
+      c.fill();
+      c.fillStyle = 'rgba(130,4,4,0.85)';
+      for (let k = 0; k < 7; k++) {
+        const a = Math.random() * Math.PI * 2, d = r * rand(0.9, 1.8);
+        c.beginPath();
+        c.arc(x + Math.cos(a) * d, y + Math.sin(a) * d, r * rand(0.05, 0.16), 0, Math.PI * 2);
+        c.fill();
+      }
+      // потёки
+      const drips = Math.floor(rand(0, 3));
+      for (let k = 0; k < drips; k++) {
+        const dx = x + rand(-r * 0.6, r * 0.6);
+        const len = r * rand(1, 3.5);
+        const w = r * rand(0.08, 0.16);
+        c.fillRect(dx - w / 2, y, w, len);
+        c.beginPath();
+        c.arc(dx, y + len, w * 0.9, 0, Math.PI * 2);
+        c.fill();
+      }
+    }
+    this.splatAlpha = Math.min(1, this.splatAlpha + 0.5 + intensity * 0.3);
+    this.splat.style.opacity = this.splatAlpha.toFixed(3);
+  }
+
+  _minimap(game) {
+    const { car, peds } = game;
+    const ctx = this.mmCtx;
+    const W = this.mm.width, H = this.mm.height;
+    const cx = W / 2, cy = H / 2;
+    const scale = W / 170; // ~85 м в каждую сторону
+    const mm = this.city.minimap;
+    const c = Math.cos(car.yaw), s = Math.sin(car.yaw);
+    const k = mm.k;
+    ctx.save();
+    ctx.clearRect(0, 0, W, H);
+    ctx.beginPath();
+    ctx.arc(cx, cy, W / 2 - 1, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.fillStyle = '#2b2d2a';
+    ctx.fillRect(0, 0, W, H);
+    // мир → экран: экранное «вверх» = курс машины, «вправо» = правый борт
+    const a = (-c * scale) / k, cc = (s * scale) / k;
+    const b = (-s * scale) / k, d = (-c * scale) / k;
+    const ox = -mm.ext - car.x, oz = -mm.ext - car.z;
+    const e = cx + scale * (-c * ox + s * oz);
+    const f = cy - scale * (s * ox + c * oz);
+    ctx.setTransform(a, b, cc, d, e, f);
+    ctx.drawImage(mm.canvas, 0, 0);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const toScreen = (x, z) => {
+      const dx = x - car.x, dz = z - car.z;
+      return [cx + scale * (-c * dx + s * dz), cy - scale * (s * dx + c * dz)];
+    };
+    for (const p of peds.peds) {
+      if (p.state === ST.FREE) continue;
+      const [sx, sy] = toScreen(p.x, p.z);
+      if (sx < -4 || sy < -4 || sx > W + 4 || sy > H + 4) continue;
+      const dead = p.state === ST.DEAD || p.state === ST.FLYING;
+      ctx.fillStyle = dead ? '#6b0d0d' : p.state === ST.PANIC || p.state === ST.COWER ? '#ffd23f' : '#ff5a4f';
+      ctx.fillRect(sx - 2, sy - 2, 4, 4);
+    }
+    ctx.restore();
+    // машина
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.fillStyle = car.wrecked ? '#888' : '#ffffff';
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, -8);
+    ctx.lineTo(6, 6);
+    ctx.lineTo(0, 3);
+    ctx.lineTo(-6, 6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, W / 2 - 1, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+}
