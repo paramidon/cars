@@ -39,6 +39,7 @@ const P = {
   wheelBase: 2.7,
   grip: 9,
   hbGrip: 1.5,
+  slideRecover: 1.4, // за сколько секунд после ручника шины снова цепляются полностью
   steerLow: 0.6, // наибольший угол колёс, рад
   // предельная скорость поворота машины от скорости: [м/с, рад/с], между точками — линейно.
   // Растёт только до ~40 км/ч (на малом ходу машина и так поворачивает медленно), дальше плавно падает.
@@ -371,6 +372,7 @@ export class Car {
     this.throttle = 0;
     this.braking = false;
     this.slip = 0;
+    this.slide = 0;
     this.lastImpact = 0;
     this.reload = 0;
     this.recoilT = 0;
@@ -507,7 +509,11 @@ export class Car {
     else if (vF < -res) vF += res;
     else if (thr === 0 && brk === 0) vF = 0;
 
-    vR *= Math.exp(-(hb ? P.hbGrip : P.grip) * h);
+    // ручник срывает шины; отпустил — сцепление возвращается не сразу, машину ещё несёт боком по инерции
+    if (hb) this.slide = 1;
+    else this.slide = Math.max(0, this.slide - h / P.slideRecover);
+    const grip = P.grip + (P.hbGrip - P.grip) * this.slide * this.slide;
+    vR *= Math.exp(-grip * h);
 
     let target = -(vF / P.wheelBase) * Math.tan(this.steer);
     if (hb && spd > 3) target *= 1.5;

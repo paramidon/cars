@@ -338,8 +338,9 @@ export class Rival {
     inp.fire = false;
     inp.handbrake = false;
     if (!ctx.running || car.wrecked) {
+      // гонка не идёт — тормозим до остановки (тормоз на месте включил бы задний ход)
       inp.throttle = 0;
-      inp.brake = 0;
+      inp.brake = car.vF > 0.5 ? 1 : 0;
       inp.steer = 0;
       return inp;
     }

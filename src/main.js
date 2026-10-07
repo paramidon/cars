@@ -773,7 +773,8 @@ class Game {
           this.maxSpeed = Math.max(this.maxSpeed, car.speed);
         }
       }
-      const running = this.race.started;
+      // заезд кончился (финиш, поражение, авария) — соперники тоже останавливаются
+      const running = this.race.started && this.state === 'play';
       const me = this.standings.find((e) => e.player);
       const ctx = { cars: this.cars, peds: this.peds, running, raceTime: this.race.clock, playerProgress: me ? me.progress : 0, myProgress: 0, shellSpeed: CANNON.speed };
       for (const r of this.rivals) {
