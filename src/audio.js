@@ -1,12 +1,51 @@
+const SETTINGS_KEY = 'cars-and-guts:sound';
+
+/** Положения ползунков 0..1 (громкость = положение², так ползунок ближе к слуху). */
+export const SOUND_DEFAULTS = { master: 0.85, engine: 1, sfx: 1, muted: false };
+
+const gainOf = (v) => v * v;
+
 /**
  * Весь звук синтезируется WebAudio на лету — никаких файлов.
+ * Три шины: мотор и шины, эффекты (всё остальное) и общая громкость.
  */
 export class AudioFX {
-  constructor() {
+  /** forceMute — начать без звука и не трогать сохранённые настройки (`?mute`, автотесты). */
+  constructor({ forceMute = false } = {}) {
     this.ctx = null;
-    this.muted = false;
-    this.volume = 0.7;
+    this.settings = { ...SOUND_DEFAULTS, ...this._load() };
+    this.persist = !forceMute;
+    if (forceMute) this.settings.muted = true;
+    this.engineOn = false; // мотор слышен только в заезде, не в меню и не на паузе
+    this._previewUntil = 0;
+    this._previewAt = 0;
     this._lastScream = 0;
+  }
+
+  _load() {
+    try {
+      const s = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+      if (!s || typeof s !== 'object') return {};
+      const out = {};
+      for (const k of ['master', 'engine', 'sfx']) if (Number.isFinite(s[k])) out[k] = Math.min(1, Math.max(0, s[k]));
+      if (typeof s.muted === 'boolean') out.muted = s.muted;
+      return out;
+    } catch {
+      return {};
+    }
+  }
+
+  _save() {
+    if (!this.persist) return;
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings));
+    } catch {
+      // хранилище недоступно (приватный режим) — настройки живут до перезагрузки
+    }
+  }
+
+  get muted() {
+    return this.settings.muted;
   }
 
   init() {
@@ -18,12 +57,16 @@ export class AudioFX {
     if (!AC) return;
     const ctx = (this.ctx = new AC());
     this.master = ctx.createGain();
-    this.master.gain.value = this.muted ? 0 : this.volume;
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -14;
     comp.ratio.value = 6;
     this.master.connect(comp);
     comp.connect(ctx.destination);
+    this.engineBus = ctx.createGain();
+    this.engineBus.connect(this.master);
+    this.sfx = ctx.createGain();
+    this.sfx.connect(this.master);
+    this._apply(true);
 
     const len = ctx.sampleRate * 2;
     const buf = ctx.createBuffer(1, len, ctx.sampleRate);
@@ -46,7 +89,7 @@ export class AudioFX {
     this.engGain.gain.value = 0;
     this.eng1.connect(this.engFilter);
     this.eng2.connect(g2).connect(this.engFilter);
-    this.engFilter.connect(this.engGain).connect(this.master);
+    this.engFilter.connect(this.engGain).connect(this.engineBus);
     this.eng1.frequency.value = 40;
     this.eng2.frequency.value = 20;
     this.eng1.start();
@@ -62,7 +105,7 @@ export class AudioFX {
     bp.Q.value = 2.5;
     this.skidGain = ctx.createGain();
     this.skidGain.gain.value = 0;
-    this.skidSrc.connect(bp).connect(this.skidGain).connect(this.master);
+    this.skidSrc.connect(bp).connect(this.skidGain).connect(this.engineBus);
     this.skidSrc.start();
   }
 
@@ -70,9 +113,68 @@ export class AudioFX {
     return !!this.ctx && this.ctx.state === 'running';
   }
 
+  _apply(now = false) {
+    if (!this.ctx) return;
+    const s = this.settings;
+    const t = this.ctx.currentTime;
+    const set = (node, v) => {
+      if (now) node.gain.value = v;
+      else node.gain.setTargetAtTime(v, t, 0.04);
+    };
+    set(this.master, s.muted ? 0 : gainOf(s.master));
+    set(this.engineBus, gainOf(s.engine));
+    set(this.sfx, gainOf(s.sfx));
+  }
+
   setMuted(m) {
-    this.muted = m;
-    if (this.master) this.master.gain.setTargetAtTime(m ? 0 : this.volume, this.ctx.currentTime, 0.05);
+    this.settings.muted = !!m;
+    this._apply();
+    this._save();
+  }
+
+  /** Громкость шины: 'master' | 'engine' | 'sfx', значение 0..1. */
+  setVolume(bus, v) {
+    if (!(bus in SOUND_DEFAULTS) || bus === 'muted') return;
+    this.settings[bus] = Math.min(1, Math.max(0, v));
+    this._apply();
+    this._save();
+  }
+
+  /** Мотор и визг шин — только пока идёт заезд. */
+  setEngineOn(on) {
+    if (this.engineOn === on) return;
+    this.engineOn = on;
+    if (on || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    if (t < this._previewUntil) return;
+    this.engGain.gain.cancelScheduledValues(t);
+    this.engGain.gain.setTargetAtTime(0, t, 0.12);
+    this.skidGain.gain.setTargetAtTime(0, t, 0.05);
+  }
+
+  /** Короткий пример звука при движении ползунка. */
+  preview(bus) {
+    if (!this.ready) return;
+    const t = this.ctx.currentTime;
+    if (t - this._previewAt < 0.35) return;
+    this._previewAt = t;
+    if (bus === 'engine') {
+      // перегазовка на месте
+      this._previewUntil = t + 1.1;
+      const rev = (param, lo, hi) => {
+        param.cancelScheduledValues(t);
+        param.setTargetAtTime(hi, t, 0.12);
+        param.setTargetAtTime(lo, t + 0.45, 0.18);
+      };
+      rev(this.eng1.frequency, 46, 96);
+      rev(this.eng2.frequency, 23, 48);
+      rev(this.engFilter.frequency, 450, 1500);
+      const g = this.engGain.gain;
+      g.cancelScheduledValues(t);
+      g.setTargetAtTime(0.12, t, 0.05);
+      g.setTargetAtTime(0, t + 0.8, 0.12);
+    } else if (bus === 'sfx') this.splat(0.8);
+    else this.checkpoint();
   }
 
   suspend() {
@@ -86,6 +188,7 @@ export class AudioFX {
   engine(speed, throttle, running) {
     if (!this.ready) return;
     const t = this.ctx.currentTime;
+    if (t < this._previewUntil) return; // не перебивать пример громкости
     const gears = [0, 9, 17, 25, 33, 60];
     let gi = 0;
     while (gi < gears.length - 2 && speed > gears[gi + 1]) gi++;
@@ -94,12 +197,13 @@ export class AudioFX {
     this.eng1.frequency.setTargetAtTime(f, t, 0.06);
     this.eng2.frequency.setTargetAtTime(f * 0.505, t, 0.06);
     this.engFilter.frequency.setTargetAtTime(380 + rpm * 900 + throttle * 700, t, 0.08);
-    this.engGain.gain.setTargetAtTime(running ? 0.06 + throttle * 0.07 : 0, t, 0.1);
+    this.engGain.gain.setTargetAtTime(running && this.engineOn ? 0.06 + throttle * 0.07 : 0, t, 0.1);
   }
 
   skid(amount) {
     if (!this.ready) return;
-    this.skidGain.gain.setTargetAtTime(Math.min(0.22, amount * 0.22), this.ctx.currentTime, 0.06);
+    const v = this.engineOn ? Math.min(0.22, amount * 0.22) : 0;
+    this.skidGain.gain.setTargetAtTime(v, this.ctx.currentTime, 0.06);
   }
 
   _noise({ dur, gain, type = 'lowpass', freq = 1000, freqEnd = freq, q = 1, delay = 0 }) {
@@ -115,7 +219,7 @@ export class AudioFX {
     const g = ctx.createGain();
     g.gain.setValueAtTime(gain, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    src.connect(f).connect(g).connect(this.master);
+    src.connect(f).connect(g).connect(this.sfx);
     src.start(t, Math.random() * 1.5, dur + 0.05);
   }
 
@@ -130,7 +234,7 @@ export class AudioFX {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.linearRampToValueAtTime(gain, t + attack);
     g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    o.connect(g).connect(this.master);
+    o.connect(g).connect(this.sfx);
     o.start(t);
     o.stop(t + dur + 0.05);
   }
@@ -271,7 +375,7 @@ export class AudioFX {
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.65);
     o.connect(f1).connect(g);
     o.connect(f2).connect(g);
-    g.connect(this.master);
+    g.connect(this.sfx);
     o.start(t);
     lfo.start(t);
     o.stop(t + 0.7);

@@ -892,6 +892,63 @@ h2.gold {
   margin: 14px 0 0;
 }
 
+/* настройки звука */
+.sound-set {
+  display: grid;
+  gap: 14px;
+  margin: 0 0 6px;
+  text-align: left;
+}
+
+.sound-set .slider {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  align-items: center;
+}
+
+.sound-set .slider span {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.sound-set .slider output {
+  font-family: var(--font-display);
+  color: var(--gold);
+  font-size: 15px;
+  min-width: 3.2em;
+  text-align: right;
+}
+
+.sound-set input[type='range'] {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  touch-action: pan-y;
+}
+
+.sound-set .check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.sound-set .check input {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.sound-set.off .slider {
+  opacity: 0.45;
+}
+
 #stats {
   display: grid;
   gap: 6px;
@@ -998,16 +1055,105 @@ body.touch.portrait #rotate-hint {
   }
 }
 
+/* телефон горизонтально: меню паузы, итоги и звук должны влезать без прокрутки */
+@media (max-height: 500px) {
+  .screen h2 {
+    font-size: 26px;
+    margin-bottom: 10px;
+  }
+  #pause .panel,
+  #wreck .panel {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 8px;
+  }
+  #pause .panel > :is(h2, .big, .link),
+  #wreck .panel > :is(h2, #stats) {
+    grid-column: 1 / -1;
+  }
+  #pause .panel button:not(.big):not(.link) {
+    padding: 10px 8px;
+    font-size: 14px;
+  }
+  #pause .panel button.big {
+    font-size: 20px;
+    padding: 12px;
+  }
+  #wreck .panel button {
+    margin-top: 0;
+    padding: 12px 8px;
+    font-size: 18px;
+  }
+  #stats {
+    grid-template-columns: 1fr 1fr;
+    gap: 0 18px;
+    margin-bottom: 12px;
+  }
+  #stats div {
+    padding: 3px 2px;
+  }
+  #stats span {
+    font-size: 13px;
+  }
+  #stats b {
+    font-size: 16px;
+  }
+  #stats .st-table {
+    grid-column: 1 / -1;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 18px;
+    margin-top: 4px;
+  }
+  #stats .st-row b {
+    font-size: 13px;
+  }
+  .sound-set {
+    gap: 4px;
+  }
+  .sound-set .slider {
+    grid-template-columns: minmax(7em, 12em) 1fr 3.2em;
+  }
+  .sound-set .slider span {
+    font-size: 13px;
+  }
+  .sound-set input[type='range'] {
+    grid-column: auto;
+    grid-row: 1;
+    grid-column-start: 2;
+  }
+  .sound-set .check {
+    margin-top: 4px;
+  }
+  #sound .fine {
+    margin-top: 8px;
+  }
+  #sound .panel button.big {
+    font-size: 20px;
+    padding: 12px;
+  }
+}
+
 @media (max-height: 460px) {
   #messages {
     top: 27%; /* ниже строки гоночной панели */
   }
+  .screen {
+    padding: 8px;
+  }
   .panel {
-    max-height: calc(100vh - 32px);
+    max-height: calc(100dvh - 16px);
     overflow-y: auto;
+    padding-top: 14px;
+    padding-bottom: 12px;
   }
   h1 {
     font-size: 34px;
+  }
+  .screen h2 {
+    margin-bottom: 6px;
+  }
+  #stats div {
+    padding: 2px;
   }
 }
 

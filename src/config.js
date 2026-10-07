@@ -29,3 +29,5 @@ export const CITY = {
 };
 
 export const DEBUG = params.has('debug');
+/** `?mute` — начать без звука, не меняя сохранённых настроек (удобно для автотестов). */
+export const MUTE = params.has('mute');
