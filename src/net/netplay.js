@@ -1,6 +1,7 @@
 import { Car } from '../car.js';
 import { CarTag } from '../tag.js';
-import { GRID } from '../racers.js';
+import { GRID, MAX_CARS } from '../racers.js';
+import { spawnPoints, zoneCenter } from '../zone.js';
 import { BotGunner } from '../gunner.js';
 import { dampAngle } from '../utils.js';
 
@@ -58,6 +59,23 @@ export function crewsOf(room) {
         color: teams ? TEAMS[o.team]?.color || NET_COLORS[0] : NET_COLORS[ps.indexOf(o) % NET_COLORS.length],
       };
     });
+}
+
+/** Сколько ботов будет в заезде: по настройке, но всего машин — не больше MAX_CARS. */
+export function botCount(room) {
+  return Math.max(0, Math.min(room.settings?.bots ?? 4, MAX_CARS - crewsOf(room).length));
+}
+
+/**
+ * Хост начинает заезд: места машинам (в гонке — клетки решётки, в битве — точки вразброс) и центр зоны.
+ * Возвращает сообщение start для сервера.
+ */
+export function makeStart(room, city) {
+  const ids = [...crewsOf(room).map((c) => c.id), ...Array.from({ length: botCount(room) }, (_, i) => `r${i}`)];
+  if (room.settings?.game !== 'royale') return { t: 'start', slots: makeSlots(ids) };
+  const pts = spawnPoints(city, ids.length);
+  const r2p = (p) => ({ x: Math.round(p.x * 10) / 10, z: Math.round(p.z * 10) / 10, yaw: Math.round(p.yaw * 1000) / 1000 });
+  return { t: 'start', slots: Object.fromEntries(ids.map((id, i) => [id, r2p(pts[i])])), zone: zoneCenter(city) };
 }
 
 export class Netplay {
@@ -119,7 +137,7 @@ export class Netplay {
     this.myTeam = this.myCrew?.team ?? null;
     this.myName = this.myCrew?.names || 'Я';
 
-    const rivals = g.allRivals.slice(0, room.settings?.bots ?? 4);
+    const rivals = g.allRivals.slice(0, botCount(room));
     rivals.forEach((r, i) => {
       r.car.netId = `r${i}`;
       r.car.remote = !this.isHost;
@@ -127,7 +145,7 @@ export class Netplay {
       r.car.crew = { driver: 'bot', gunner: crewMode ? 'bot' : null };
       this.byId.set(r.car.netId, r.car);
     });
-    g.applyLineup({ car: myCar, seat: mySeat, mode: crewMode ? 'crew' : 'classic', rivals, others: cars.filter((c) => c !== myCar) });
+    g.applyLineup({ car: myCar, seat: mySeat, mode: crewMode ? 'crew' : 'classic', game: room.settings?.game || 'race', rivals, others: cars.filter((c) => c !== myCar) });
 
     this.off = [
       client.on('s', (m) => this._snapshot(m)),
@@ -247,8 +265,8 @@ export class Netplay {
       }
       car.kills = kills;
       if (car === g.car) {
-        // я в пушке чужой машины: таймер и круги — как у водителя
-        g.race.restore({ lap, next, passed, timeLeft });
+        // я в пушке чужой машины: таймер и круги — как у водителя (но не раньше своего отсчёта)
+        if (g.race.started) g.race.restore({ lap, next, passed, timeLeft });
       } else {
         const t = car.ai ? car.ai.tr : car.netRace;
         t.lap = lap;
@@ -307,11 +325,11 @@ export class Netplay {
    * Вернулся в идущий заезд (после обрыва и перезагрузки страницы): без отсчёта, свои машины — с последнего
    * снимка, который запомнил сервер (место, корпус, круг, время), чужие — как обычные снимки.
    */
-  resume({ rows, stats, result }) {
+  resume({ rows, stats, result, elapsed }) {
     const g = this.game;
     g.countdown = 0;
     g.race.start();
-    g.race.clock = Math.max(g.race.clock, 30); // охотники уже вышли на охоту
+    g.race.clock = Math.max(0, elapsed ?? 30); // часы заезда — по серверу (по ним и зона сжимается)
     if (stats) {
       g.score = stats[0];
       g.kills = stats[1];
@@ -381,7 +399,7 @@ export class Netplay {
   /** Хост: новый заезд в той же комнате. */
   restart() {
     if (!this.isHost) return;
-    this.client.send({ t: 'start', slots: makeSlots([...this.crews.map((c) => c.id), ...this.game.rivals.map((r) => r.car.netId)]) });
+    this.client.send(makeStart(this.room, this.game.city));
   }
 
   /** Хост: вернуть комнату в лобби. */

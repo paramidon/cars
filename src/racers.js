@@ -1,6 +1,7 @@
 import { Car, HIT_Z, HIT_R, CAR_INERTIA, sameTeam } from './car.js';
 import { ST } from './pedestrians.js';
 import { CarTag } from './tag.js';
+import { ZONE, roadPointNear } from './zone.js';
 import { clamp, lerp, rand } from './utils.js';
 
 /**
@@ -16,7 +17,15 @@ export const RIVALS = [
   { name: 'РАКЕТА', color: '#8e2fd0', number: 21, aggr: 0.3, gore: 0.15, speed: 0.87, corner: 11.5, lane: -2.2 },
   { name: 'МЯСНИК', color: '#1f9e45', number: 13, aggr: 0.25, gore: 1, speed: 0.88, corner: 11, lane: 0 },
   { name: 'БУЛЬДОЗЕР', color: '#e8b10c', number: 66, aggr: 0.8, gore: 0.2, speed: 0.85, corner: 10.5, lane: 0 },
+  { name: 'ШУСТРИК', color: '#8fd11f', number: 3, aggr: 0.2, gore: 0.1, speed: 0.92, corner: 12.5, lane: 2.2 },
+  { name: 'ГРОБОВЩИК', color: '#e8e8e8', number: 99, aggr: 0.7, gore: 0.3, speed: 0.86, corner: 10.5, lane: -2.2 },
+  { name: 'КОСТОЛОМ', color: '#7a4a22', number: 44, aggr: 0.45, gore: 0.7, speed: 0.87, corner: 11, lane: 0 },
 ];
+/** Больше машин в заезде не бывает (мест на стартовой решётке — столько же). */
+export const MAX_CARS = 8;
+
+/** В королевской битве гонщиков нет: они становятся «выживальщиками» — держатся середины зоны и огрызаются. */
+const SURVIVOR_AGGR = 0.5;
 
 /** Роль для подписей и выбора жертвы — по преобладающей черте характера. */
 export function roleOf(def) {
@@ -100,6 +109,8 @@ const TOP_SPEED = 35; // ≈ максималка игрока, м/с
 export class Rival {
   constructor(scene, city, fx, audio, debris, quality, race, def, index, car = null) {
     this.def = def;
+    this.baseDef = def;
+    this.zone = null; // королевская битва: зона (вместо трассы катаемся внутри неё)
     this.index = index;
     this.race = race;
     this.city = city;
@@ -124,6 +135,24 @@ export class Rival {
     return roleOf(this.def);
   }
 
+  /** Королевская битва (zone) или гонка (null): гонщик в битве — выживальщик, задиристее. */
+  setZone(zone) {
+    this.zone = zone;
+    const base = this.baseDef;
+    this.def = zone && roleOf(base) === 'racer' ? { ...base, aggr: Math.max(base.aggr, SURVIVOR_AGGR) } : base;
+    this.wp = null;
+  }
+
+  /** Королевская битва: кататься по улицам внутри зоны, ближе к её середине; новая точка — когда доехал. */
+  _roam() {
+    const car = this.car, z = this.zone;
+    const wp = this.wp;
+    if (!wp || Math.hypot(wp.x - car.x, wp.z - car.z) < 10 || Math.hypot(wp.x - z.cx, wp.z - z.cz) > z.radius * 0.75) {
+      this.wp = roadPointNear(this.city, z.cx, z.cz, Math.max(12, z.radius * 0.6));
+    }
+    return this._clearLine(this.wp.x, this.wp.z) ? this.wp : this._navPoint(this.wp);
+  }
+
   get name() {
     return this.def.name;
   }
@@ -132,8 +161,9 @@ export class Rival {
     return this.def.color;
   }
 
+  /** Место старта: клетка решётки или готовая точка { x, z, yaw } (королевская битва). */
   startPoint() {
-    return gridPoint(this.city, this.slot);
+    return Array.isArray(this.slot) ? gridPoint(this.city, this.slot) : this.slot;
   }
 
   /** slot — место на решётке (GRID). */
@@ -192,6 +222,8 @@ export class Rival {
       const { ang, d } = this._bearing(c.x, c.z);
       if (d > (c === current ? range * 1.3 : range)) return Infinity;
       if (c !== current && Math.abs(ang) > cone) return Infinity;
+      // в битве каждый сам за себя — людей не выделяем
+      if (this.zone) return d;
       return d * (c.human ? PREY_WEIGHT.player : PREY_WEIGHT[c.role] || 1);
     };
     let best = null, bs = Infinity;
@@ -211,7 +243,7 @@ export class Rival {
   _huntDecision(dt, ctx) {
     const car = this.car, a = this.def.aggr;
     this.calmT -= dt;
-    if (a <= 0 || ctx.raceTime < HUNT_DELAY || this.tr.finished) return this._dropHunt(0);
+    if (a <= 0 || ctx.raceTime < (this.zone ? ZONE.hunt : HUNT_DELAY) || this.tr.finished) return this._dropHunt(0);
     this.retarget -= dt;
     if (this.mode === 'hunt') {
       const T = this.target;
@@ -221,6 +253,8 @@ export class Rival {
       const mutual = T.ai && T.ai.target === car;
       this.patience -= dt * (mutual ? HUNT.mutual : 1);
       if (T.wrecked || this.patience <= 0) return this._dropHunt(at(HUNT.cooldown, a));
+      // жертва удрала за зону — за ней не лезем
+      if (this.zone && this.zone.outside(T.x, T.z) && !this.zone.outside(car.x, car.z)) return this._dropHunt(3);
       if (this.retarget <= 0) {
         this.retarget = 1.5;
         const next = this._pickTarget(ctx.cars, T);
@@ -258,6 +292,7 @@ export class Rival {
     let best = null, bs = Infinity;
     for (const p of peds.peds) {
       if (p.state === ST.FREE || p.state === ST.DEAD || p.state === ST.FLYING) continue;
+      if (this.zone && this.zone.outside(p.x, p.z)) continue; // за пешеходом в зону смерти не едем
       const { ang, d } = this._bearing(p.x, p.z);
       if (d > range || Math.abs(ang) > cone) continue;
       const lying = p.state === ST.DOWN || p.state === ST.GETUP;
@@ -408,6 +443,12 @@ export class Rival {
       tz = p.z;
       maxV = TOP_SPEED * def.speed;
       if (!this._clearLine(tx, tz)) this.preyT += dt * 3;
+    } else if (this.zone) {
+      // королевская битва: трассы нет — катаемся внутри зоны
+      const p = this._roam();
+      tx = p.x;
+      tz = p.z;
+      maxV = TOP_SPEED * def.speed * 0.8;
     } else {
       // гонка по трассе; гонщики «на резинке»: отставший прибавляет, убежавший сбрасывает
       if (this.role === 'racer') {
@@ -427,7 +468,7 @@ export class Rival {
 
     // скорость: перед поворотами трассы тормозим заранее; в крутом развороте — медленно
     let target = maxV;
-    if (this.mode === 'race') {
+    if (this.mode === 'race' && !this.zone) {
       for (const cn of race.cornersAhead(pr.s, 2)) {
         if (cn.angle < 0.3) continue;
         const vc = def.corner * (1.5 - 0.5 * Math.min(1, cn.angle / (Math.PI / 2)));
@@ -490,7 +531,8 @@ export class Rival {
 
   respawn() {
     const car = this.car;
-    const sp = this.race.respawnPoint(this.tr.lastCp, this.startPoint());
+    const z = this.zone;
+    const sp = z ? roadPointNear(this.city, z.cx, z.cz, Math.max(12, z.radius * 0.6)) : this.race.respawnPoint(this.tr.lastCp, this.startPoint());
     car.x = sp.x;
     car.z = sp.z;
     car.yaw = sp.yaw;

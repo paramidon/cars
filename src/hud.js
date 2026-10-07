@@ -96,10 +96,13 @@ export class HUD {
   /** Таймер, круг, чекпоинт и стрелка на следующие ворота. */
   _race(game) {
     const { race, car } = game;
-    const t = race.timeLeft;
-    const txt = t < 10 ? t.toFixed(1) : `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+    const zone = game.royale ? game.zone : null;
+    const t = zone ? zone.timeLeft : race.timeLeft;
+    const clock = `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+    const out = zone && zone.outside(car.x, car.z);
+    const txt = zone ? (t > 0 ? `ЗОНА ${clock}` : 'ЗОНА СЖАТА') : t < 10 ? t.toFixed(1) : clock;
     this._set('rt', this.el.raceTime, txt);
-    const low = t < 10 && !race.done;
+    const low = zone ? out : t < 10 && !race.done;
     if (this.cache.low !== low) {
       this.cache.low = low;
       this.el.race.classList.toggle('low', low);
@@ -117,6 +120,17 @@ export class HUD {
       }
     }
     if (this.frame % 10 === 0) this._standings(game);
+    if (zone) {
+      // битва: стрелка — на середину зоны, расстояние — до её края
+      this._set('rc', this.el.raceCp, out ? 'ВНЕ ЗОНЫ!' : 'В ЗОНЕ');
+      const dx = zone.cx - car.x, dz = zone.cz - car.z;
+      const s = Math.sin(car.yaw), c = Math.cos(car.yaw);
+      const ang = Math.atan2(dx * -c + dz * s, dx * s + dz * c);
+      this.el.raceArrow.style.transform = `rotate(${ang.toFixed(3)}rad)`;
+      const edge = Math.abs(Math.hypot(dx, dz) - zone.radius);
+      this._set('rd', this.el.raceDist, out ? `${Math.round(edge)} м до зоны` : `${Math.round(edge)} м до края`);
+      return;
+    }
     this._set('rc', this.el.raceCp, race.target.finish ? 'К ФИНИШУ' : `ЧП ${race.next + 1}/${race.totalCps - 1}`);
     const cp = race.target;
     const dx = cp.x - car.x, dz = cp.z - car.z;
@@ -254,7 +268,7 @@ export class HUD {
     const e = cx + scale * (-c * ox + s * oz);
     const f = cy - scale * (s * ox + c * oz);
     ctx.setTransform(a, b, cc, d, e, f);
-    ctx.drawImage(mm.canvas, 0, 0);
+    ctx.drawImage(game.royale && mm.plain ? mm.plain : mm.canvas, 0, 0);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     const toScreen = (x, z) => {
       const dx = x - car.x, dz = z - car.z;
@@ -269,12 +283,22 @@ export class HUD {
       ctx.fillStyle = dead ? '#6b0d0d' : down ? '#ff9f1a' : p.state === ST.PANIC || p.state === ST.COWER ? '#ffd23f' : '#ff5a4f';
       ctx.fillRect(sx - 2, sy - 2, 4, 4);
     }
+    // зона королевской битвы — красный круг
+    if (game.royale && game.zone.active) {
+      const z = game.zone;
+      const [zx, zy] = toScreen(z.cx, z.cz);
+      ctx.strokeStyle = 'rgba(255, 70, 40, 0.95)';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(zx, zy, Math.max(1, z.radius * scale), 0, Math.PI * 2);
+      ctx.stroke();
+    }
     // следующий и последующий чекпоинты; если далеко — метка на краю круга
     const race = game.race;
     const R = W / 2 - 9;
     const marks = [[race.cps[(race.next + 1) % race.cps.length], 0.45], [race.target, 1]];
     for (const [cp, alpha] of marks) {
-      if (!cp || race.done) continue;
+      if (!cp || race.done || game.royale) continue;
       let [sx, sy] = toScreen(cp.x, cp.z);
       const ox = sx - cx, oy = sy - cy;
       const d = Math.hypot(ox, oy);

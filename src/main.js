@@ -8,6 +8,7 @@ import { Debris } from './effects/debris.js';
 import { AudioFX } from './audio.js';
 import { Car, sameTeam } from './car.js';
 import { BotGunner } from './gunner.js';
+import { Zone, spawnPoints, zoneCenter, roadPointNear } from './zone.js';
 import { wrapAngle } from './utils.js';
 import { Pedestrians } from './pedestrians.js';
 import { Artillery, CANNON } from './cannon.js';
@@ -15,7 +16,7 @@ import { Input } from './input.js';
 import { ChaseCamera } from './camera.js';
 import { HUD } from './hud.js';
 import { Race, RACE } from './race.js';
-import { Rival, RIVALS, GRID, gridPoint, collideCars, carHitDamage } from './racers.js';
+import { Rival, RIVALS, GRID, MAX_CARS, gridPoint, collideCars, carHitDamage } from './racers.js';
 import { CarTag } from './tag.js';
 import { Netplay } from './net/netplay.js';
 import { Lobby } from './net/lobby.js';
@@ -107,6 +108,8 @@ class Game {
     this.aimYaw = 0; // куда смотрит моя башня (мировой угол), когда я стрелок
     this.autoDriver = null; // бот за рулём моей машины, когда я в пушке
     this.solo = this._loadSolo();
+    this.zone = new Zone(scene); // королевская битва: смертельная зона
+    this.royale = false;
     this.net = null; // сетевой заезд (Netplay) или null
     this.netPool = new Map(); // машины людей по сети — живут между заездами
     this.remotes = []; // { car, tag } людей в текущем сетевом заезде
@@ -318,7 +321,7 @@ class Game {
 
   // ------------------------------------------------------------ кто где сидит
   _loadSolo() {
-    const def = { mode: 'classic', seat: 'driver', bots: 4 };
+    const def = { game: 'race', mode: 'classic', seat: 'driver', bots: 4 };
     try {
       return { ...def, ...JSON.parse(localStorage.getItem(SOLO_KEY)) };
     } catch {
@@ -340,11 +343,12 @@ class Game {
       for (const b of seg.querySelectorAll('button')) b.classList.toggle('on', b.dataset.v === String(this.solo[seg.dataset.key]));
     }
     $('solo-setup').classList.toggle('crew', this.solo.mode === 'crew');
+    $('solo-setup').classList.toggle('royale', this.solo.game === 'royale');
   }
 
   /** Расстановка для игры одному: моя машина и боты по настройкам меню. */
   _soloLineup() {
-    const { mode, bots } = this.solo;
+    const { mode, bots, game } = this.solo;
     const crew = mode === 'crew';
     const seat = crew ? this.solo.seat : 'driver';
     const car = this.mainCar;
@@ -353,22 +357,27 @@ class Game {
     car.remote = false;
     car.netId = undefined;
     car.name = 'ТЫ';
-    const rivals = this.allRivals.slice(0, Math.max(1, bots));
+    const rivals = this.allRivals.slice(0, Math.max(1, Math.min(MAX_CARS - 1, bots)));
     for (const r of rivals) {
       r.car.crew = { driver: 'bot', gunner: crew ? 'bot' : null };
       r.car.team = null;
       r.car.remote = false;
     }
-    return { car, seat, mode, rivals, others: [] };
+    return { car, seat, mode, game, rivals, others: [] };
   }
 
   /**
    * Состав заезда: car — машина, где сижу я (seat — за рулём или в пушке); rivals — боты; others — машины
    * людей по сети. У каждой машины car.crew = { driver, gunner }: 'me', 'bot', id игрока или null (нет пушки).
    */
-  applyLineup({ car, seat, mode, rivals, others = [] }) {
+  applyLineup({ car, seat, mode, game = 'race', rivals, others = [] }) {
     this.mode = mode;
     this.seat = seat;
+    // королевская битва: трассы и таймера нет, есть сжимающаяся зона
+    this.royale = game === 'royale';
+    this.race.enabled = !this.royale;
+    document.body.classList.toggle('royale', this.royale);
+    for (const r of rivals) r.setZone(this.royale ? this.zone : null);
     for (const r of this.allRivals) {
       const on = rivals.includes(r);
       r.car.root.visible = on;
@@ -393,6 +402,7 @@ class Game {
     this.autoDriver = seat === 'gunner' && !car.remote && car.crew?.driver === 'bot'
       ? new Rival(this.scene, this.city, this.fx, this.audio, this.debris, QUALITY, this.race, AUTOPILOT, 0, car)
       : null;
+    this.autoDriver?.setZone(this.royale ? this.zone : null);
     for (const c of this.cars) {
       c.botGunner = mode === 'crew' && c.crew?.gunner === 'bot' && !c.remote ? new BotGunner(c, this.city.world, c.ai ? c.ai.def.gore : 0.4) : null;
     }
@@ -497,7 +507,7 @@ class Game {
       return;
     }
     this.winner = car || { name };
-    this.winReason = LOSE_TEXT[kind](name);
+    this.winReason = this.royale && kind === 'annihilation' ? `${name} — последний выживший` : LOSE_TEXT[kind](name);
     if (this.state !== 'play') return;
     this.hud.popup(this.winReason.toUpperCase(), 'big warn');
     this.audio.timeout();
@@ -539,8 +549,11 @@ class Game {
     this.restart();
   }
 
-  /** slots — места на решётке по сети { netId: номер в GRID }; без них — случайно. */
-  restart(slots = null) {
+  /**
+   * slots — места по сети { netId: номер в GRID } (в королевской битве — точки { x, z, yaw }); без них — случайно.
+   * zoneAt — центр зоны { cx, cz } (королевская битва по сети: его выбирает хост).
+   */
+  restart(slots = null, zoneAt = null) {
     this.audio.init();
     this.fx.clear();
     this.artillery.clear();
@@ -549,23 +562,31 @@ class Game {
     this.debris.clear();
     this.breakables.reset();
     if (!this.net) this.applyLineup(this._soloLineup());
-    // места на старте — каждый заезд случайно
-    let slotOf;
-    if (slots) slotOf = (c) => GRID[slots[c.netId] ?? 0];
+    // места на старте — каждый заезд случайно: в гонке — на решётке, в битве — вразброс по городу
+    let pointOf;
+    if (this.royale) {
+      const pts = slots ? null : spawnPoints(this.city, this.cars.length);
+      pointOf = (c) => (slots ? slots[c.netId] : pts[this.cars.indexOf(c)]) || this.city.spawn;
+    } else if (slots) pointOf = (c) => gridPoint(this.city, GRID[slots[c.netId] ?? 0]);
     else {
       const free = GRID.slice(0, this.cars.length);
       for (let i = free.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [free[i], free[j]] = [free[j], free[i]];
       }
-      slotOf = (c) => free[this.cars.indexOf(c)];
+      pointOf = (c) => gridPoint(this.city, free[this.cars.indexOf(c)]);
     }
-    this.startPoint = gridPoint(this.city, slotOf(this.car));
+    this.startPoint = pointOf(this.car);
     this.race.reset();
     for (const c of this.cars) {
-      if (c.ai) c.ai.reset(slotOf(c));
-      else c.reset(gridPoint(this.city, slotOf(c)));
+      if (c.ai) c.ai.reset(pointOf(c));
+      else c.reset(pointOf(c));
     }
+    if (this.royale) {
+      const zc = zoneAt || zoneCenter(this.city);
+      this.zone.start(zc.cx, zc.cz, this.city);
+    } else this.zone.stop();
+    this.zoneHurtT = 0;
     this.autoDriver?._clear();
     this.aimYaw = this.car.yaw;
     this.peds.reset(this.cars);
@@ -585,10 +606,10 @@ class Game {
   }
 
   /** Начать сетевой заезд (из лобби, по сообщению сервера start); resume — вернулся посреди заезда. */
-  startNet(client, room, slots, resume = null) {
+  startNet(client, room, slots, resume = null, zoneAt = null) {
     if (this.net) this.net.dispose();
     this.net = new Netplay(this, client, room);
-    this.restart(slots);
+    this.restart(slots, zoneAt);
     if (resume) this.net.resume(resume);
   }
 
@@ -629,14 +650,40 @@ class Game {
   _unstuck() {
     const car = this.car;
     if (car.wrecked || car.remote) return; // за рулём не я — переставлять машину не мне
-    // в заезде — к последнему пройденному чекпоинту, лицом по маршруту
-    const sp = this.race.respawnPoint(undefined, this.startPoint);
+    // в заезде — к последнему пройденному чекпоинту, лицом по маршруту; в битве — на дорогу внутри зоны
+    const z = this.zone;
+    const sp = this.royale ? roadPointNear(this.city, z.cx, z.cz, Math.max(12, z.radius * 0.6)) : this.race.respawnPoint(undefined, this.startPoint);
     car.x = sp.x;
     car.z = sp.z;
     car.yaw = sp.yaw;
     car.vx = car.vz = car.angVel = 0;
     this.cam.snap(car);
-    this.hud.popup('К ЧЕКПОИНТУ', 'info');
+    this.hud.popup(this.royale ? 'В ЗОНУ' : 'К ЧЕКПОИНТУ', 'info');
+  }
+
+  /** Королевская битва: сжать зону; снаружи свои машины (их считаю я) теряют корпус, разбитые — без виноватых. */
+  _zoneTick(dt) {
+    const z = this.zone;
+    z.update(this.race.clock);
+    if (!this.race.started) return;
+    const dmg = z.dps * dt;
+    this.zoneHurtT -= dt;
+    for (const c of this.cars) {
+      if (c.remote || c.wrecked || !z.outside(c.x, c.z)) continue;
+      c.health = Math.max(0, c.health - dmg);
+      if (c === this.car && this.zoneHurtT <= 0) {
+        this.zoneHurtT = 0.7;
+        this.hud.damageFlash(0.3);
+        if (!this.zoneWarnT || this.time - this.zoneWarnT > 3) {
+          this.zoneWarnT = this.time;
+          this.hud.popup('ВНЕ ЗОНЫ! КОРПУС ТАЕТ', 'warn');
+        }
+      }
+      if (c.health <= 0) {
+        c.lastAttacker = null;
+        c.explode();
+      }
+    }
   }
 
   _syncTouchUI() {
@@ -693,7 +740,7 @@ class Game {
       timeout: 'ВРЕМЯ ВЫШЛО',
       lost: 'ПОРАЖЕНИЕ',
       finish: 'ПОБЕДА! ПЕРВЫЙ НА ФИНИШЕ',
-      annihilation: 'ПОБЕДА! ВСЕ ТАЧКИ РАЗБИТЫ',
+      annihilation: this.royale ? 'ПОБЕДА! ПОСЛЕДНИЙ ВЫЖИВШИЙ' : 'ПОБЕДА! ВСЕ ТАЧКИ РАЗБИТЫ',
       carnage: `ПОБЕДА! ${RACE.goreWin} ПЕШЕХОДОВ`,
     };
     const title = $('result-title');
@@ -702,7 +749,7 @@ class Game {
     const why = { lost: this.winReason }[this.overKind] || '';
     const laps = this.overKind === 'finish' ? `${RACE.laps}/${RACE.laps}` : `${race.lap - 1}/${RACE.laps}`;
     const best = race.lapTimes.length ? fmt(Math.min(...race.lapTimes)) : '—';
-    const rows = [
+    let rows = [
       ['Итог', won ? 'победа' : why || 'проигрыш'],
       ['Соперников разбито', `${this._enemies().filter((c) => c.wrecked).length} из ${this._enemies().length}`],
       ['Очки', this.score.toLocaleString('ru-RU')],
@@ -715,9 +762,15 @@ class Game {
       ['Макс. скорость', `${Math.round(this.maxSpeed * 3.6)} км/ч`],
     ];
     if (this.overKind === 'finish') rows.splice(3, 0, ['Рекорд трассы', this.newRecord ? 'НОВЫЙ!' : fmt(this.best.time)]);
+    if (this.royale) {
+      // в битве нет кругов и таймера — вместо них место и сколько продержался
+      const place = 1 + this._enemies().filter((c) => !c.wrecked).length;
+      rows = rows.filter(([k]) => !['Кругов пройдено', 'Время заезда', 'Лучший круг'].includes(k));
+      rows.splice(1, 0, ['Место', `${won ? 1 : place} из ${this.cars.length}`], ['Продержался', fmt(race.clock)]);
+    }
     const table = this.standings
       .map((e, i) => {
-        const st = e.finished ? `финиш ${fmt(e.time)}` : e.car.wrecked ? 'разбит' : `круг ${Math.min(e.lap, RACE.laps)}`;
+        const st = this.royale ? (e.car.wrecked ? 'разбит' : 'жив') : e.finished ? `финиш ${fmt(e.time)}` : e.car.wrecked ? 'разбит' : `круг ${Math.min(e.lap, RACE.laps)}`;
         return `<div class="st-row${e.player ? ' me' : ''}"><i style="background:${e.color}"></i><span>${i + 1}. ${e.name}</span><small>${e.car.kills} пеш.</small><b>${st}</b></div>`;
       })
       .join('');
@@ -875,7 +928,9 @@ class Game {
       return { car: c, name: c.name, color: c.opts.color, rival: c.ai, finished: t.finished, place: t.place, passed: t.passed, next: t.next, lap: t.lap, time: t.time };
     });
     for (const e of list) {
-      if (e.finished) e.progress = 1e6 - e.place;
+      // битва: живые выше (больше сбил — выше), разбитые — кто дольше продержался
+      if (this.royale) e.progress = e.car.wrecked ? -1e6 - e.car.wreckTime : e.car.kills;
+      else if (e.finished) e.progress = 1e6 - e.place;
       else if (e.car.wrecked) e.progress = -1e6 + e.passed;
       else e.progress = e.passed + race.segmentProgress(e.next, e.car.x, e.car.z);
     }
@@ -1055,6 +1110,7 @@ class Game {
       this.debris.update(dt);
       this.fx.update(dt);
       this.race.update(dt, car);
+      if (this.royale) this._zoneTick(dt);
       for (const r of this.rivals) {
         if (!r.car.remote) this._rivalEvent(r, this.race.track(r.tr, r.car));
         r.updateTag(car);
@@ -1075,6 +1131,7 @@ class Game {
       if (this.state === 'over' && !this.wreckShown && this.time - this.wreckAt > 2.8) this._showWreck();
     } else if (this.state === 'menu') {
       this.time += dt;
+      if (this.zone.active) this.zone.stop();
       for (const r of this.rivals) r.think(dt, { cars: this.cars, running: false });
       this._physics(dt, NO_INPUT);
       // в меню машина стоит — мотор и визг шин молчат

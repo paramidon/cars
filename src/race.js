@@ -282,6 +282,11 @@ export class Race {
 
   _drawMinimapRoute() {
     const mm = this.city.minimap;
+    // без маршрута — для королевской битвы
+    mm.plain = document.createElement('canvas');
+    mm.plain.width = mm.canvas.width;
+    mm.plain.height = mm.canvas.height;
+    mm.plain.getContext('2d').drawImage(mm.canvas, 0, 0);
     const g = mm.canvas.getContext('2d');
     const P = (v) => (v + mm.ext) * mm.k;
     g.save();
@@ -320,9 +325,18 @@ export class Race {
     this.started = true;
   }
 
+  /** Выключить трассу (королевская битва): ворота спрятаны, таймера нет, часы идут. */
+  set enabled(v) {
+    this._enabled = v;
+    this._style();
+  }
+
+  get enabled() {
+    return this._enabled !== false;
+  }
+
   /** Продолжить заезд с чужих слов (вернулся по сети или сижу в пушке чужой машины): круг, ворота, время. */
   restore({ lap, next, passed, timeLeft = 0 }) {
-    this.started = true;
     if (this.lap === lap && this.next === next) {
       if (timeLeft > 0) this.timeLeft = timeLeft;
       return;
@@ -344,7 +358,7 @@ export class Race {
   }
 
   addTime(sec) {
-    if (!this.started || this.done || sec <= 0) return 0;
+    if (!this.enabled || !this.started || this.done || sec <= 0) return 0;
     this.timeLeft += sec;
     return sec;
   }
@@ -364,7 +378,7 @@ export class Race {
     this.cps.forEach((cp, i) => {
       const active = !this.done && i === this.next;
       const upcoming = !this.done && i === (this.next + 1) % n;
-      const visible = active || upcoming || cp.finish || cp.flash > 0;
+      const visible = this.enabled && (active || upcoming || cp.finish || cp.flash > 0);
       cp.group.visible = visible;
       const k = active ? 1 : cp.finish ? 0.45 : 0.3;
       cp.postMat.opacity = k;
@@ -374,7 +388,7 @@ export class Race {
       cp.line.material.opacity = active ? 0.95 : 0.4;
     });
     const t = this.cps[this.next];
-    this.beam.visible = !this.done;
+    this.beam.visible = !this.done && this.enabled;
     this.beam.position.x = t.x;
     this.beam.position.z = t.z;
     this.beam.material.color.set(t.finish ? 0xffffff : 0xffd23f);
@@ -403,7 +417,7 @@ export class Race {
     this.beam.material.opacity = 0.55 + Math.sin(time * 4) * 0.2;
 
     if (this.started) this.clock += dt;
-    if (!this.started || this.done) return;
+    if (!this.started || this.done || !this.enabled) return;
     this.elapsed += dt;
     this.lapTime += dt;
     this.timeLeft = Math.max(0, this.timeLeft - dt);

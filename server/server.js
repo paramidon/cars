@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
 const PORT = Number(process.argv[2] || process.env.PORT || 8080);
-const MAX_PLAYERS = 4; // людей в комнате; соперники-боты (0–4, по настройке) добавляются к ним
+const MAX_PLAYERS = 4; // людей в комнате; соперники-боты (0–7, по настройке) добавляются к ним — всего машин не больше 8
 const AWAY_MS = 90000; // столько ждём выпавшего из комнаты игрока, прежде чем выкинуть
 const PKG = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 const DIST_BUILD = (() => {
@@ -72,11 +72,13 @@ const clients = new Map();
 // rows — последний снимок каждой машины, stats — очки игроков: чтобы вернувшийся продолжил с того же места
 const rooms = new Map();
 const MODES = ['classic', 'crew'];
+const GAMES = ['race', 'royale'];
 
 /** Настройки комнаты от клиента — в допустимые рамки. */
-function cleanSettings(s = {}, old = { bots: 4, mode: 'classic', teams: false }) {
+function cleanSettings(s = {}, old = { game: 'race', bots: 4, mode: 'classic', teams: false }) {
   return {
-    bots: Number.isInteger(s.bots) ? Math.max(0, Math.min(4, s.bots)) : old.bots,
+    game: GAMES.includes(s.game) ? s.game : old.game || 'race',
+    bots: Number.isInteger(s.bots) ? Math.max(0, Math.min(7, s.bots)) : old.bots,
     mode: MODES.includes(s.mode) ? s.mode : old.mode,
     teams: typeof s.teams === 'boolean' ? s.teams : old.teams,
   };
@@ -293,9 +295,11 @@ function onMessage(c, msg) {
       room.result = null;
       room.finished = [];
       room.slots = msg.slots;
+      room.zone = msg.zone || null;
+      room.startedAt = Date.now();
       room.rows = new Map();
       room.stats = new Map();
-      toRoom(room, { t: 'start', slots: msg.slots, room: roomInfo(room) });
+      toRoom(room, { t: 'start', slots: msg.slots, zone: room.zone, room: roomInfo(room) });
       pushRooms();
       log(`«${room.name}»: старт (${room.players.size} чел.)`);
       return;
@@ -346,6 +350,8 @@ wss.on('connection', (ws) => {
         const rejoin = room && {
           room: roomInfo(room),
           slots: room.slots,
+          zone: room.zone,
+          elapsed: room.startedAt ? (Date.now() - room.startedAt) / 1000 - 3 : 0, // минус отсчёт перед стартом
           rows: room.state === 'race' ? [...room.rows.values()] : [],
           stats: room.stats?.get(old.id) || null,
           result: room.result,

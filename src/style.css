@@ -1265,3 +1265,22 @@ body.gunner #crosshair {
 body.gunner #btn-brake {
   display: none;
 }
+
+/* ------------------------------------------------------------- королевская битва */
+body.royale #race-lap {
+  display: none;
+}
+
+#solo-setup .royale-only {
+  display: none;
+  text-align: left;
+  margin: 2px 0 0;
+}
+
+#solo-setup.royale .royale-only {
+  display: block;
+}
+
+.panel .seg[data-key='bots'] button {
+  min-width: 30px;
+}

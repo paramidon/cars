@@ -1,5 +1,5 @@
 import { NetClient, GAME_VERSION, defaultServer, wsUrl } from './client.js';
-import { makeSlots, crewsOf, TEAMS } from './netplay.js';
+import { makeStart, botCount, TEAMS } from './netplay.js';
 
 const $ = (id) => document.getElementById(id);
 const KEY = 'cars-and-guts:net';
@@ -7,6 +7,7 @@ const SESSION_KEY = 'cars-and-guts:session'; // { url, name, token, at } — ч�
 const BACK_MS = 85000; // столько сервер держит место выпавшего (AWAY_MS на сервере — 90 с)
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const MODE_NAME = { classic: 'классика', crew: 'экипажи' };
+const GAME_NAME = { race: 'гонка', royale: 'битва' };
 const parse = (key, v) => (key === 'bots' || key === 'team' ? Number(v) : key === 'teams' ? v === 'true' : v);
 
 /** Подсветить в переключателях .seg выбранные значения; enabled = false — только показать. */
@@ -41,7 +42,7 @@ export class Lobby {
     this.sameOrigin = false;
 
     const saved = this._load();
-    this.createSettings = { mode: 'classic', bots: 2, teams: false, ...saved.settings };
+    this.createSettings = { game: 'race', mode: 'classic', bots: 2, teams: false, ...saved.settings };
     $('net-name').value = saved.name || '';
     $('net-server').value = saved.server || 'localhost:8080';
     $('lobby-version').textContent = `Версия игры: ${GAME_VERSION}`;
@@ -98,7 +99,7 @@ export class Lobby {
     c.on('start', (m) => {
       this.room = m.room;
       this._hide();
-      this.game.startNet(c, m.room, m.slots);
+      this.game.startNet(c, m.room, m.slots, null, m.zone);
     });
     c.on('closed', (m) => {
       this.room = null;
@@ -210,7 +211,7 @@ export class Lobby {
     if (rj.room.state === 'race') {
       if (this.game.net) return; // та же страница — игра так и шла, просто связь вернулась
       this._hide();
-      this.game.startNet(this.client, rj.room, rj.slots, rj);
+      this.game.startNet(this.client, rj.room, rj.slots, rj, rj.zone);
     } else {
       if (this.game.net) this.game.endNet();
       this.open();
@@ -304,9 +305,7 @@ export class Lobby {
   _start() {
     const r = this.room;
     if (!r || r.host !== this.client.id) return;
-    const bots = Array.from({ length: r.settings.bots }, (_, i) => `r${i}`);
-    const ids = [...crewsOf(r).map((c) => c.id), ...bots];
-    this.client.send({ t: 'start', slots: makeSlots(ids) });
+    this.client.send(makeStart(r, this.game.city));
   }
 
   /** Комната до старта: настройки (меняет хост), игроки, моя команда и место. */
@@ -327,7 +326,7 @@ export class Lobby {
         const who = [p.id === r.host ? 'хост' : '', p.id === me ? 'ты' : ''].filter(Boolean).join(', ');
         return `<div>${team}<b>${esc(p.name)}</b><span>${seatText(p)}${who ? ` · ${who}` : ''}</span></div>`;
       })
-      .join('') + `<p class="fine">${r.players.length} из ${r.max} · ботов ${st.bots} · версия ${esc(r.version)}</p>`;
+      .join('') + `<p class="fine">${r.players.length} из ${r.max} · ботов ${botCount(r)} (всего машин не больше 8) · версия ${esc(r.version)}</p>`;
 
     // моя команда (подсевший к другому — в команде хозяина машины)
     const mine = byId.get(me);
@@ -384,7 +383,7 @@ export class Lobby {
         const other = r.version !== GAME_VERSION;
         const why = other ? `другая версия: ${esc(r.version)}` : r.state !== 'lobby' ? 'идёт заезд' : r.count >= r.max ? 'полная' : '';
         const st = r.settings || {};
-        const about = `${MODE_NAME[st.mode] || ''} · ботов ${st.bots ?? '?'}${st.teams ? ' · команды' : ''}`;
+        const about = `${GAME_NAME[st.game] || 'гонка'} · ${MODE_NAME[st.mode] || ''} · ботов ${st.bots ?? '?'}${st.teams ? ' · команды' : ''}`;
         return `<button class="room-item" data-room="${esc(r.id)}" ${why ? 'disabled' : ''}>
           <span>${esc(r.name)}<small>хост ${esc(r.host || '?')} · ${about}</small></span><b>${r.count}/${r.max}</b>${why ? `<em>${why}</em>` : ''}</button>`;
       })
