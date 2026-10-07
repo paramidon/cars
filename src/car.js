@@ -47,10 +47,10 @@ const P = {
   // руль «тяжелеет» плавной S-кривой между hardFrom и hardTo; параметры ниже — [лёгкий руль, тяжёлый]
   hardFrom: 10, // м/с ≈ 35 км/ч
   hardTo: 35, // м/с ≈ 125 км/ч
-  steerTime: [0.18, 0.4], // за сколько секунд руль доходит до упора
-  steerReturn: 0.08, // а от упора к центру — всегда быстро, с любой скорости
-  yawResp: [9, 5], // как быстро машина отзывается на руль
-  yawUnwind: 12, // а перестаёт крутиться, когда руль выпрямили, — всегда быстро
+  steerTime: [0.15, 0.28], // за сколько секунд руль доходит до упора
+  steerReturn: 0.06, // а от упора к центру — всегда быстро, с любой скорости (и встречный руль — тоже)
+  yawResp: [10, 7], // как быстро машина отзывается на руль
+  yawUnwind: 18, // а перестаёт крутиться, когда руль выпрямили, — всегда быстро
   restitution: 0.25,
   inertia: 1.9,
   damageThreshold: 8, // м/с ≈ 29 км/ч — ниже этого удар не повреждает
@@ -507,7 +507,13 @@ export class Car {
     if (spd > 1) maxSteer = Math.min(maxSteer, Math.atan((yawCap(spd) * P.wheelBase) / spd));
     const want = st * maxSteer;
     let left = h;
-    if (this.steer * want < 0 || Math.abs(want) < Math.abs(this.steer)) {
+    // встречный руль — против того, куда машину сейчас крутит: выкручивается быстро на всю перекладку,
+    // чтобы из поворота выйти на прямую сразу, а не ждать, пока руль «нехотя» дойдёт
+    const counter = vF > 2 && want * this.angVel > 0;
+    if (counter) {
+      this.steer = moveToward(this.steer, want, (maxSteer / P.steerReturn) * h);
+      left = 0;
+    } else if (this.steer * want < 0 || Math.abs(want) < Math.abs(this.steer)) {
       const stop = this.steer * want < 0 ? 0 : want;
       const fast = maxSteer / P.steerReturn;
       const need = Math.abs(stop - this.steer) / fast;
