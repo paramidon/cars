@@ -6,8 +6,8 @@
     <meta name="theme-color" content="#140b0b" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="description" content="Прототип аркадной давилки в духе Carmageddon на three.js" />
-    <title>Carnage Town</title>
+    <meta name="description" content="Cars &amp; Guts — аркадная гонка-давилка в духе Carmageddon на three.js" />
+    <title>Cars &amp; Guts</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='6' y='22' width='52' height='22' rx='6' fill='%23d4161c'/%3E%3Crect x='18' y='12' width='26' height='14' rx='4' fill='%23222'/%3E%3Ccircle cx='18' cy='46' r='8' fill='%23111'/%3E%3Ccircle cx='46' cy='46' r='8' fill='%23111'/%3E%3C/svg%3E" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -42,6 +42,15 @@
           </button>
         </div>
       </div>
+      <div id="race" class="race">
+        <div id="race-time" class="race-time">0:00</div>
+        <div class="race-sub"><span id="race-lap">КРУГ 1/3</span><span id="race-cp">ЧП 1/7</span></div>
+        <div class="race-nav">
+          <svg id="race-arrow" class="race-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l8 14h-5v6H9v-6H4z" /></svg>
+          <span id="race-dist">0 м</span>
+        </div>
+      </div>
+      <div id="countdown" class="countdown"></div>
       <div id="speedo"><span id="speed">0</span><small>км/ч</small></div>
       <div id="messages"></div>
       <div id="fps"></div>
@@ -57,21 +66,22 @@
 
     <div id="menu" class="screen">
       <div class="panel">
-        <h1>CARNAGE<span>TOWN</span></h1>
-        <p class="tag">Прототип давилки в духе Carmageddon</p>
+        <h1>CARS<span>&amp; GUTS</span></h1>
+        <p class="tag">Гонка-давилка в духе Carmageddon</p>
         <div class="controls desk">
           <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / стрелки<span>руль, газ, тормоз/назад</span></div>
           <div><kbd>Пробел</kbd><span>ручник, занос</span></div>
           <div><kbd>ЛКМ</kbd> / <kbd>F</kbd><span>пулемёт (мышь — прицел)</span></div>
-          <div><kbd>C</kbd> <kbd>R</kbd> <kbd>M</kbd> <kbd>Esc</kbd><span>камера, на дорогу, звук, пауза</span></div>
+          <div><kbd>C</kbd> <kbd>R</kbd> <kbd>M</kbd> <kbd>Esc</kbd><span>камера, к чекпоинту, звук, пауза</span></div>
         </div>
         <div class="controls mobile">
           <div><b>Левый палец</b><span>джойстик: куда тянешь — туда едешь</span></div>
           <div><b>ОГОНЬ</b><span>пулемёт сам наводится на пешеходов впереди</span></div>
           <div><b>ДРИФТ</b><span>ручник для заносов</span></div>
         </div>
-        <p class="goal">Дави пешеходов, стреляй, собирай комбо. Медленно — только собьёшь с ног, лежачего можно добить. Каждое убийство немного чинит тачку.<br />Но не влетай на скорости в стены и толстые столбы — развалится.</p>
+        <p class="goal"><b>Цель — 3 круга до финиша, пока не кончилось время.</b> Каждые жёлтые ворота добавляют секунды, сбитые пешеходы — ещё чуть-чуть.<br />Медленно — только собьёшь с ног, лежачего можно добить. Убийства подлатывают тачку, но не влетай на скорости в стены и толстые столбы.</p>
         <button id="btn-play" class="big">ПОЕХАЛИ!</button>
+        <button id="btn-prev-crash" class="link hidden">В прошлый раз игра упала — показать ошибку</button>
         <p class="fine">Мультяшное насилие. Все пешеходы — коробки.</p>
       </div>
     </div>
@@ -80,16 +90,17 @@
       <div class="panel">
         <h2>ПАУЗА</h2>
         <button id="btn-resume" class="big">ПРОДОЛЖИТЬ</button>
-        <button id="btn-unstuck">ВЕРНУТЬСЯ НА ДОРОГУ</button>
+        <button id="btn-unstuck">К ПОСЛЕДНЕМУ ЧЕКПОИНТУ</button>
         <button id="btn-restart2">НАЧАТЬ ЗАНОВО</button>
+        <button id="btn-log" class="link">Журнал ошибок</button>
       </div>
     </div>
 
     <div id="wreck" class="screen hidden">
       <div class="panel">
-        <h2 class="red">ТАЧКА РАЗБИТА</h2>
+        <h2 id="result-title" class="red">ТАЧКА РАЗБИТА</h2>
         <div id="stats"></div>
-        <button id="btn-restart" class="big">ЕЩЁ РАЗ</button>
+        <button id="btn-restart" class="big">ЕЩЁ ЗАЕЗД</button>
       </div>
     </div>
 

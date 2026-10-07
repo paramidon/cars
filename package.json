@@ -1,8 +1,8 @@
 {
-  "name": "carnage-town",
+  "name": "cars-and-guts",
   "private": true,
-  "version": "0.1.0",
-  "description": "Прототип аркадной гонки-давилки в духе Carmageddon на three.js",
+  "version": "0.4.0",
+  "description": "Cars & Guts — аркадная гонка-давилка в духе Carmageddon на three.js",
   "type": "module",
   "scripts": {
     "dev": "vite --host",

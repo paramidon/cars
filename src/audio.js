@@ -190,6 +190,40 @@ export class AudioFX {
     this._noise({ dur: 0.06, gain: 0.12, type: 'highpass', freq: 3000 });
   }
 
+  /** 3-2-1 — короткие писки, старт — длинный высокий. */
+  countdown(n) {
+    if (!this.ready) return;
+    if (n > 0) this._tone({ type: 'square', freq: 520, dur: 0.16, gain: 0.12 });
+    else this._tone({ type: 'square', freq: 1040, dur: 0.5, gain: 0.14 });
+  }
+
+  checkpoint() {
+    if (!this.ready) return;
+    this._tone({ type: 'triangle', freq: 784, dur: 0.12, gain: 0.25 });
+    this._tone({ type: 'triangle', freq: 1175, dur: 0.25, gain: 0.25, delay: 0.09 });
+  }
+
+  lap() {
+    if (!this.ready) return;
+    [523, 659, 784, 1047].forEach((f, i) => this._tone({ type: 'triangle', freq: f, dur: 0.22, gain: 0.22, delay: i * 0.09 }));
+  }
+
+  finish() {
+    if (!this.ready) return;
+    [523, 659, 784, 1047, 784, 1047].forEach((f, i) => this._tone({ type: 'square', freq: f, dur: i === 5 ? 0.8 : 0.18, gain: 0.12, delay: i * 0.13 }));
+  }
+
+  timeout() {
+    if (!this.ready) return;
+    this._tone({ type: 'sawtooth', freq: 320, freqEnd: 70, dur: 1.1, gain: 0.3 });
+  }
+
+  /** Тиканье последних секунд: чем меньше осталось, тем выше. */
+  tick(sec) {
+    if (!this.ready) return;
+    this._tone({ type: 'square', freq: 700 + (10 - sec) * 60, dur: 0.06, gain: 0.1 });
+  }
+
   scream() {
     if (!this.ready) return;
     const now = this.ctx.currentTime;

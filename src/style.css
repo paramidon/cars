@@ -334,6 +334,200 @@ body {
   color: var(--muted);
 }
 
+/* ------------------------------------------------------------- гонка */
+.race {
+  position: absolute;
+  top: calc(10px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.race-time {
+  font-size: 46px;
+  line-height: 1;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.race.low .race-time {
+  color: var(--accent);
+  animation: pulse 0.5s ease-in-out infinite alternate;
+}
+
+@keyframes pulse {
+  to {
+    transform: scale(1.12);
+  }
+}
+
+.race-sub {
+  display: flex;
+  gap: 12px;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: var(--gold);
+}
+
+.race-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.race-arrow {
+  width: 30px;
+  height: 30px;
+  fill: var(--gold);
+  stroke: #000;
+  stroke-width: 1.2;
+  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.6));
+  transition: transform 0.08s linear;
+}
+
+.time-pop {
+  position: absolute;
+  left: 100%;
+  top: 6px;
+  margin-left: 8px;
+  font-size: 22px;
+  color: var(--ok);
+  white-space: nowrap;
+  animation: heal-rise 1.3s ease-out forwards;
+}
+
+.countdown {
+  position: absolute;
+  top: 34%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 120px;
+  color: var(--gold);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.countdown.show {
+  animation: count 0.95s ease-out forwards;
+}
+
+.countdown.go {
+  color: var(--ok);
+  font-size: 80px;
+}
+
+@keyframes count {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(2.2);
+  }
+  20% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.8);
+  }
+}
+
+/* ------------------------------------------------------------- журнал ошибок */
+.crash {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.7);
+  font-family: var(--font-ui);
+  touch-action: auto;
+}
+
+.crash-panel {
+  width: min(760px, 100%);
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid #ff6b6b;
+  background: #1b0f0f;
+  color: var(--text);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.7);
+}
+
+.crash-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 18px;
+}
+
+.crash-head b {
+  color: #ff6b6b;
+  font-family: var(--font-display);
+  font-weight: normal;
+  font-size: 22px;
+}
+
+.crash-head span,
+.crash-hint,
+.crash-copied {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.crash-text {
+  margin: 0;
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 8px;
+  background: #0b0606;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+  touch-action: pan-x pan-y;
+}
+
+.crash-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.crash-btns button {
+  flex: 1 1 120px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  font: 15px var(--font-display);
+  cursor: pointer;
+}
+
+.crash-btns button[data-act='copy'] {
+  background: #8e0d10;
+  border-color: #ff6b6b;
+}
+
 /* ------------------------------------------------------------- сенсорное управление */
 #touch {
   position: fixed;
@@ -421,9 +615,17 @@ body.touch #speedo {
   right: auto;
   left: 50%;
   transform: translateX(-50%);
-  bottom: auto;
-  top: calc(10px + env(safe-area-inset-top));
-  font-size: 30px;
+  bottom: calc(10px + env(safe-area-inset-bottom));
+  font-size: 26px;
+}
+
+body.touch .race-time {
+  font-size: 34px;
+}
+
+/* телефон вертикально: сверху тесно — таймер под статистикой и миникартой */
+body.touch.portrait .race {
+  top: calc(172px + env(safe-area-inset-top));
 }
 
 body.touch #minimap {
@@ -575,6 +777,27 @@ button {
 
 .panel button:active {
   transform: translateY(2px);
+}
+
+.panel button.link {
+  background: none;
+  border: none;
+  padding: 6px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  letter-spacing: 0;
+  color: var(--muted);
+  text-decoration: underline;
+}
+
+.goal b {
+  color: var(--gold);
+  font-weight: normal;
+  font-family: var(--font-display);
+}
+
+h2.gold {
+  color: var(--gold);
 }
 
 .fine {

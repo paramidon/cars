@@ -1,4 +1,4 @@
-// Собирает dist/index.html в один самодостаточный файл dist/carnage-town.html
+// Собирает dist/index.html в один самодостаточный файл dist/cars-and-guts.html
 // (JS и CSS встраиваются инлайном) — удобно, чтобы открыть игру где угодно.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -14,5 +14,5 @@ html = html.replace(/<link\b[^>]*\brel="stylesheet"[^>]*\bhref="\.\/([^"]+\.css)
   return `<style>${readFileSync(join(dist, file), 'utf8')}</style>`;
 });
 
-writeFileSync(join(dist, 'carnage-town.html'), html);
-console.log(`single-file build: ${join(dist, 'carnage-town.html')} (${(html.length / 1024).toFixed(0)} KB)`);
+writeFileSync(join(dist, 'cars-and-guts.html'), html);
+console.log(`single-file build: ${join(dist, 'cars-and-guts.html')} (${(html.length / 1024).toFixed(0)} KB)`);

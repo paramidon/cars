@@ -12,12 +12,17 @@ import { MachineGun } from './weapon.js';
 import { Input } from './input.js';
 import { ChaseCamera } from './camera.js';
 import { HUD } from './hud.js';
+import { Race, RACE } from './race.js';
+import { CrashReporter } from './crash.js';
 import { phrase } from './words.js';
+import { version } from '../package.json';
 
 const $ = (id) => document.getElementById(id);
 const NO_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: false, fire: false };
-// сколько корпуса чинит убийство
-const HEAL = { car: 6, gib: 8, crush: 7, gun: 4 };
+const STOP_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: true, fire: false };
+// сколько корпуса чинит убийство: давить выгоднее, чем стрелять
+const HEAL = { car: 6, gib: 8, crush: 8, gun: 2 };
+const BEST_KEY = 'cars-and-guts:best';
 const SHADOW_EXTENT = 60;
 const SHADOW_MAP = 2048;
 
@@ -66,6 +71,8 @@ class Game {
     this.car = new Car(scene, this.city, this.fx, this.audio, this.debris, QUALITY);
     this.peds = new Pedestrians(scene, this.city, this.fx, this.audio, QUALITY);
     this.gun = new MachineGun(scene, this.car, this.city, this.peds, this.fx, this.audio);
+    this.race = new Race(scene, this.city, this.fx, this.audio);
+    this.raceLaps = RACE.laps;
     this.hud = new HUD(this.city);
     this.cam = new ChaseCamera(this.camera, this.city);
     this.input = new Input(renderer.domElement, {
@@ -86,7 +93,13 @@ class Game {
     this.peds.reset(this.car);
 
     this.state = 'menu';
+    this.overKind = null;
+    this.countdown = 0;
+    this.halted = false;
     this.time = 0;
+    this.lastFrameAt = 0;
+    this.lastVisibilityChange = 0;
+    this.best = this._loadBest();
     this.timer = new THREE.Timer();
     this.timer.connect(document);
     this.perf = { acc: 0, frames: 0, slow: 0 };
@@ -150,9 +163,9 @@ class Game {
       cam.shake(1);
       hud.damageFlash(1);
       hud.popup('ТАЧКА РАЗБИТА!', 'big warn');
-      this.state = 'wrecked';
-      this.wreckAt = this.time;
+      this._gameOver('wreck');
     };
+    this.race.onEvent = (type, data) => this._raceEvent(type, data);
     peds.onKill = (p, cause, speed) => this._kill(p, cause, speed);
     peds.onEvent = (type, p) => this._pedEvent(type, p);
     this.gun.onShot = () => cam.shake(0.015);
@@ -175,12 +188,20 @@ class Game {
       this._unstuck();
       this._setPaused(false);
     });
+    click('btn-log', () => crash.open());
+    click('btn-prev-crash', () => crash.open(true));
     click('btn-cam', () => this._action('camera'));
     click('btn-mute', () => this._action('mute'));
     click('btn-pause', () => this._action('pause'));
     document.addEventListener('visibilitychange', () => {
+      this.lastVisibilityChange = performance.now();
       if (document.hidden && this.state === 'play') this._setPaused(true);
     });
+    this.renderer.domElement.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      crash.report({ message: 'Потерян контекст WebGL: браузер сбросил графику (часто из-за нехватки памяти на телефоне).', stack: '' }, 'webglcontextlost');
+    });
+    this.renderer.domElement.addEventListener('webglcontextrestored', () => crash.note('Контекст WebGL восстановлен'));
   }
 
   _action(a) {
@@ -199,11 +220,11 @@ class Game {
         break;
       case 'respawn':
         if (this.state === 'play') this._unstuck();
-        else if (this.state === 'wrecked') this.restart();
+        else if (this.state === 'over' && this.wreckShown) this.restart();
         break;
       case 'confirm':
         if (this.state === 'menu') this.start();
-        else if (this.state === 'wrecked' && this.wreckShown) this.restart();
+        else if (this.state === 'over' && this.wreckShown) this.restart();
         else if (this.state === 'pause') this._setPaused(false);
         break;
     }
@@ -228,6 +249,8 @@ class Game {
     else if (this.multi >= 5) this.hud.popup('МЯСОКОМБИНАТ!', 'gold big');
     if ((cause === 'car' || cause === 'gib') && speed > 13 && this.cam.mode !== 2) this.hud.splatter(Math.min(1.5, speed / 22));
     if (cause === 'car' || cause === 'gib' || cause === 'crush') this.cam.shake(0.12 + speed * 0.006);
+    const added = this.state === 'play' ? this.race.addTime(RACE.killTime[cause] || 0) : 0;
+    if (added > 0) this.hud.timeBonus(added);
     const healed = this.car.heal(HEAL[cause] || 0);
     if (healed > 0) {
       this.hud.heal(Math.round(healed));
@@ -277,13 +300,16 @@ class Game {
     this.car.reset(this.city.spawn);
     this.peds.reset(this.car);
     this._resetStats();
+    this.race.reset();
     this.cam.snap(this.car);
     this.state = 'play';
+    this.overKind = null;
+    this.countdown = RACE.countdown;
+    this.countShown = Infinity;
     $('wreck').classList.add('hidden');
     $('pause').classList.add('hidden');
     this.hud.show(true);
     this._syncTouchUI();
-    this.hud.popup('ДАВИ ИХ ВСЕХ!', 'big');
   }
 
   _setPaused(p) {
@@ -303,13 +329,14 @@ class Game {
   _unstuck() {
     const car = this.car;
     if (car.wrecked) return;
-    const sp = this.city.findRoadSpawn(car.x, car.z, car.yaw);
+    // в заезде — к последнему пройденному чекпоинту, лицом по маршруту
+    const sp = this.race.respawnPoint();
     car.x = sp.x;
     car.z = sp.z;
     car.yaw = sp.yaw;
     car.vx = car.vz = car.angVel = 0;
     this.cam.snap(car);
-    this.hud.popup('НА ДОРОГУ', 'info');
+    this.hud.popup('К ЧЕКПОИНТУ', 'info');
   }
 
   _syncTouchUI() {
@@ -317,17 +344,123 @@ class Game {
     $('touch').classList.toggle('hidden', !show);
   }
 
+  _gameOver(kind) {
+    if (this.state !== 'play') return;
+    this.state = 'over';
+    this.overKind = kind;
+    this.wreckAt = this.time;
+    this.race.done = true;
+    this.race._style();
+    if (kind === 'finish') this._saveBest();
+  }
+
+  _loadBest() {
+    try {
+      return JSON.parse(localStorage.getItem(BEST_KEY)) || {};
+    } catch {
+      return {};
+    }
+  }
+
+  _saveBest() {
+    const t = this.race.elapsed;
+    this.newRecord = !this.best.time || t < this.best.time;
+    if (this.newRecord) this.best.time = t;
+    if (!this.best.score || this.score > this.best.score) this.best.score = this.score;
+    try {
+      localStorage.setItem(BEST_KEY, JSON.stringify(this.best));
+    } catch {
+      // не страшно
+    }
+  }
+
   _showWreck() {
     this.wreckShown = true;
-    const t = Math.floor(this.playTime);
-    $('stats').innerHTML = `
-      <div><span>Очки</span><b>${this.score.toLocaleString('ru-RU')}</b></div>
-      <div><span>Сбито пешеходов</span><b>${this.kills}</b></div>
-      <div><span>Лучшее комбо</span><b>×${this.bestCombo}</b></div>
-      <div><span>Макс. скорость</span><b>${Math.round(this.maxSpeed * 3.6)} км/ч</b></div>
-      <div><span>Время</span><b>${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}</b></div>`;
+    const fmt = (sec) => {
+      const t = Math.max(0, sec);
+      const m = Math.floor(t / 60), s2 = t - m * 60;
+      return `${m}:${s2.toFixed(1).padStart(4, '0')}`;
+    };
+    const race = this.race;
+    const titles = { wreck: 'ТАЧКА РАЗБИТА', timeout: 'ВРЕМЯ ВЫШЛО', finish: 'ФИНИШ!' };
+    const title = $('result-title');
+    title.textContent = titles[this.overKind] || 'КОНЕЦ';
+    title.className = this.overKind === 'finish' ? 'gold' : 'red';
+    const laps = this.overKind === 'finish' ? `${RACE.laps}/${RACE.laps}` : `${race.lap - 1}/${RACE.laps}`;
+    const best = race.lapTimes.length ? fmt(Math.min(...race.lapTimes)) : '—';
+    const rows = [
+      ['Очки', this.score.toLocaleString('ru-RU')],
+      ['Кругов пройдено', laps],
+      ['Время заезда', fmt(race.elapsed)],
+      ['Лучший круг', best],
+      ['Сбито пешеходов', this.kills],
+      ['Лучшее комбо', `×${this.bestCombo}`],
+      ['Макс. скорость', `${Math.round(this.maxSpeed * 3.6)} км/ч`],
+    ];
+    if (this.overKind === 'finish') rows.splice(3, 0, ['Рекорд трассы', this.newRecord ? 'НОВЫЙ!' : fmt(this.best.time)]);
+    $('stats').innerHTML = rows.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('');
     $('wreck').classList.remove('hidden');
     this._syncTouchUI();
+  }
+
+  _raceEvent(type, data) {
+    const { hud, audio } = this;
+    if (type === 'checkpoint') {
+      const b = Math.round(data.bonus);
+      this.score += 50;
+      hud.popup(`ЧЕКПОИНТ! +${b} С`, 'gold');
+      hud.timeBonus(b);
+      audio.checkpoint();
+    } else if (type === 'lap') {
+      const b = Math.round(data.bonus);
+      this.score += 300;
+      hud.popup(data.last ? 'ПОСЛЕДНИЙ КРУГ!' : `КРУГ ${data.lap}/${RACE.laps}`, 'gold big');
+      hud.popup(`+${b} С`, 'gold');
+      hud.timeBonus(b);
+      audio.lap();
+    } else if (type === 'finish') {
+      // остаток времени — в очки
+      const bonus = Math.round(this.race.timeLeft) * 100;
+      this.score += 1000 + bonus;
+      hud.popup('ФИНИШ!', 'gold big');
+      if (bonus) hud.popup(`ЗАПАС ВРЕМЕНИ +${bonus}`, 'gold');
+      audio.finish();
+      this.cam.shake(0.3);
+      this._gameOver('finish');
+    } else if (type === 'timeout') {
+      hud.popup('ВРЕМЯ ВЫШЛО!', 'big warn');
+      audio.timeout();
+      this._gameOver('timeout');
+    } else if (type === 'tick') {
+      audio.tick(data);
+    }
+  }
+
+  /** Снимок состояния для журнала ошибок. */
+  debugState() {
+    const car = this.car, race = this.race;
+    const counts = {};
+    for (const p of this.peds.peds) counts[p.state] = (counts[p.state] || 0) + 1;
+    const info = this.renderer.info;
+    const r1 = (v) => Math.round(v * 10) / 10;
+    return {
+      state: this.state,
+      over: this.overKind,
+      time: r1(this.time),
+      countdown: r1(this.countdown),
+      car: { x: r1(car.x), z: r1(car.z), yaw: r1(car.yaw), speed: r1(car.speed), health: r1(car.health), wrecked: car.wrecked },
+      race: { lap: race.lap, next: race.next, timeLeft: r1(race.timeLeft), elapsed: r1(race.elapsed), done: race.done },
+      score: this.score,
+      kills: this.kills,
+      pedsByState: counts,
+      gibsActive: this.peds.gibs.items.filter((g) => g.active).length,
+      debris: this.debris.items.length,
+      decals: { blood: this.fx.blood.used, marks: this.fx.marks.used },
+      render: { calls: info.render.calls, triangles: info.render.triangles, geometries: info.memory.geometries, textures: info.memory.textures },
+      pixelRatio: this.pixelRatio,
+      quality: { low: QUALITY.low, shadows: QUALITY.shadows, peds: QUALITY.pedCount },
+      touch: this.input.usingTouch,
+    };
   }
 
   // ------------------------------------------------------------ кадр
@@ -382,11 +515,33 @@ class Game {
   }
 
   _tick(now) {
-    this.timer.update(now);
-    const dt = Math.min(this.timer.getDelta(), 1 / 20);
-    this.step(dt);
-    this.render();
-    this._adaptResolution(dt);
+    if (this.halted) return;
+    // зависание: кадр шёл больше 2 с, хотя вкладка не пряталась
+    const gap = now - this.lastFrameAt;
+    if (this.lastFrameAt && gap > 2000 && now - this.lastVisibilityChange > gap && !document.hidden) {
+      crash.note(`Зависание: кадр шёл ${(gap / 1000).toFixed(1)} с (состояние: ${this.state})`);
+    }
+    this.lastFrameAt = now;
+    try {
+      this.timer.update(now);
+      const dt = Math.min(this.timer.getDelta(), 1 / 20);
+      this.step(dt);
+      this.render();
+      this._adaptResolution(dt);
+    } catch (err) {
+      // остановить цикл, чтобы ошибка не сыпалась каждый кадр, и показать окно
+      this.halted = true;
+      this.audio.suspend();
+      crash.report(err, 'game loop');
+    }
+  }
+
+  /** Продолжить после ошибки (из окна журнала). */
+  resume() {
+    if (!this.halted) return;
+    this.halted = false;
+    this.timer.reset();
+    if (this.state === 'play' || this.state === 'over') this.audio.resume();
   }
 
   /** Один шаг симуляции (публичный — удобно для автотестов). */
@@ -394,12 +549,17 @@ class Game {
     const input = this.input.update(dt);
     const { car, cam } = this;
 
-    if (this.state === 'play' || this.state === 'wrecked') {
+    if (this.state === 'play' || this.state === 'over') {
       this.time += dt;
-      const inp = this.state === 'play' ? input : NO_INPUT;
+      let inp = this.state === 'play' ? input : STOP_INPUT;
       if (this.state === 'play') {
-        this.playTime += dt;
-        this.maxSpeed = Math.max(this.maxSpeed, car.speed);
+        if (this.countdown > 0) {
+          this._countdown(dt);
+          inp = NO_INPUT;
+        } else {
+          this.playTime += dt;
+          this.maxSpeed = Math.max(this.maxSpeed, car.speed);
+        }
       }
       car.update(dt, inp);
       this._updateAim();
@@ -408,20 +568,34 @@ class Game {
       this.breakables.update(dt);
       this.debris.update(dt);
       this.fx.update(dt);
+      this.race.update(dt, car);
       cam.update(dt, car);
       this._followSun(car.x, car.z);
       this.comboTimer = Math.max(0, this.comboTimer - dt);
       if (this.comboTimer === 0) this.combo = 0;
       this.hud.update(dt, this);
-      if (this.state === 'wrecked' && !this.wreckShown && this.time - this.wreckAt > 2.8) this._showWreck();
+      if (this.state === 'over' && !this.wreckShown && this.time - this.wreckAt > 2.8) this._showWreck();
     } else if (this.state === 'menu') {
       this.time += dt;
       car.update(dt, NO_INPUT);
       this.peds.update(dt, car);
       this.fx.update(dt);
+      this.race.update(dt, car);
       cam.orbitUpdate(dt, 0, -20);
       this._followSun(0, -20);
     }
+  }
+
+  _countdown(dt) {
+    const before = this.countdown;
+    this.countdown = Math.max(0, this.countdown - dt);
+    const n = Math.ceil(this.countdown);
+    if (n < this.countShown) {
+      this.countShown = n;
+      this.hud.countdown(n > 0 ? String(n) : 'ГАЗУЙ!');
+      this.audio.countdown(n);
+    }
+    if (before > 0 && this.countdown === 0) this.race.start();
   }
 
   render() {
@@ -434,4 +608,25 @@ class Game {
   }
 }
 
-window.game = new Game();
+const crash = new CrashReporter(version);
+window.crash = crash;
+try {
+  const game = new Game();
+  window.game = game;
+  crash.getContext = () => game.debugState();
+  crash.onContinue = () => game.resume();
+  crash.onRestart = () => {
+    game.halted = false;
+    game.timer.reset();
+    game.restart();
+  };
+  // пока окно открыто — игра на паузе
+  crash.onOpenChange = (open) => {
+    if (open && game.state === 'play') game._setPaused(true);
+  };
+  if (crash.previous?.entries?.some((e) => e.kind !== 'note' && e.kind !== 'console.error')) {
+    document.getElementById('btn-prev-crash').classList.remove('hidden');
+  }
+} catch (err) {
+  crash.report(err, 'запуск игры');
+}

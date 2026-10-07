@@ -17,6 +17,13 @@ export class HUD {
       speed: $('speed'),
       messages: $('messages'),
       fps: $('fps'),
+      race: $('race'),
+      raceTime: $('race-time'),
+      raceLap: $('race-lap'),
+      raceCp: $('race-cp'),
+      raceArrow: $('race-arrow'),
+      raceDist: $('race-dist'),
+      countdown: $('countdown'),
     };
     this.mm = $('minimap');
     this.mmCtx = this.mm.getContext('2d');
@@ -75,8 +82,50 @@ export class HUD {
       this.vignette.style.opacity = this.flashT.toFixed(3);
     }
 
+    this._race(game);
     this.frame++;
     if (this.frame % 2 === 0) this._minimap(game);
+  }
+
+  /** Таймер, круг, чекпоинт и стрелка на следующие ворота. */
+  _race(game) {
+    const { race, car } = game;
+    const t = race.timeLeft;
+    const txt = t < 10 ? t.toFixed(1) : `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+    this._set('rt', this.el.raceTime, txt);
+    const low = t < 10 && !race.done;
+    if (this.cache.low !== low) {
+      this.cache.low = low;
+      this.el.race.classList.toggle('low', low);
+    }
+    this._set('rl', this.el.raceLap, `КРУГ ${Math.min(race.lap, game.raceLaps)}/${game.raceLaps}`);
+    this._set('rc', this.el.raceCp, race.target.finish ? 'К ФИНИШУ' : `ЧП ${race.next + 1}/${race.totalCps - 1}`);
+    const cp = race.target;
+    const dx = cp.x - car.x, dz = cp.z - car.z;
+    const s = Math.sin(car.yaw), c = Math.cos(car.yaw);
+    const fwd = dx * s + dz * c, right = dx * -c + dz * s;
+    const ang = Math.atan2(right, fwd);
+    this.el.raceArrow.style.transform = `rotate(${ang.toFixed(3)}rad)`;
+    this._set('rd', this.el.raceDist, `${Math.round(Math.hypot(dx, dz))} м`);
+  }
+
+  /** Большие цифры отсчёта перед стартом. */
+  countdown(text) {
+    const el = this.el.countdown;
+    el.textContent = text;
+    el.classList.remove('go', 'show');
+    void el.offsetWidth;
+    el.classList.add('show');
+    if (text.length > 1) el.classList.add('go');
+  }
+
+  /** «+N с» у таймера. */
+  timeBonus(sec) {
+    const d = document.createElement('span');
+    d.className = 'time-pop';
+    d.textContent = `+${Math.round(sec)} с`;
+    this.el.race.appendChild(d);
+    setTimeout(() => d.remove(), 1300);
   }
 
   setFps(v) {
@@ -188,6 +237,30 @@ export class HUD {
       const dead = !down && (p.state === ST.DEAD || p.state === ST.FLYING);
       ctx.fillStyle = dead ? '#6b0d0d' : down ? '#ff9f1a' : p.state === ST.PANIC || p.state === ST.COWER ? '#ffd23f' : '#ff5a4f';
       ctx.fillRect(sx - 2, sy - 2, 4, 4);
+    }
+    // следующий и последующий чекпоинты; если далеко — метка на краю круга
+    const race = game.race;
+    const R = W / 2 - 9;
+    const marks = [[race.cps[(race.next + 1) % race.cps.length], 0.45], [race.target, 1]];
+    for (const [cp, alpha] of marks) {
+      if (!cp || race.done) continue;
+      let [sx, sy] = toScreen(cp.x, cp.z);
+      const ox = sx - cx, oy = sy - cy;
+      const d = Math.hypot(ox, oy);
+      const edge = d > R;
+      if (edge) {
+        sx = cx + (ox / d) * R;
+        sy = cy + (oy / d) * R;
+      }
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = cp.finish ? '#ffffff' : '#ffd23f';
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(sx, sy, edge ? 5 : 6 + (alpha === 1 ? Math.sin(performance.now() / 150) * 1.5 : 0), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.globalAlpha = 1;
     }
     ctx.restore();
     // машина
