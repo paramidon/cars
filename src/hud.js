@@ -24,6 +24,8 @@ export class HUD {
       raceArrow: $('race-arrow'),
       raceDist: $('race-dist'),
       countdown: $('countdown'),
+      racePos: $('race-pos'),
+      standings: $('standings'),
     };
     this.mm = $('minimap');
     this.mmCtx = this.mm.getContext('2d');
@@ -99,6 +101,8 @@ export class HUD {
       this.el.race.classList.toggle('low', low);
     }
     this._set('rl', this.el.raceLap, `КРУГ ${Math.min(race.lap, game.raceLaps)}/${game.raceLaps}`);
+    this._set('rp', this.el.racePos, `${game.position}/${game.cars.length}`);
+    if (this.frame % 10 === 0) this._standings(game);
     this._set('rc', this.el.raceCp, race.target.finish ? 'К ФИНИШУ' : `ЧП ${race.next + 1}/${race.totalCps - 1}`);
     const cp = race.target;
     const dx = cp.x - car.x, dz = cp.z - car.z;
@@ -107,6 +111,19 @@ export class HUD {
     const ang = Math.atan2(right, fwd);
     this.el.raceArrow.style.transform = `rotate(${ang.toFixed(3)}rad)`;
     this._set('rd', this.el.raceDist, `${Math.round(Math.hypot(dx, dz))} м`);
+  }
+
+  /** Таблица участников (ПК). */
+  _standings(game) {
+    const key = game.standings.map((e) => `${e.name}${e.car.wrecked ? 'x' : ''}${e.finished ? 'f' : ''}`).join('|');
+    if (key === this.cache.standings) return;
+    this.cache.standings = key;
+    this.el.standings.innerHTML = game.standings
+      .map((e, i) => {
+        const note = e.finished ? ' ✓' : e.car.wrecked ? ' ✕' : '';
+        return `<div class="${e.player ? 'me' : ''}${e.car.wrecked ? ' out' : ''}"><i style="background:${e.color}"></i>${i + 1}. ${e.name}${note}</div>`;
+      })
+      .join('');
   }
 
   /** Большие цифры отсчёта перед стартом. */
@@ -261,6 +278,33 @@ export class HUD {
       ctx.fill();
       ctx.stroke();
       ctx.globalAlpha = 1;
+    }
+    // соперники — цветные стрелки; далеко — на краю круга
+    for (const r of game.rivals) {
+      const rc = r.car;
+      let [sx, sy] = toScreen(rc.x, rc.z);
+      const ox = sx - cx, oy = sy - cy;
+      const d = Math.hypot(ox, oy);
+      const edge = d > R;
+      if (edge) {
+        sx = cx + (ox / d) * R;
+        sy = cy + (oy / d) * R;
+      }
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(-(rc.yaw - car.yaw));
+      ctx.fillStyle = rc.wrecked ? '#555' : r.color;
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 1.5;
+      const k = edge ? 0.7 : 1;
+      ctx.beginPath();
+      ctx.moveTo(0, -7 * k);
+      ctx.lineTo(5 * k, 5 * k);
+      ctx.lineTo(-5 * k, 5 * k);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
     }
     ctx.restore();
     // машина

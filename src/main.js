@@ -13,6 +13,7 @@ import { Input } from './input.js';
 import { ChaseCamera } from './camera.js';
 import { HUD } from './hud.js';
 import { Race, RACE } from './race.js';
+import { Rival, RIVALS, collideCars, carHitDamage } from './racers.js';
 import { CrashReporter } from './crash.js';
 import { phrase } from './words.js';
 import { version } from '../package.json';
@@ -23,6 +24,8 @@ const STOP_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: true, fire: fal
 // сколько корпуса чинит убийство: давить выгоднее, чем стрелять
 const HEAL = { car: 6, gib: 8, crush: 8, gun: 2 };
 const BEST_KEY = 'cars-and-guts:best';
+const PLACE_BONUS = [3000, 1500, 600, 200];
+const PLAYER_COLOR = '#e5262b';
 const SHADOW_EXTENT = 60;
 const SHADOW_MAP = 2048;
 
@@ -73,6 +76,11 @@ class Game {
     this.gun = new MachineGun(scene, this.car, this.city, this.peds, this.fx, this.audio);
     this.race = new Race(scene, this.city, this.fx, this.audio);
     this.raceLaps = RACE.laps;
+    this.rivals = RIVALS.map((def, i) => new Rival(scene, this.city, this.fx, this.audio, this.debris, QUALITY, this.race, def, i));
+    this.cars = [this.car, ...this.rivals.map((r) => r.car)];
+    this.gun.rivals = this.rivals.map((r) => r.car);
+    this.standings = [];
+    this.position = 1;
     this.hud = new HUD(this.city);
     this.cam = new ChaseCamera(this.camera, this.city);
     this.input = new Input(renderer.domElement, {
@@ -159,13 +167,23 @@ class Game {
       }
     };
     car.onWrecked = () => {
-      peds.explosion(car.x, car.z, 11);
+      peds.explosion(car.x, car.z, 11, car);
       cam.shake(1);
       hud.damageFlash(1);
       hud.popup('ТАЧКА РАЗБИТА!', 'big warn');
       this._gameOver('wreck');
     };
     this.race.onEvent = (type, data) => this._raceEvent(type, data);
+    for (const r of this.rivals) {
+      const rc = r.car;
+      rc.listener = car;
+      rc.onBreakable = (c, car_) => this.breakables.hit(c.prop, car_);
+      rc.onImpact = (impact, px, pz) => {
+        if (impact > 6) peds.alert(px, pz, 18);
+      };
+      rc.onWrecked = () => this._rivalWrecked(r);
+    }
+    this._onCarHit = (a, b, impact, px, pz, nx, nz) => this._carHit(a, b, impact, px, pz, nx, nz);
     peds.onKill = (p, cause, speed) => this._kill(p, cause, speed);
     peds.onEvent = (type, p) => this._pedEvent(type, p);
     this.gun.onShot = () => cam.shake(0.015);
@@ -231,6 +249,11 @@ class Game {
   }
 
   _kill(p, cause, speed) {
+    if (p.killer && p.killer !== this.car) {
+      // сбил соперник: очков игроку нет, соперник подлатывается
+      p.killer.heal(HEAL[cause] || 0);
+      return;
+    }
     this.kills++;
     const t = this.time;
     this.combo = t - this.lastKill < 3.5 ? this.combo + 1 : 1;
@@ -259,6 +282,7 @@ class Game {
   }
 
   _pedEvent(type, p) {
+    if (p.killer && p.killer !== this.car) return;
     if (type === 'knock') {
       this.hud.popup(phrase('knock'), 'info');
       return;
@@ -298,9 +322,10 @@ class Game {
     this.debris.clear();
     this.breakables.reset();
     this.car.reset(this.city.spawn);
+    this.race.reset();
+    for (const r of this.rivals) r.reset();
     this.peds.reset(this.car);
     this._resetStats();
-    this.race.reset();
     this.cam.snap(this.car);
     this.state = 'play';
     this.overKind = null;
@@ -382,13 +407,15 @@ class Game {
       return `${m}:${s2.toFixed(1).padStart(4, '0')}`;
     };
     const race = this.race;
-    const titles = { wreck: 'ТАЧКА РАЗБИТА', timeout: 'ВРЕМЯ ВЫШЛО', finish: 'ФИНИШ!' };
+    const place = race.place;
+    const titles = { wreck: 'ТАЧКА РАЗБИТА', timeout: 'ВРЕМЯ ВЫШЛО', finish: place === 1 ? 'ПОБЕДА!' : `${place}-Е МЕСТО` };
     const title = $('result-title');
     title.textContent = titles[this.overKind] || 'КОНЕЦ';
-    title.className = this.overKind === 'finish' ? 'gold' : 'red';
+    title.className = this.overKind === 'finish' && place <= 2 ? 'gold' : 'red';
     const laps = this.overKind === 'finish' ? `${RACE.laps}/${RACE.laps}` : `${race.lap - 1}/${RACE.laps}`;
     const best = race.lapTimes.length ? fmt(Math.min(...race.lapTimes)) : '—';
     const rows = [
+      ['Место', this.overKind === 'finish' ? `${place} из ${this.cars.length}` : 'сход'],
       ['Очки', this.score.toLocaleString('ru-RU')],
       ['Кругов пройдено', laps],
       ['Время заезда', fmt(race.elapsed)],
@@ -398,7 +425,13 @@ class Game {
       ['Макс. скорость', `${Math.round(this.maxSpeed * 3.6)} км/ч`],
     ];
     if (this.overKind === 'finish') rows.splice(3, 0, ['Рекорд трассы', this.newRecord ? 'НОВЫЙ!' : fmt(this.best.time)]);
-    $('stats').innerHTML = rows.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('');
+    const table = this.standings
+      .map((e, i) => {
+        const st = e.finished ? `финиш ${fmt(e.time)}` : e.car.wrecked ? 'разбит' : e.player && this.overKind !== 'finish' ? 'сход' : `круг ${Math.min(e.lap, RACE.laps)}`;
+        return `<div class="st-row${e.player ? ' me' : ''}"><i style="background:${e.color}"></i><span>${i + 1}. ${e.name}</span><b>${st}</b></div>`;
+      })
+      .join('');
+    $('stats').innerHTML = rows.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('') + `<div class="st-table">${table}</div>`;
     $('wreck').classList.remove('hidden');
     this._syncTouchUI();
   }
@@ -419,10 +452,11 @@ class Game {
       hud.timeBonus(b);
       audio.lap();
     } else if (type === 'finish') {
-      // остаток времени — в очки
+      // остаток времени и место — в очки
       const bonus = Math.round(this.race.timeLeft) * 100;
-      this.score += 1000 + bonus;
-      hud.popup('ФИНИШ!', 'gold big');
+      const placeBonus = PLACE_BONUS[data.place - 1] || 0;
+      this.score += 1000 + bonus + placeBonus;
+      hud.popup(data.place === 1 ? 'ПОБЕДА!' : `ФИНИШ: ${data.place}-Е МЕСТО`, 'gold big');
       if (bonus) hud.popup(`ЗАПАС ВРЕМЕНИ +${bonus}`, 'gold');
       audio.finish();
       this.cam.shake(0.3);
@@ -434,6 +468,93 @@ class Game {
     } else if (type === 'tick') {
       audio.tick(data);
     }
+  }
+
+  /** Удар машины о машину: урон по зонам, искры, звук, надписи. */
+  _carHit(a, b, impact, px, pz, nx, nz) {
+    const player = this.car;
+    const now = performance.now();
+    const y = Math.min(a.y, b.y) + 0.8;
+    if (impact > 2) this.fx.sparks(px, y, pz, nx, nz, Math.min(24, Math.floor(impact * 1.2)));
+    const vol = Math.max(a.vol(), b.vol());
+    if (impact > 3 && vol > 0.03 && now - (this._lastCarSound || 0) > 140) {
+      this._lastCarSound = now;
+      this.audio.crash(Math.min(1.2, impact / 16) * vol);
+    }
+    if (a === player || b === player) this.cam.shake(Math.min(0.8, impact / 24));
+    if (impact > 6) this.peds.alert(px, pz, 18);
+    const da = carHitDamage(a, impact, px, pz);
+    const db = carHitDamage(b, impact, px, pz);
+    if (da > 0) {
+      a.lastAttacker = b;
+      a.lastAttackAt = now;
+      a.applyDamage(da, px, pz, nx, nz);
+    }
+    if (db > 0) {
+      b.lastAttacker = a;
+      b.lastAttackAt = now;
+      b.applyDamage(db, px, pz, -nx, -nz);
+    }
+    // игрок протаранил соперника
+    const dealt = a === player ? db : b === player ? da : 0;
+    const victim = a === player ? b : b === player ? a : null;
+    if (victim && dealt >= 5 && now - (this._lastRamPopup || 0) > 700 && this.state === 'play') {
+      this._lastRamPopup = now;
+      this.score += Math.round(dealt) * 10;
+      this.hud.popup(`${phrase('ram')} −${Math.round(dealt)}`, 'gold');
+    }
+  }
+
+  _rivalWrecked(r) {
+    const c = r.car, player = this.car;
+    r.out = true;
+    this.peds.explosion(c.x, c.z, 10, c);
+    if (c.vol() > 0.2) this.cam.shake(0.5 * c.vol());
+    const byPlayer = c.lastAttacker === player && performance.now() - c.lastAttackAt < 4000;
+    if (this.state !== 'play') return;
+    if (byPlayer) {
+      this.score += 1000;
+      this.hud.popup(`${r.name} ВЫБИТ! +1000`, 'gold big');
+      this.car.heal(15);
+      this.hud.heal(15);
+    } else this.hud.popup(`${r.name} РАЗБИЛСЯ`, 'info');
+  }
+
+  /** Места в гонке: финишировавшие по порядку, остальные — по пройденному пути. */
+  _updateStandings() {
+    const race = this.race;
+    const list = [
+      { car: this.car, name: 'ТЫ', color: PLAYER_COLOR, player: true, finished: race.place > 0, place: race.place, passed: race.passed, next: race.next, lap: race.lap, time: race.elapsed },
+      ...this.rivals.map((r) => ({ car: r.car, name: r.name, color: r.color, rival: r, finished: r.tr.finished, place: r.tr.place, passed: r.tr.passed, next: r.tr.next, lap: r.tr.lap, time: r.tr.time })),
+    ];
+    for (const e of list) {
+      if (e.finished) e.progress = 1e6 - e.place;
+      else if (e.car.wrecked) e.progress = -1e6 + e.passed;
+      else e.progress = e.passed + race.segmentProgress(e.next, e.car.x, e.car.z);
+    }
+    list.sort((a, b) => b.progress - a.progress);
+    this.standings = list;
+    this.position = list.findIndex((e) => e.player) + 1;
+  }
+
+  _rivalEvent(r, ev) {
+    if (!ev || this.state !== 'play') return;
+    if (ev.type === 'finish') this.hud.popup(`${r.name} ФИНИШИРОВАЛ ${ev.place}-М`, 'warn');
+    else if (ev.type === 'lap' && ev.lap === RACE.laps) this.hud.popup(`${r.name}: ПОСЛЕДНИЙ КРУГ`, 'info');
+  }
+
+  /** Синхронная физика всех машин: подшаги, столкновения между машинами, потом визуал. */
+  _physics(dt, playerInp) {
+    const cars = this.cars;
+    const n = Math.max(1, Math.ceil(dt / (1 / 120)));
+    const h = dt / n;
+    for (let i = 0; i < n; i++) {
+      cars[0].physicsStep(h, playerInp);
+      for (let k = 0; k < this.rivals.length; k++) this.rivals[k].car.physicsStep(h, this.rivals[k].inp);
+      collideCars(cars, this._onCarHit);
+    }
+    cars[0].postUpdate(dt, playerInp);
+    for (const r of this.rivals) r.car.postUpdate(dt, r.inp);
   }
 
   /** Снимок состояния для журнала ошибок. */
@@ -449,7 +570,8 @@ class Game {
       time: r1(this.time),
       countdown: r1(this.countdown),
       car: { x: r1(car.x), z: r1(car.z), yaw: r1(car.yaw), speed: r1(car.speed), health: r1(car.health), wrecked: car.wrecked },
-      race: { lap: race.lap, next: race.next, timeLeft: r1(race.timeLeft), elapsed: r1(race.elapsed), done: race.done },
+      race: { lap: race.lap, next: race.next, timeLeft: r1(race.timeLeft), elapsed: r1(race.elapsed), done: race.done, position: this.position },
+      rivals: this.rivals.map((r) => ({ name: r.name, x: r1(r.car.x), z: r1(r.car.z), speed: r1(r.car.speed), health: r1(r.car.health), lap: r.tr.lap, next: r.tr.next, stuck: r1(r.stuckT) })),
       score: this.score,
       kills: this.kills,
       pedsByState: counts,
@@ -561,14 +683,25 @@ class Game {
           this.maxSpeed = Math.max(this.maxSpeed, car.speed);
         }
       }
-      car.update(dt, inp);
+      const running = this.race.started;
+      const me = this.standings.find((e) => e.player);
+      for (const r of this.rivals) {
+        const mine = this.standings.find((e) => e.rival === r);
+        r.think(dt, car, running, me ? me.progress : 0, mine ? mine.progress : 0);
+      }
+      this._physics(dt, inp);
       this._updateAim();
       this.gun.update(dt, inp.fire, this.aim);
-      this.peds.update(dt, car);
+      this.peds.update(dt, this.cars);
       this.breakables.update(dt);
       this.debris.update(dt);
       this.fx.update(dt);
       this.race.update(dt, car);
+      for (const r of this.rivals) {
+        this._rivalEvent(r, this.race.track(r.tr, r.car));
+        r.updateTag(car);
+      }
+      this._updateStandings();
       cam.update(dt, car);
       this._followSun(car.x, car.z);
       this.comboTimer = Math.max(0, this.comboTimer - dt);
@@ -577,8 +710,10 @@ class Game {
       if (this.state === 'over' && !this.wreckShown && this.time - this.wreckAt > 2.8) this._showWreck();
     } else if (this.state === 'menu') {
       this.time += dt;
-      car.update(dt, NO_INPUT);
-      this.peds.update(dt, car);
+      for (const r of this.rivals) r.think(dt, car, false, 0, 0);
+      this._physics(dt, NO_INPUT);
+      for (const r of this.rivals) r.updateTag(car);
+      this.peds.update(dt, this.cars);
       this.fx.update(dt);
       this.race.update(dt, car);
       cam.orbitUpdate(dt, 0, -20);

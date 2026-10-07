@@ -181,7 +181,7 @@ export class Breakables {
     car.vz *= 1 - def.slow;
     this.fx.sparks(it.x, it.y + 0.8, it.z, -dirx, -dirz, 8);
     this.fx.dust(it.x, it.y + 0.3, it.z, 4);
-    this.audio.metal(Math.min(1, speed / 20));
+    this.audio.metal(Math.min(1, speed / 20) * (car.vol ? car.vol() : 1));
     if (def.water) this.water.push({ x: it.x, y: it.y + 0.5, z: it.z, t: 14 });
     return true;
   }

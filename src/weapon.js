@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { rand, wrapAngle, clamp } from './utils.js';
 import { ST } from './pedestrians.js';
+import { HIT_Z, HIT_R } from './car.js';
+import { rayCircle } from './physics/collision.js';
 
 const RANGE = 85;
 const RATE = 14; // выстрелов в секунду
@@ -9,6 +11,7 @@ const AUTO_CONE = 0.75; // ±43° от носа машины
 const AUTO_RANGE = 55;
 
 const bulletFilter = (c) => c.kind !== 'breakable' && c.h >= 1.5;
+const CAR_BULLET_DAMAGE = 0.7; // урон одной пули по машине соперника
 
 /** Пулемёт на крыше: наведение, стрельба, трассеры. */
 export class MachineGun {
@@ -24,6 +27,8 @@ export class MachineGun {
     this.flashT = 0;
     this.target = null;
     this.retarget = 0;
+    this.rivals = []; // машины соперников — тоже мишени
+    this.onCarHit = null; // (car, damage)
     this.onShot = null;
 
     const geo = new THREE.BoxGeometry(1, 1, 1);
@@ -75,7 +80,40 @@ export class MachineGun {
         best = p;
       }
     }
+    for (const r of this.rivals) {
+      if (r.wrecked) continue;
+      const dx = r.x - car.x, dz = r.z - car.z;
+      const d = Math.hypot(dx, dz);
+      if (d > AUTO_RANGE || d < 3) continue;
+      const ang = Math.acos(clamp((dx * fx + dz * fz) / d, -1, 1));
+      if (ang > AUTO_CONE) continue;
+      const score = ang * 25 + d + 4; // пешеходы чуть в приоритете
+      if (score < bestScore && !this.city.world.raycast(car.x, car.z, dx / d, dz / d, d, bulletFilter)) {
+        bestScore = score;
+        best = r;
+      }
+    }
     return best;
+  }
+
+  _targetAlive(t) {
+    return t.isCar ? !t.wrecked : this.peds.isAlive(t);
+  }
+
+  /** Ближайшее попадание пули в машину соперника. */
+  _rayCars(ox, oz, dx, dz, maxT) {
+    let best = null, bt = maxT;
+    for (const r of this.rivals) {
+      const s = Math.sin(r.yaw), c = Math.cos(r.yaw);
+      for (const o of HIT_Z) {
+        const t = rayCircle(ox, oz, dx, dz, r.x + s * o, r.z + c * o, HIT_R * 0.95);
+        if (t >= 0 && t < bt) {
+          bt = t;
+          best = r;
+        }
+      }
+    }
+    return best ? { car: best, t: bt } : null;
   }
 
   /**
@@ -98,11 +136,15 @@ export class MachineGun {
         this.retarget = 0.12;
         this.target = this._autoTarget();
       }
-      if (this.target && this.peds.isAlive(this.target)) {
-        // упреждение по скорости бега
+      if (this.target && this._targetAlive(this.target)) {
+        // упреждение по скорости
         const t = this.target;
         let lx = t.x, lz = t.z;
-        if (t.state === ST.PANIC || t.state === ST.WALK) {
+        if (t.isCar) {
+          const d = Math.hypot(t.x - M.x, t.z - M.z);
+          lx += (t.vx - car.vx) * (d / 300);
+          lz += (t.vz - car.vz) * (d / 300);
+        } else if (t.state === ST.PANIC || t.state === ST.WALK) {
           const d = Math.hypot(t.x - M.x, t.z - M.z);
           const lead = d / 300;
           lx += Math.sin(t.yaw) * t.speed * lead;
@@ -146,9 +188,23 @@ export class MachineGun {
     const dx = Math.sin(a), dz = Math.cos(a);
     const wallHit = this.city.world.raycast(M.x, M.z, dx, dz, RANGE, bulletFilter);
     const maxT = wallHit ? wallHit.t : RANGE;
-    const pedHit = this.peds.raycast(M.x, M.z, dx, dz, maxT);
+    const carHit = this._rayCars(M.x, M.z, dx, dz, maxT);
+    const pedHit = this.peds.raycast(M.x, M.z, dx, dz, carHit ? carHit.t : maxT);
     let t = maxT, hy = M.y - maxT * 0.012;
-    if (pedHit) {
+    if (carHit && !pedHit) {
+      t = carHit.t;
+      const hx = M.x + dx * t, hz = M.z + dz * t;
+      const r = carHit.car;
+      hy = r.y + 0.9;
+      this.fx.sparks(hx, hy, hz, -dx, -dz, 6);
+      if (Math.random() < 0.35) this.audio.impact();
+      if (!r.wrecked) {
+        r.lastAttacker = car;
+        r.lastAttackAt = performance.now();
+        r.applyDamage(CAR_BULLET_DAMAGE, hx, hz, dx, dz);
+        if (this.onCarHit) this.onCarHit(r, CAR_BULLET_DAMAGE);
+      }
+    } else if (pedHit) {
       t = pedHit.t;
       const hx = M.x + dx * t, hz = M.z + dz * t;
       const p = pedHit.ped;

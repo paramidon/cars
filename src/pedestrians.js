@@ -201,6 +201,7 @@ export class Pedestrians {
 
   // ------------------------------------------------------------------ жизненный цикл
   reset(car) {
+    if (!this.player) this.player = car;
     for (const p of this.peds) this._free(p);
     this.gibs.clear();
     for (let k = 0; k < this.target; k++) this._spawn(car, true);
@@ -260,6 +261,7 @@ export class Pedestrians {
     p.slide = 0;
     p.still = false;
     p.knocked = false;
+    p.killer = null;
     p.bonus = 0;
     const i = p.i;
     const shirt = pick(SHIRTS), skin = pick(SKIN);
@@ -371,6 +373,7 @@ export class Pedestrians {
 
   // ------------------------------------------------------------------ удары
   _hitByCar(p, car, lx) {
+    p.killer = car;
     const s = car.speed;
     const ax = car.axes();
     const side = lx >= 0 ? 1 : -1;
@@ -403,8 +406,8 @@ export class Pedestrians {
     this.fx.bloodBurst(p.x, p.cy, p.z, car.vx / s, car.vz / s, s * 0.6, Math.floor(18 + s));
     this.fx.bloodSplat(p.x, p.z, rand(1, 2));
     this.fx.bloodSpot(p.x, p.z, 1.3);
-    this.audio.splat(s / 18);
-    if (Math.random() < 0.6) this.audio.scream();
+    this.audio.splat((s / 18) * car.vol());
+    if (Math.random() < 0.6 * car.vol()) this.audio.scream();
     car.vx *= 0.97;
     car.vz *= 0.97;
     this.alert(p.x, p.z, 22);
@@ -431,8 +434,8 @@ export class Pedestrians {
     p.flail = rand(0, 10);
     p.health = Math.min(p.health, 60);
     this.fx.bloodBurst(p.x, p.cy, p.z, car.vx / (s || 1), car.vz / (s || 1), s * 0.3, 6);
-    this.audio.crunch();
-    if (Math.random() < 0.7) this.audio.scream();
+    this.audio.crunch(car.vol());
+    if (Math.random() < 0.7 * car.vol()) this.audio.scream();
     car.vx *= 0.985;
     car.vz *= 0.985;
     this.alert(p.x, p.z, 15);
@@ -470,6 +473,7 @@ export class Pedestrians {
 
   /** Наезд на сбитого с ног: раздавлен. */
   _crush(p, car) {
+    p.killer = car;
     p.runCD = 0.5;
     const s = car.speed;
     if (s > GIB_SPEED) {
@@ -484,8 +488,8 @@ export class Pedestrians {
     this.fx.bloodSpot(p.x, p.z, 1.3);
     car.pitchVel += 1.5;
     car.hopVel = Math.max(car.hopVel, 1.3);
-    this.audio.crunch();
-    this.audio.splat(0.6);
+    this.audio.crunch(car.vol());
+    this.audio.splat(0.6 * car.vol());
     p.vx += car.vx * 0.2;
     p.vz += car.vz * 0.2;
     this.alert(p.x, p.z, 20);
@@ -520,11 +524,12 @@ export class Pedestrians {
     this.fx.bloodBurst(p.x, y, p.z, vx / s, vz / s, Math.min(25, s * 0.7), 55);
     this.fx.bloodPool(p.x, p.z, rand(3.5, 5), 1.5);
     this.fx.bloodSpot(p.x, p.z, 1.6);
-    this.audio.splat(1.3);
+    this.audio.splat(1.3 * (p.killer && p.killer.vol ? p.killer.vol() : 1));
     this._free(p);
   }
 
   _runOver(p, car) {
+    p.killer = car;
     p.runCD = 0.5;
     const s = car.speed;
     if (s > 22) {
@@ -537,7 +542,7 @@ export class Pedestrians {
     this.fx.bloodSplat(p.x, p.z, rand(1, 1.8));
     car.pitchVel += 1.2;
     car.hopVel = Math.max(car.hopVel, 1.1);
-    this.audio.crunch();
+    this.audio.crunch(car.vol());
     p.vx += car.vx * 0.3;
     p.vz += car.vz * 0.3;
     p.slide = 1;
@@ -560,6 +565,7 @@ export class Pedestrians {
   }
 
   bulletHit(p, dx, dz, hx, hz) {
+    p.killer = this.player;
     const g = this.city.groundHeight(p.x, p.z);
     const y = this.isLying(p) ? g + 0.25 : p.state === ST.FLYING ? p.cy : g + rand(1.0, 1.6);
     this.fx.bloodSpray(hx, y, hz, dx, dz, 8);
@@ -621,12 +627,13 @@ export class Pedestrians {
   }
 
   /** Взрыв машины: ближних рвёт, дальних раскидывает. */
-  explosion(x, z, radius) {
+  explosion(x, z, radius, source = null) {
     for (const p of this.peds) {
       if (p.state === ST.FREE) continue;
       const dx = p.x - x, dz = p.z - z;
       const d = Math.hypot(dx, dz);
       if (d > radius) continue;
+      p.killer = source;
       const nx = dx / (d || 1), nz = dz / (d || 1);
       const wasAlive = this.isLiving(p);
       p.knocked = false;
@@ -655,18 +662,28 @@ export class Pedestrians {
   }
 
   // ------------------------------------------------------------------ кадр
-  update(dt, car) {
+  /** cars — все машины, первая — игрок (возле неё не спавним новых пешеходов). */
+  update(dt, cars) {
     this.time += dt;
     const world = this.world;
     const ground = this.city.groundHeight;
-    const cx = car.x, cz = car.z, cvx = car.vx, cvz = car.vz;
-    const cs = car.speed;
-    const ax = car.axes();
+    const player = cars[0];
     const lim = this.city.outer - 1;
     let alive = 0, living = 0, corpses = 0, oldest = null;
 
     for (const p of this.peds) {
       if (p.state === ST.FREE) continue;
+      // ближайшая машина — от неё и убегаем
+      let near = player, nd = Infinity;
+      for (const c of cars) {
+        const d = (c.x - p.x) ** 2 + (c.z - p.z) ** 2;
+        if (d < nd) {
+          nd = d;
+          near = c;
+        }
+      }
+      const cx = near.x, cz = near.z, cvx = near.vx, cvz = near.vz;
+      const cs = near.speed;
       p.hitCD -= dt;
       p.runCD -= dt;
 
@@ -890,42 +907,16 @@ export class Pedestrians {
         }
       }
 
-      // контакт с машиной
-      const dx = p.x - cx, dz = p.z - cz;
-      if (dx * dx + dz * dz < 10) {
-        const lz = dx * ax.fx + dz * ax.fz;
-        const lx = dx * ax.rx + dz * ax.rz;
-        if (Math.abs(lx) < CAR_HALF_W + 0.3 && Math.abs(lz) < CAR_HALF_L + 0.3) {
-          if (this.isAlive(p)) {
-            if (cs > KNOCK_SPEED) {
-              this._hitByCar(p, car, lx);
-              if (p.state === ST.FREE) continue;
-            } else {
-              const tgt = (lx >= 0 ? 1 : -1) * (CAR_HALF_W + 0.32);
-              p.x += ax.rx * (tgt - lx);
-              p.z += ax.rz * (tgt - lx);
-              if (p.state !== ST.PANIC) this._panic(p, cx, cz, 0, 0, false);
-            }
-          } else if ((p.state === ST.DOWN || p.state === ST.GETUP) && p.runCD <= 0 && cs > 1.2) {
-            this._crush(p, car);
-            if (p.state === ST.FREE) continue;
-          } else if (p.state === ST.FLYING && p.knocked && p.hitCD <= 0 && cs > KNOCK_SPEED && p.cy < 2.6) {
-            this._hitByCar(p, car, lx);
-            if (p.state === ST.FREE) continue;
-          } else if (p.state === ST.FLYING && !p.knocked && p.hitCD <= 0 && cs > 6 && p.cy < 2.6) {
-            p.hitCD = 0.35;
-            p.vx = car.vx * rand(1, 1.2);
-            p.vz = car.vz * rand(1, 1.2);
-            p.vy = Math.max(p.vy, 3 + cs * 0.2);
-            this.fx.bloodBurst(p.x, p.cy, p.z, car.vx / cs, car.vz / cs, cs * 0.5, 12);
-            this.audio.splat(0.6);
-            if (this.onEvent) this.onEvent('juggle', p);
-          } else if (p.state === ST.DEAD && p.runCD <= 0 && cs > 3) {
-            this._runOver(p, car);
-            if (p.state === ST.FREE) continue;
-          }
+      // контакт с машинами
+      let gone = false;
+      for (const car of cars) {
+        this._contact(p, car);
+        if (p.state === ST.FREE) {
+          gone = true;
+          break;
         }
       }
+      if (gone) continue;
 
       this._compose(p);
     }
@@ -937,11 +928,46 @@ export class Pedestrians {
     this.spawnTimer -= dt;
     if (alive + living < this.target && this.spawnTimer <= 0) {
       this.spawnTimer = 0.15;
-      this._spawn(car);
+      this._spawn(player);
     }
 
     this.gibs.update(dt, ground, world, this.fx);
     for (const m of this.meshes) m.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Пешеход и машина: сбить, оттолкнуть, раздавить, переехать. */
+  _contact(p, car) {
+    const dx = p.x - car.x, dz = p.z - car.z;
+    if (dx * dx + dz * dz >= 10) return;
+    const ax = car.axes();
+    const lz = dx * ax.fx + dz * ax.fz;
+    const lx = dx * ax.rx + dz * ax.rz;
+    if (Math.abs(lx) >= CAR_HALF_W + 0.3 || Math.abs(lz) >= CAR_HALF_L + 0.3) return;
+    const cs = car.speed;
+    if (this.isAlive(p)) {
+      if (cs > KNOCK_SPEED) this._hitByCar(p, car, lx);
+      else {
+        const tgt = (lx >= 0 ? 1 : -1) * (CAR_HALF_W + 0.32);
+        p.x += ax.rx * (tgt - lx);
+        p.z += ax.rz * (tgt - lx);
+        if (p.state !== ST.PANIC) this._panic(p, car.x, car.z, 0, 0, false);
+      }
+    } else if ((p.state === ST.DOWN || p.state === ST.GETUP) && p.runCD <= 0 && cs > 1.2) {
+      this._crush(p, car);
+    } else if (p.state === ST.FLYING && p.knocked && p.hitCD <= 0 && cs > KNOCK_SPEED && p.cy < 2.6) {
+      this._hitByCar(p, car, lx);
+    } else if (p.state === ST.FLYING && !p.knocked && p.hitCD <= 0 && cs > 6 && p.cy < 2.6) {
+      p.hitCD = 0.35;
+      p.killer = car;
+      p.vx = car.vx * rand(1, 1.2);
+      p.vz = car.vz * rand(1, 1.2);
+      p.vy = Math.max(p.vy, 3 + cs * 0.2);
+      this.fx.bloodBurst(p.x, p.cy, p.z, car.vx / cs, car.vz / cs, cs * 0.5, 12);
+      this.audio.splat(0.6 * car.vol());
+      if (this.onEvent) this.onEvent('juggle', p);
+    } else if (p.state === ST.DEAD && p.runCD <= 0 && cs > 3) {
+      this._runOver(p, car);
+    }
   }
 
   /** Скольжение лежащего тела по земле после удара; возвращает скорость. */

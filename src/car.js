@@ -2,6 +2,21 @@ import * as THREE from 'three';
 import { clamp, lerp, moveToward, rand } from './utils.js';
 import { circleVsCollider } from './physics/collision.js';
 import { flashTexture, blobShadowTexture } from './world/textures.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+/** Копия геометрии, сдвинутая в (x, y, z); при color — с вертекс-цветом. */
+function placed(geo, x, y, z, color = null) {
+  const g = geo.clone();
+  g.translate(x, y, z);
+  if (color) {
+    const c = new THREE.Color(color);
+    const n = g.attributes.position.count;
+    const arr = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) arr.set([c.r, c.g, c.b], i * 3);
+    g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+  }
+  return g;
+}
 
 const P = {
   engine: 13,
@@ -23,8 +38,11 @@ const P = {
 };
 
 // машина в коллизиях — три круга вдоль корпуса
-const HIT_Z = [-1.3, 0, 1.3];
-const HIT_R = 1.0;
+export const HIT_Z = [-1.3, 0, 1.3];
+export const HIT_R = 1.0;
+export const CAR_INERTIA = P.inertia;
+// лоб с кенгурятником держит удар: урон по передней части при ударе о столб/стену
+const FRONT_ARMOR_WALL = 0.75;
 export const CAR_HALF_W = 1.05;
 const BLOOD_TRACK = 26; // сколько метров колесо мажет кровью после лужи
 export const CAR_HALF_L = 2.35;
@@ -42,8 +60,32 @@ const WHEELS = [
   { x: -0.95, z: -1.38, front: false },
 ];
 
+function numberTexture(num, color) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = color;
+  g.fillRect(0, 0, 128, 128);
+  g.fillStyle = '#ffffff';
+  g.beginPath();
+  g.arc(64, 64, 50, 0, Math.PI * 2);
+  g.fill();
+  g.fillStyle = '#111111';
+  g.font = 'bold 64px "Arial Black", Impact, sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(String(num), 64, 68);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
 export class Car {
-  constructor(scene, city, fx, audio, debris, quality) {
+  /**
+   * opts: color — цвет кузова, turret — пулемёт на крыше (у игрока), isPlayer — звук мотора и визга шин,
+   * number — номер на крыше, wallDamage — множитель урона о стены/столбы.
+   */
+  constructor(scene, city, fx, audio, debris, quality, opts = {}) {
     this.scene = scene;
     this.city = city;
     this.world = city.world;
@@ -51,6 +93,13 @@ export class Car {
     this.audio = audio;
     this.debris = debris;
     this.quality = quality;
+    this.opts = { color: '#b3121a', turret: true, isPlayer: true, number: null, wallDamage: 1, ...opts };
+    this.isPlayer = this.opts.isPlayer;
+    this.isCar = true;
+    this.name = this.opts.name || 'ТЫ';
+    this.listener = null; // машина игрока — звуки чужих машин тише с расстоянием
+    this.lastAttacker = null;
+    this.lastAttackAt = -1e9;
     this.onBreakable = null; // (collider, car) => boolean
     this.onImpact = null; // (impact) => void
     this.onWrecked = null;
@@ -66,7 +115,7 @@ export class Car {
     root.add(body);
     this.scene.add(root);
 
-    this.paintColor = new THREE.Color('#b3121a');
+    this.paintColor = new THREE.Color(this.opts.color);
     this.paint = new THREE.MeshPhongMaterial({ color: this.paintColor, shininess: 70, specular: 0x555555 });
     this.cabinMat = new THREE.MeshPhongMaterial({ color: this.paintColor, vertexColors: true, shininess: 90, specular: 0x777777 });
     this.dark = new THREE.MeshLambertMaterial({ color: 0x222326 });
@@ -117,36 +166,22 @@ export class Car {
     under.position.y = 0.47;
     body.add(under);
 
-    // фары
-    for (const x of [-0.62, 0.62]) {
-      const h = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.14, 0.06), this.headMat);
-      h.position.set(x, 0.83, 2.16);
-      body.add(h);
-      const t = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.14, 0.06), this.tailMat);
-      t.position.set(x, 0.86, -2.16);
-      body.add(t);
-    }
+    // фары (детали склеены в один меш — меньше вызовов отрисовки)
+    const lamp = new THREE.BoxGeometry(0.42, 0.14, 0.06);
+    body.add(new THREE.Mesh(mergeGeometries([placed(lamp, -0.62, 0.83, 2.16), placed(lamp, 0.62, 0.83, 2.16)]), this.headMat));
+    body.add(new THREE.Mesh(mergeGeometries([placed(lamp, -0.62, 0.86, -2.16), placed(lamp, 0.62, 0.86, -2.16)]), this.tailMat));
 
-    // кенгурятник с шипами — фирменная деталь
-    const bar = new THREE.Group();
-    const b1 = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.14, 0.14), this.metal);
-    b1.position.set(0, 0.62, 2.3);
-    bar.add(b1);
-    const b2 = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.1, 0.1), this.metal);
-    b2.position.set(0, 0.92, 2.2);
-    bar.add(b2);
-    for (const x of [-0.6, 0.6]) {
-      const v = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.42, 0.1), this.metal);
-      v.position.set(x, 0.77, 2.25);
-      bar.add(v);
-    }
+    // кенгурятник с шипами — фирменная деталь и броня лба
     const spikeGeo = new THREE.ConeGeometry(0.075, 0.45, 6);
     spikeGeo.rotateX(Math.PI / 2);
-    for (let k = 0; k < 6; k++) {
-      const s = new THREE.Mesh(spikeGeo, this.metal);
-      s.position.set(-0.9 + k * 0.36, 0.62, 2.55);
-      bar.add(s);
-    }
+    const barParts = [
+      placed(new THREE.BoxGeometry(2.1, 0.14, 0.14), 0, 0.62, 2.3),
+      placed(new THREE.BoxGeometry(1.6, 0.1, 0.1), 0, 0.92, 2.2),
+      placed(new THREE.BoxGeometry(0.1, 0.42, 0.1), -0.6, 0.77, 2.25),
+      placed(new THREE.BoxGeometry(0.1, 0.42, 0.1), 0.6, 0.77, 2.25),
+    ];
+    for (let k = 0; k < 6; k++) barParts.push(placed(spikeGeo, -0.9 + k * 0.36, 0.62, 2.55));
+    const bar = new THREE.Mesh(mergeGeometries(barParts), this.metal);
     body.add(bar);
     this._part(bar, 'front');
 
@@ -160,19 +195,55 @@ export class Car {
     tyreGeo.rotateZ(Math.PI / 2);
     const rimGeo = new THREE.CylinderGeometry(0.25, 0.25, 0.36, 8);
     rimGeo.rotateZ(Math.PI / 2);
-    const tyreMat = new THREE.MeshLambertMaterial({ color: 0x18181a });
+    const wheelGeo = mergeGeometries([placed(tyreGeo, 0, 0, 0, '#18181a'), placed(rimGeo, 0, 0, 0, '#9aa0a6')]);
+    const wheelMat = new THREE.MeshLambertMaterial({ vertexColors: true });
     this.wheels = WHEELS.map((w) => {
       const pivot = new THREE.Group();
       pivot.position.set(w.x, 0.42, w.z);
       const spin = new THREE.Group();
-      spin.add(new THREE.Mesh(tyreGeo, tyreMat));
-      spin.add(new THREE.Mesh(rimGeo, this.metal));
+      spin.add(new THREE.Mesh(wheelGeo, wheelMat));
       pivot.add(spin);
       root.add(pivot);
       const part = this._part(pivot, 'wheel');
       return { ...w, pivot, spin, part };
     });
 
+    if (!this.opts.turret) {
+      this.turret = null;
+      if (this.opts.number != null) {
+        const plate = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.9), new THREE.MeshLambertMaterial({ map: numberTexture(this.opts.number, this.opts.color) }));
+        plate.rotation.x = -Math.PI / 2;
+        plate.position.set(0, 1.665, -0.3);
+        body.add(plate);
+      }
+      // антикрыло — чтобы соперников было видно издалека
+      const strut = new THREE.BoxGeometry(0.08, 0.36, 0.25);
+      const wing = new THREE.Mesh(
+        mergeGeometries([placed(new THREE.BoxGeometry(1.9, 0.08, 0.5), 0, 1.42, -1.95), placed(strut, -0.7, 1.22, -1.9), placed(strut, 0.7, 1.22, -1.9)]),
+        this.paint,
+      );
+      body.add(wing);
+      this._part(wing, 'wing');
+    } else this._buildTurret(body);
+
+    // мягкая тень под машиной
+    const blob = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.8, 5.2),
+      new THREE.MeshBasicMaterial({ map: blobShadowTexture(), transparent: true, depthWrite: false }),
+    );
+    blob.rotation.x = -Math.PI / 2;
+    blob.position.y = 0.03;
+    blob.renderOrder = 1;
+    root.add(blob);
+
+    root.traverse((o) => {
+      if (o.isMesh && o !== blob && (!this.flash || o.parent !== this.flash)) {
+        o.castShadow = this.quality.shadows;
+      }
+    });
+  }
+
+  _buildTurret(body) {
     // турель с пулемётом
     const turret = (this.turret = new THREE.Group());
     turret.position.set(0, 1.66, -0.35);
@@ -220,22 +291,6 @@ export class Car {
       this.muzzleLight.position.set(0, 0.4, 1.6);
       turret.add(this.muzzleLight);
     }
-
-    // мягкая тень под машиной
-    const blob = new THREE.Mesh(
-      new THREE.PlaneGeometry(2.8, 5.2),
-      new THREE.MeshBasicMaterial({ map: blobShadowTexture(), transparent: true, depthWrite: false }),
-    );
-    blob.rotation.x = -Math.PI / 2;
-    blob.position.y = 0.03;
-    blob.renderOrder = 1;
-    root.add(blob);
-
-    root.traverse((o) => {
-      if (o.isMesh && o !== blob && o.parent !== flash) {
-        o.castShadow = this.quality.shadows;
-      }
-    });
   }
 
   _part(obj, kind) {
@@ -316,6 +371,34 @@ export class Car {
     this._syncMesh(0);
   }
 
+  /** Громкость звуков этой машины для игрока (1 — своя машина). */
+  vol() {
+    if (this.isPlayer || !this.listener) return 1;
+    const d = Math.hypot(this.x - this.listener.x, this.z - this.listener.z);
+    const k = Math.max(0, 1 - d / 90);
+    return k * k;
+  }
+
+  /** Локальные координаты точки: lx — вбок (влево +), lz — вперёд. */
+  local(px, pz) {
+    const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
+    const dx = px - this.x, dz = pz - this.z;
+    return { lx: dx * c - dz * s, lz: dx * s + dz * c };
+  }
+
+  /** Часть корпуса, куда пришёлся удар. */
+  zoneAt(px, pz) {
+    const { lz } = this.local(px, pz);
+    if (lz > 1.1) return 'front';
+    if (lz < -1.3) return 'rear';
+    return 'side';
+  }
+
+  get frontArmored() {
+    const f = this.parts.find((p) => p.kind === 'front');
+    return f && !f.detached;
+  }
+
   get speed() {
     return Math.hypot(this.vx, this.vz);
   }
@@ -330,10 +413,18 @@ export class Car {
   update(dt, input) {
     const n = Math.max(1, Math.ceil(dt / (1 / 120)));
     const h = dt / n;
-    for (let i = 0; i < n; i++) {
-      this._step(h, input);
-      this._collide();
-    }
+    for (let i = 0; i < n; i++) this.physicsStep(h, input);
+    this.postUpdate(dt, input);
+  }
+
+  /** Один подшаг физики: движение и столкновения со статикой. */
+  physicsStep(h, input) {
+    this._step(h, input);
+    this._collide();
+  }
+
+  /** После всех подшагов: визуал, следы, дым, звук. */
+  postUpdate(dt, input) {
     this._afterPhysics(dt, input);
   }
 
@@ -443,14 +534,16 @@ export class Car {
     const y = this.y + 0.8;
     if (impact > 2.5) {
       this.fx.sparks(px, y, pz, nx, nz, Math.min(30, Math.floor(impact * 1.5)));
-      if (now - this.lastImpact > 120) this.audio.crash(Math.min(1.2, impact / 18));
+      const v = this.vol();
+      if (now - this.lastImpact > 120 && v > 0.03) this.audio.crash(Math.min(1.2, impact / 18) * v);
       this.lastImpact = now;
     }
     if (impact > 5) this.fx.dust(px, y - 0.3, pz, 5);
     if (this.onImpact) this.onImpact(impact, px, pz);
     if (!HARD.has(col.kind) || impact < P.damageThreshold || this.wrecked) return;
-    const mult = col.kind === 'pole' || col.kind === 'pillar' || col.kind === 'tree' ? 1.15 : 1;
-    const dmg = (impact - P.damageThreshold) * P.damageScale * mult;
+    let mult = col.kind === 'pole' || col.kind === 'pillar' || col.kind === 'tree' ? 1.15 : 1;
+    if (this.frontArmored && this.zoneAt(px, pz) === 'front') mult *= FRONT_ARMOR_WALL;
+    const dmg = (impact - P.damageThreshold) * P.damageScale * mult * this.opts.wallDamage;
     this.applyDamage(dmg, px, pz, nx, nz);
   }
 
@@ -477,7 +570,7 @@ export class Car {
     if (this.rearHits > 30) this._detach(part('rear'), this.vx * 0.5 + nx * 3, 2.5, this.vz * 0.5 + nz * 3);
     if (dmg > 14) {
       this.fx.glass(px, this.y + 1.3, pz, Math.min(30, Math.floor(dmg)));
-      this.audio.glass();
+      if (this.vol() > 0.05) this.audio.glass(this.vol());
     }
     if (this.onDamage) this.onDamage(dmg);
     if (this.health <= 0) this.explode();
@@ -524,11 +617,10 @@ export class Car {
     this.tailMat.color.set(0x220000);
     this.fx.explosion(this.x, this.y + 0.8, this.z);
     this.fx.glass(this.x, this.y + 1.4, this.z, 40);
-    this.audio.explosion();
+    this.audio.explosion(Math.max(0.15, this.vol()));
     this.hopVel = 6;
     const byKind = (k) => this.parts.filter((p) => p.kind === k);
-    const tur = byKind('turret')[0];
-    this._detach(tur, this.vx * 0.4 + rand(-3, 3), 11, this.vz * 0.4 + rand(-3, 3));
+    for (const top of [...byKind('turret'), ...byKind('wing')]) this._detach(top, this.vx * 0.4 + rand(-3, 3), 11, this.vz * 0.4 + rand(-3, 3));
     for (const p of [...byKind('front'), ...byKind('rear')]) this._detach(p, this.vx * 0.4 + rand(-5, 5), rand(5, 9), this.vz * 0.4 + rand(-5, 5));
     const ws = byKind('wheel');
     for (const p of [ws[0], ws[3]]) this._detach(p, rand(-6, 6), rand(4, 8), rand(-6, 6));
@@ -585,7 +677,7 @@ export class Car {
     const slip = Math.abs(this.vR);
     const skidding = !this.wrecked && ((slip > 3.2 && speed > 4) || (this.handbrake && speed > 5) || (this.braking && this.vF > 9));
     this.slip = skidding ? clamp(slip / 10 + (this.handbrake ? 0.4 : 0) + (this.braking ? 0.3 : 0), 0, 1) : 0;
-    this.audio.skid(this.slip);
+    if (this.isPlayer) this.audio.skid(this.slip);
     for (let i = 0; i < 4; i++) {
       const w = WHEELS[i], tr = this.trails[i];
       const wx = this.x + w.x * c + w.z * s, wz = this.z - w.x * s + w.z * c;
@@ -632,7 +724,7 @@ export class Car {
       }
     }
 
-    this.audio.engine(speed, this.wrecked ? 0 : input.throttle, !this.wrecked);
+    if (this.isPlayer) this.audio.engine(speed, this.wrecked ? 0 : input.throttle, !this.wrecked);
   }
 
   _syncMesh(dt) {
@@ -646,6 +738,6 @@ export class Car {
       w.spin.rotation.x += spinD;
       if (w.front) w.pivot.rotation.y = this.steer;
     }
-    this.turret.rotation.y = this.turretYaw;
+    if (this.turret) this.turret.rotation.y = this.turretYaw;
   }
 }

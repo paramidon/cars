@@ -149,9 +149,9 @@ export class AudioFX {
     this._tone({ freq: 120, freqEnd: 35, dur: 0.25, gain: 0.55 * i });
   }
 
-  crunch() {
-    if (!this.ready) return;
-    this._noise({ dur: 0.16, gain: 0.3, type: 'bandpass', freq: 500, freqEnd: 250, q: 2 });
+  crunch(v = 1) {
+    if (!this.ready || v < 0.03) return;
+    this._noise({ dur: 0.16, gain: 0.3 * v, type: 'bandpass', freq: 500, freqEnd: 250, q: 2 });
   }
 
   crash(intensity = 1) {
@@ -170,19 +170,19 @@ export class AudioFX {
     this._noise({ dur: 0.12, gain: 0.25 * intensity, type: 'highpass', freq: 2500 });
   }
 
-  glass() {
+  glass(v = 1) {
     if (!this.ready) return;
     for (let k = 0; k < 5; k++) {
-      this._tone({ freq: 2200 + Math.random() * 2500, dur: 0.15, gain: 0.05, delay: k * 0.03 });
+      this._tone({ freq: 2200 + Math.random() * 2500, dur: 0.15, gain: 0.05 * v, delay: k * 0.03 });
     }
-    this._noise({ dur: 0.25, gain: 0.25, type: 'highpass', freq: 4000 });
+    this._noise({ dur: 0.25, gain: 0.25 * v, type: 'highpass', freq: 4000 });
   }
 
-  explosion() {
+  explosion(v = 1) {
     if (!this.ready) return;
-    this._noise({ dur: 2.0, gain: 1.3, type: 'lowpass', freq: 2200, freqEnd: 60 });
-    this._tone({ freq: 65, freqEnd: 22, dur: 1.4, gain: 1.0 });
-    for (let k = 0; k < 6; k++) this._noise({ dur: 0.12, gain: 0.25, type: 'bandpass', freq: 900, q: 1, delay: 0.25 + Math.random() * 1.2 });
+    this._noise({ dur: 2.0, gain: 1.3 * v, type: 'lowpass', freq: 2200, freqEnd: 60 });
+    this._tone({ freq: 65, freqEnd: 22, dur: 1.4, gain: 1.0 * v });
+    for (let k = 0; k < 6; k++) this._noise({ dur: 0.12, gain: 0.25 * v, type: 'bandpass', freq: 900, q: 1, delay: 0.25 + Math.random() * 1.2 });
   }
 
   impact() {

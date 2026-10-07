@@ -124,7 +124,7 @@ export class Race {
       [r[1], mid(r[4], r[5])],
       [mid(r[1], r[2]), r[2]],
       [r[2], mid(r[0], r[1])],
-      [r[3], city.spawn.z - 9], // финиш — за 9 м до места старта
+      [r[3], city.spawn.z + 16], // старт/финиш — линия перед стартовой решёткой
     ];
     this._buildRoute();
     this.cps = pts.map(([x, z], i) => this._makeCheckpoint(x, z, i === pts.length - 1));
@@ -164,7 +164,7 @@ export class Race {
     this.length = s;
   }
 
-  /** Ближайшая точка маршрута: длина пути s и направление дороги. */
+  /** Ближайшая точка маршрута: длина пути s, направление дороги и расстояние до неё. */
   _project(x, z) {
     let best = null, bd = Infinity;
     for (const g of this.segs) {
@@ -173,10 +173,55 @@ export class Race {
       const d = (x - px) ** 2 + (z - pz) ** 2;
       if (d < bd) {
         bd = d;
-        best = { s: g.s0 + t, dx: g.dx, dz: g.dz };
+        best = { s: g.s0 + t, dx: g.dx, dz: g.dz, dist: 0 };
       }
     }
+    best.dist = Math.sqrt(bd);
     return best;
+  }
+
+  project(x, z) {
+    return this._project(x, z);
+  }
+
+  _seg(s) {
+    const L = this.length;
+    s = ((s % L) + L) % L;
+    for (const g of this.segs) if (s <= g.s0 + g.len) return [g, s - g.s0];
+    return [this.segs[this.segs.length - 1], 0];
+  }
+
+  /** Точка маршрута на пути s со сдвигом вправо на lateral метров. */
+  pointAt(s, lateral = 0) {
+    const [g, t] = this._seg(s);
+    // вправо от направления (dx, dz) — это (-dz, dx)
+    return { x: g.ax + g.dx * t - g.dz * lateral, z: g.az + g.dz * t + g.dx * lateral, dx: g.dx, dz: g.dz };
+  }
+
+  /** Ближайшие повороты впереди: [{dist, angle}, …]. */
+  cornersAhead(s, count = 2) {
+    const [g0, t] = this._seg(s);
+    const i0 = this.segs.indexOf(g0);
+    const out = [];
+    let dist = g0.len - t;
+    for (let k = 0; k < count; k++) {
+      const a = this.segs[(i0 + k) % this.segs.length], b = this.segs[(i0 + k + 1) % this.segs.length];
+      const angle = Math.acos(Math.max(-1, Math.min(1, a.dx * b.dx + a.dz * b.dz)));
+      out.push({ dist, angle });
+      dist += b.len;
+    }
+    return out;
+  }
+
+  /** Пройденная доля пути до следующего чекпоинта у участника (0…1). */
+  segmentProgress(next, x, z) {
+    const cp = this.cps[next];
+    const prev = this.cps[(next - 1 + this.cps.length) % this.cps.length];
+    const L = this.length;
+    let rem = (((cp.s - this._project(x, z).s) % L) + L) % L;
+    if (rem > L * 0.5) rem -= L; // чуть проскочил ворота, но ещё не засчитано
+    // может быть меньше 0 — например, на старте до линии
+    return Math.min(1.05, 1 - rem / (prev.toNext || 1));
   }
 
   _makeCheckpoint(x, z, finish) {
@@ -256,11 +301,14 @@ export class Race {
     this.next = 0;
     this.passed = 0; // всего чекпоинтов за заезд
     this.elapsed = 0;
+    this.clock = 0; // общее время заезда — идёт и после финиша игрока, для соперников
     this.lapTime = 0;
     this.lapTimes = [];
     this.timeLeft = RACE.startBuffer + this.startToFirst / RACE.pace;
     this.lastTick = Infinity;
     this.lastCp = -1;
+    this.finishCount = 0; // сколько участников уже финишировало
+    this.place = 0; // место игрока на финише
     for (const cp of this.cps) cp.flash = 0;
     this._style();
   }
@@ -284,9 +332,9 @@ export class Race {
   }
 
   /** Куда поставить застрявшую машину: последний пройденный чекпоинт (или старт). */
-  respawnPoint() {
-    if (this.lastCp < 0) return { ...this.city.spawn };
-    const cp = this.cps[this.lastCp];
+  respawnPoint(lastCp = this.lastCp, start = this.city.spawn) {
+    if (lastCp < 0) return { ...start };
+    const cp = this.cps[lastCp];
     // правая полоса, чуть дальше ворот
     const rx = -cp.dz, rz = cp.dx;
     return { x: cp.x + cp.dx * 4 + rx * 3.5, z: cp.z + cp.dz * 4 + rz * 3.5, yaw: cp.yaw };
@@ -336,6 +384,7 @@ export class Race {
     }
     this.beam.material.opacity = 0.55 + Math.sin(time * 4) * 0.2;
 
+    if (this.started) this.clock += dt;
     if (!this.started || this.done) return;
     this.elapsed += dt;
     this.lapTime += dt;
@@ -355,6 +404,33 @@ export class Race {
     }
   }
 
+  /** Новый счётчик прогресса для соперника. */
+  newTracker() {
+    return { lap: 1, next: 0, passed: 0, lastCp: -1, finished: false, place: 0, time: 0 };
+  }
+
+  /** Прогресс соперника по воротам; возвращает событие или null. */
+  track(tr, car) {
+    if (!this.started || tr.finished) return null;
+    const cp = this.cps[tr.next];
+    if ((car.x - cp.x) ** 2 + (car.z - cp.z) ** 2 >= RACE.radius * RACE.radius) return null;
+    tr.lastCp = tr.next;
+    tr.passed++;
+    if (cp.finish) {
+      if (tr.lap >= RACE.laps) {
+        tr.finished = true;
+        tr.place = ++this.finishCount;
+        tr.time = this.clock;
+        return { type: 'finish', place: tr.place };
+      }
+      tr.lap++;
+      tr.next = 0;
+      return { type: 'lap', lap: tr.lap };
+    }
+    tr.next++;
+    return null;
+  }
+
   _pass(cp, car) {
     const idx = this.next;
     this.lastCp = idx;
@@ -369,9 +445,10 @@ export class Race {
       this.lapTime = 0;
       if (this.lap >= RACE.laps) {
         this.done = true;
+        this.place = ++this.finishCount;
         this._style();
         cp.group.visible = true;
-        this._emit('finish', { total: this.elapsed, lapTimes: this.lapTimes });
+        this._emit('finish', { total: this.elapsed, lapTimes: this.lapTimes, place: this.place });
         return;
       }
       this.lap++;
