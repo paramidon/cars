@@ -284,7 +284,9 @@ body {
 .msg {
   font-size: 30px;
   color: #ff4a3d;
-  white-space: nowrap;
+  text-align: center;
+  text-wrap: balance;
+  max-width: 100%;
   animation: pop 1.7s ease-out forwards;
 }
 

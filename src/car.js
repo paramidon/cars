@@ -26,6 +26,7 @@ const P = {
 const HIT_Z = [-1.3, 0, 1.3];
 const HIT_R = 1.0;
 export const CAR_HALF_W = 1.05;
+const BLOOD_TRACK = 26; // сколько метров колесо мажет кровью после лужи
 export const CAR_HALF_L = 2.35;
 
 const HARD = new Set(['building', 'wall', 'pole', 'tree', 'pillar', 'fountain', 'statue', 'pump']);
@@ -278,9 +279,7 @@ export class Car {
     this.wreckTime = 0;
     this.frontHits = 0;
     this.rearHits = 0;
-    this.bloodyWheels = 0;
-    this.markDist = 0;
-    this.bloodDist = 0;
+    this.trails = WHEELS.map(() => ({ skid: false, sx: 0, sz: 0, blood: 0, bx: 0, bz: 0 }));
     this.roll = 0;
     this.rollVel = 0;
     this.pitch = 0;
@@ -537,6 +536,26 @@ export class Car {
   }
 
   // ------------------------------------------------------------------ визуал и эффекты
+  /**
+   * Отрезок следа от последней отмеченной точки колеса до текущей — след всегда позади колеса.
+   * Возвращает длину нарисованного отрезка (0, если колесо проехало слишком мало).
+   */
+  _trailMark(wx, wz, tr, kx, kz, step, r, g, b, opacity) {
+    const dx = wx - tr[kx], dz = wz - tr[kz];
+    const d = Math.hypot(dx, dz);
+    if (d > 4) {
+      // машину переставили (или кадр был огромным) — не тянуть полосу через полкарты
+      tr[kx] = wx;
+      tr[kz] = wz;
+      return 0;
+    }
+    if (d < step) return 0;
+    this.fx.tireMark((wx + tr[kx]) / 2, (wz + tr[kz]) / 2, Math.atan2(dx, dz), d + 0.04, r, g, b, opacity);
+    tr[kx] = wx;
+    tr[kz] = wz;
+    return d;
+  }
+
   _afterPhysics(dt, input) {
     const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
     const speed = this.speed;
@@ -567,31 +586,35 @@ export class Car {
     const skidding = !this.wrecked && ((slip > 3.2 && speed > 4) || (this.handbrake && speed > 5) || (this.braking && this.vF > 9));
     this.slip = skidding ? clamp(slip / 10 + (this.handbrake ? 0.4 : 0) + (this.braking ? 0.3 : 0), 0, 1) : 0;
     this.audio.skid(this.slip);
-    const travel = speed * dt;
-    this.markDist += travel;
-    this.bloodDist += travel;
-    const markYaw = Math.atan2(this.vx, this.vz);
-    if (skidding && this.markDist > 0.25) {
-      const len = this.markDist + 0.1;
-      this.markDist = 0;
-      for (let i = 2; i < 4; i++) {
-        const w = WHEELS[i];
-        const wx = this.x + w.x * c + w.z * s, wz = this.z - w.x * s + w.z * c;
-        this.fx.tireMark(wx, wz, markYaw, len, 0.05, 0.05, 0.05, 0.55);
-        if (Math.random() < 0.35) this.fx.tireSmoke(wx, this.y + 0.2, wz);
-      }
-    } else if (!skidding) this.markDist = 0;
+    for (let i = 0; i < 4; i++) {
+      const w = WHEELS[i], tr = this.trails[i];
+      const wx = this.x + w.x * c + w.z * s, wz = this.z - w.x * s + w.z * c;
 
-    if (this.bloodyWheels > 0 && this.bloodDist > 0.35 && speed > 1) {
-      const len = this.bloodDist + 0.05;
-      this.bloodDist = 0;
-      const op = Math.min(1, this.bloodyWheels / 2.5) * 0.7;
-      for (const w of WHEELS) {
-        const wx = this.x + w.x * c + w.z * s, wz = this.z - w.x * s + w.z * c;
-        this.fx.tireMark(wx, wz, markYaw, len, 0.55, 0.02, 0.02, op);
+      // юз: чёрные полосы от задних колёс
+      if (skidding && i >= 2) {
+        if (!tr.skid) {
+          tr.skid = true;
+          tr.sx = wx;
+          tr.sz = wz;
+        }
+        const d = this._trailMark(wx, wz, tr, 'sx', 'sz', 0.25, 0.05, 0.05, 0.05, 0.55);
+        if (d > 0 && Math.random() < 0.35) this.fx.tireSmoke(wx, this.y + 0.2, wz);
+      } else tr.skid = false;
+
+      // кровь: колесо пачкается, только проехав по крови, и оставляет след позади себя
+      if (!this.wrecked && this.fx.bloodAt(wx, wz)) {
+        if (tr.blood <= 0) {
+          tr.bx = wx;
+          tr.bz = wz;
+        }
+        tr.blood = BLOOD_TRACK;
       }
-      this.bloodyWheels -= len * 0.14;
-    } else if (speed <= 1) this.bloodDist = 0;
+      if (tr.blood > 0) {
+        const op = Math.min(1, tr.blood / 12) * 0.75;
+        const d = this._trailMark(wx, wz, tr, 'bx', 'bz', 0.35, 0.55, 0.02, 0.02, op);
+        tr.blood -= d;
+      }
+    }
 
     // дым и огонь от повреждений
     if (this.health < 55 || this.wrecked) {

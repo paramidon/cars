@@ -12,7 +12,7 @@ import { MachineGun } from './weapon.js';
 import { Input } from './input.js';
 import { ChaseCamera } from './camera.js';
 import { HUD } from './hud.js';
-import { pick } from './utils.js';
+import { phrase } from './words.js';
 
 const $ = (id) => document.getElementById(id);
 const NO_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: false, fire: false };
@@ -136,7 +136,7 @@ class Game {
     car.onImpact = (impact, px, pz) => {
       cam.shake(Math.min(0.85, impact / 22));
       if (impact > 6) peds.alert(px, pz, 22);
-      if (impact > 20 && !car.wrecked) hud.popup(pick(['БАБАХ!', 'ХРЯСЬ!', 'В ЛЕПЁШКУ!']), 'warn');
+      if (impact > 20 && !car.wrecked) hud.popup(phrase('crash'), 'warn');
     };
     car.onDamage = (dmg) => {
       hud.damageFlash(Math.min(0.85, 0.2 + dmg / 30));
@@ -217,35 +217,15 @@ class Game {
     this.lastKill = t;
     this.comboTimer = 3.5;
     this.bestCombo = Math.max(this.bestCombo, this.combo);
-    let base = 100, text = '', cls = '';
-    switch (cause) {
-      case 'car':
-        text = pick(['СБИТ!', 'ПОД КОЛЁСА!', 'ШМЯК!', 'ДАВИ!', 'СТРАЙК!']);
-        break;
-      case 'gib':
-        base = 150;
-        text = pick(['В ФАРШ!', 'В КЛОЧЬЯ!', 'НА ЗАПЧАСТИ!']);
-        cls = 'big';
-        break;
-      case 'crush':
-        text = pick(['РАЗДАВЛЕН!', 'В БЛИН!', 'ХРУСТЬ!', 'ДОБИЛ!']);
-        break;
-      case 'gun':
-        base = 75;
-        text = pick(['РАССТРЕЛЯН', 'НАШПИГОВАН', 'ДЫРЯВЫЙ']);
-        break;
-      case 'explosion':
-        base = 120;
-        text = 'ВЗРЫВНОЙ!';
-        cls = 'big';
-        break;
-    }
+    const base = { car: 100, gib: 150, crush: 100, gun: 75, explosion: 120 }[cause] ?? 100;
+    const cls = cause === 'gib' || cause === 'explosion' ? 'big' : '';
     const pts = base * this.combo;
     this.score += pts;
-    this.hud.popup(`${text} +${pts}`, cls);
+    this.hud.popup(`${phrase(cause)} +${pts}`, cls);
     if (this.multi === 2) this.hud.popup('ДУПЛЕТ!', 'gold');
     else if (this.multi === 3) this.hud.popup('ТРИПЛЕТ!', 'gold');
-    else if (this.multi >= 4) this.hud.popup('МЯСОРУБКА!', 'gold big');
+    else if (this.multi === 4) this.hud.popup('МЯСОРУБКА!', 'gold big');
+    else if (this.multi >= 5) this.hud.popup('МЯСОКОМБИНАТ!', 'gold big');
     if ((cause === 'car' || cause === 'gib') && speed > 13 && this.cam.mode !== 2) this.hud.splatter(Math.min(1.5, speed / 22));
     if (cause === 'car' || cause === 'gib' || cause === 'crush') this.cam.shake(0.12 + speed * 0.006);
     const healed = this.car.heal(HEAL[cause] || 0);
@@ -257,22 +237,16 @@ class Game {
 
   _pedEvent(type, p) {
     if (type === 'knock') {
-      this.hud.popup(pick(['С НОГ!', 'ОПРОКИНУТ!', 'ЛЕЖАТЬ!']), 'info');
+      this.hud.popup(phrase('knock'), 'info');
       return;
     }
     p.bonus = p.bonus || 0;
     const bits = { air: 1, wall: 2, juggle: 4, mince: 8 };
     if (p.bonus & bits[type]) return;
     p.bonus |= bits[type];
-    const table = {
-      air: [50, 'ПОЛЁТ НОРМАЛЬНЫЙ!'],
-      wall: [50, 'НА СТЕНУ!'],
-      juggle: [40, 'ЖОНГЛЁР!'],
-      mince: [25, 'ФАРШ'],
-    };
-    const [pts, text] = table[type];
+    const pts = { air: 50, wall: 50, juggle: 40, mince: 25 }[type];
     this.score += pts;
-    this.hud.popup(`${text} +${pts}`, 'gold');
+    this.hud.popup(`${phrase(type)} +${pts}`, 'gold');
   }
 
   // ------------------------------------------------------------ состояния

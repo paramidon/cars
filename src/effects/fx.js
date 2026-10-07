@@ -12,9 +12,13 @@ export class FX {
     this.glow = new ParticleSystem(scene, Math.floor(quality.maxParticles / 2), { additive: true, soft: 0.2 });
     this.blood = new DecalLayer(scene, bloodTexture(), quality.maxDecals, { renderOrder: 1 });
     this.marks = new DecalLayer(scene, markTexture(), quality.maxMarks, { renderOrder: 0 });
+    // крупные пятна крови на земле: колесо, проехав по ним, начинает оставлять кровавый след
+    this.spots = Array.from({ length: 160 }, () => ({ x: 0, z: 0, r2: 0 }));
+    this.spotIdx = 0;
     this._onBloodLand = (x, y, z, size) => {
       if (Math.random() < 0.45) {
         const s = size * rand(2.2, 4.5);
+        this._addSpot(x, z, s * 0.38);
         this.blood.add(x, y + 0.012 + Math.random() * 0.004, z, 0, 1, 0, s, s, Math.random() * 6.28, rand(0.75, 1), 1, 1, 0.95);
       }
     };
@@ -31,6 +35,29 @@ export class FX {
     this.glow.clear();
     this.blood.clear();
     this.marks.clear();
+    for (const sp of this.spots) sp.r2 = 0;
+  }
+
+  _addSpot(x, z, r) {
+    const sp = this.spots[this.spotIdx];
+    this.spotIdx = (this.spotIdx + 1) % this.spots.length;
+    sp.x = x;
+    sp.z = z;
+    sp.r2 = r * r;
+  }
+
+  /** Место, где колёса гарантированно испачкаются (удар, раздавливание) — без отдельной декали. */
+  bloodSpot(x, z, r) {
+    this._addSpot(x, z, r);
+  }
+
+  /** Есть ли под точкой (x, z) лужа крови. */
+  bloodAt(x, z) {
+    for (const sp of this.spots) {
+      const dx = x - sp.x, dz = z - sp.z;
+      if (dx * dx + dz * dz < sp.r2) return true;
+    }
+    return false;
   }
 
   // ------------------------------------------------------------- кровь
@@ -61,11 +88,13 @@ export class FX {
   }
 
   bloodPool(x, z, size, duration = 2) {
+    this._addSpot(x, z, size * 0.42);
     const y = this.groundHeight(x, z) + 0.01 + Math.random() * 0.005;
     this.blood.addGrowing(x, y, z, size, duration, rand(0.65, 0.85), 1, 1, 1);
   }
 
   bloodSplat(x, z, size) {
+    if (size >= 0.9) this._addSpot(x, z, size * 0.4);
     const y = this.groundHeight(x, z) + 0.012 + Math.random() * 0.005;
     this.blood.add(x, y, z, 0, 1, 0, size, size, Math.random() * 6.28, rand(0.8, 1), 1, 1, 1);
   }

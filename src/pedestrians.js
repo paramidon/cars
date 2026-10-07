@@ -384,7 +384,6 @@ export class Pedestrians {
     if (s > GIB_SPEED) {
       this._gib(p, car.vx, car.vz);
       if (this.onKill) this.onKill(p, 'gib', s);
-      car.bloodyWheels = Math.max(car.bloodyWheels, 4);
       this.alert(p.x, p.z, 25);
       return;
     }
@@ -403,9 +402,9 @@ export class Pedestrians {
     p.health = 0;
     this.fx.bloodBurst(p.x, p.cy, p.z, car.vx / s, car.vz / s, s * 0.6, Math.floor(18 + s));
     this.fx.bloodSplat(p.x, p.z, rand(1, 2));
+    this.fx.bloodSpot(p.x, p.z, 1.3);
     this.audio.splat(s / 18);
     if (Math.random() < 0.6) this.audio.scream();
-    car.bloodyWheels = Math.max(car.bloodyWheels, 3);
     car.vx *= 0.97;
     car.vz *= 0.97;
     this.alert(p.x, p.z, 22);
@@ -476,14 +475,13 @@ export class Pedestrians {
     if (s > GIB_SPEED) {
       p.cause = 'car';
       this._gib(p, car.vx, car.vz);
-      car.bloodyWheels = Math.max(car.bloodyWheels, 4);
       if (this.onKill) this.onKill(p, 'gib', s);
       return;
     }
     const g = this.city.groundHeight(p.x, p.z);
     const dirx = car.vx / (s || 1), dirz = car.vz / (s || 1);
     this.fx.bloodBurst(p.x, g + 0.3, p.z, dirx, dirz, Math.max(4, s * 0.4), 26);
-    car.bloodyWheels = Math.max(car.bloodyWheels, 3);
+    this.fx.bloodSpot(p.x, p.z, 1.3);
     car.pitchVel += 1.5;
     car.hopVel = Math.max(car.hopVel, 1.3);
     this.audio.crunch();
@@ -521,6 +519,7 @@ export class Pedestrians {
     }
     this.fx.bloodBurst(p.x, y, p.z, vx / s, vz / s, Math.min(25, s * 0.7), 55);
     this.fx.bloodPool(p.x, p.z, rand(3.5, 5), 1.5);
+    this.fx.bloodSpot(p.x, p.z, 1.6);
     this.audio.splat(1.3);
     this._free(p);
   }
@@ -530,14 +529,12 @@ export class Pedestrians {
     const s = car.speed;
     if (s > 22) {
       this._gib(p, car.vx, car.vz);
-      car.bloodyWheels = Math.max(car.bloodyWheels, 4);
       if (this.onEvent) this.onEvent('mince', p);
       return;
     }
     const g = this.city.groundHeight(p.x, p.z);
     this.fx.bloodBurst(p.x, g + 0.3, p.z, car.vx / s, car.vz / s, s * 0.3, 10);
     this.fx.bloodSplat(p.x, p.z, rand(1, 1.8));
-    car.bloodyWheels = Math.max(car.bloodyWheels, 2.5);
     car.pitchVel += 1.2;
     car.hopVel = Math.max(car.hopVel, 1.1);
     this.audio.crunch();
