@@ -320,6 +320,21 @@ export class Race {
     this.started = true;
   }
 
+  /** Продолжить заезд с чужих слов (вернулся по сети или сижу в пушке чужой машины): круг, ворота, время. */
+  restore({ lap, next, passed, timeLeft = 0 }) {
+    this.started = true;
+    if (this.lap === lap && this.next === next) {
+      if (timeLeft > 0) this.timeLeft = timeLeft;
+      return;
+    }
+    this.lap = lap;
+    this.next = next;
+    this.passed = passed;
+    this.lastCp = next > 0 ? next - 1 : lap > 1 ? this.cps.length - 1 : -1;
+    if (timeLeft > 0) this.timeLeft = timeLeft;
+    this._style();
+  }
+
   get totalCps() {
     return this.cps.length;
   }

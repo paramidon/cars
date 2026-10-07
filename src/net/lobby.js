@@ -3,6 +3,8 @@ import { makeSlots, crewsOf, TEAMS } from './netplay.js';
 
 const $ = (id) => document.getElementById(id);
 const KEY = 'cars-and-guts:net';
+const SESSION_KEY = 'cars-and-guts:session'; // { url, name, token, at } — чтобы вернуться в комнату после обрыва
+const BACK_MS = 85000; // столько сервер держит место выпавшего (AWAY_MS на сервере — 90 с)
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const MODE_NAME = { classic: 'классика', crew: 'экипажи' };
 const parse = (key, v) => (key === 'bots' || key === 'team' ? Number(v) : key === 'teams' ? v === 'true' : v);
@@ -100,13 +102,119 @@ export class Lobby {
     });
     c.on('closed', (m) => {
       this.room = null;
+      this._forget();
       this._toLobby(m.why);
     });
     c.on('error', (m) => this._status(m.msg, true));
     c.onClose = () => {
-      this.room = null;
-      this._toLobby('Связь с сервером потеряна');
+      // выпали из комнаты — пробуем вернуться, игра пока идёт дальше
+      if (this.room && this.url) this._reconnect();
+      else {
+        this.room = null;
+        this._toLobby('Связь с сервером потеряна');
+      }
     };
+    // пока сидим в комнате — помечаем сессию живой (после перезагрузки страницы по ней вернёмся)
+    setInterval(() => {
+      if (this.client.connected && this.room) this._remember();
+    }, 3000);
+    this._resumeAfterReload();
+  }
+
+  // сессия — во вкладке (переживает перезагрузку) и в браузере (если вкладку закрыли и открыли заново)
+  _remember() {
+    const ses = JSON.stringify({ url: this.url, name: this.name, token: this.client.token, at: Date.now() });
+    for (const st of [sessionStorage, localStorage]) {
+      try {
+        st.setItem(SESSION_KEY, ses);
+      } catch {
+        // не страшно
+      }
+    }
+  }
+
+  _forget() {
+    for (const st of [sessionStorage, localStorage]) {
+      try {
+        st.removeItem(SESSION_KEY);
+      } catch {
+        // не страшно
+      }
+    }
+  }
+
+  /** Страницу перезагрузили (или вкладку закрыли и открыли) посреди игры — вернуться в комнату. */
+  _resumeAfterReload() {
+    let ses = null;
+    try {
+      ses = JSON.parse(sessionStorage.getItem(SESSION_KEY) || localStorage.getItem(SESSION_KEY));
+    } catch {
+      ses = null;
+    }
+    if (!ses || !ses.token || Date.now() - ses.at > BACK_MS) return;
+    this.url = ses.url;
+    this.name = ses.name;
+    this.open();
+    this._status('Возвращаюсь в комнату…');
+    this.client
+      .connect(ses.url, ses.name, ses.token)
+      .then((w) => this._afterWelcome(w))
+      .catch(() => {
+        this._forget();
+        this._status('Комната не дождалась — подключись заново', true);
+        this._render();
+      });
+  }
+
+  /** Связь оборвалась посреди игры: стучимся снова каждые 2 с, пока сервер держит место. */
+  async _reconnect() {
+    if (this.reconnecting) return;
+    this.reconnecting = true;
+    const until = Date.now() + BACK_MS;
+    const token = this.client.token;
+    this.game.hud.popup('СВЯЗЬ ПОТЕРЯНА — ПЕРЕПОДКЛЮЧАЮСЬ…', 'big warn');
+    this._status('Связь потеряна — переподключаюсь…', true);
+    while (Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const w = await this.client.connect(this.url, this.name, token);
+        this.reconnecting = false;
+        this._afterWelcome(w);
+        if (this.game.net) this.game.hud.popup('СВЯЗЬ ВОССТАНОВЛЕНА', 'gold');
+        return;
+      } catch {
+        // сервер ещё недоступен — пробуем дальше
+      }
+    }
+    this.reconnecting = false;
+    this.room = null;
+    this._forget();
+    this._toLobby('Не удалось переподключиться');
+  }
+
+  /** Ответ сервера после (пере)подключения: вернул ли он нас в комнату и в каком она состоянии. */
+  _afterWelcome(w) {
+    const rj = w.rejoin;
+    if (!rj) {
+      // места больше нет — просто в лобби
+      if (this.room || this.game.net) {
+        this.room = null;
+        this._forget();
+        this._toLobby('Комната уже закрыта');
+      }
+      this._render();
+      return;
+    }
+    this.room = rj.room;
+    this._remember();
+    if (rj.room.state === 'race') {
+      if (this.game.net) return; // та же страница — игра так и шла, просто связь вернулась
+      this._hide();
+      this.game.startNet(this.client, rj.room, rj.slots, rj);
+    } else {
+      if (this.game.net) this.game.endNet();
+      this.open();
+    }
   }
 
   _load() {
@@ -139,6 +247,7 @@ export class Lobby {
 
   /** Назад в главное меню: выйти из комнаты и отключиться. */
   close() {
+    this._forget();
     if (this.room) this.client.send({ t: 'leave' });
     this.room = null;
     this.client.close();
@@ -157,6 +266,7 @@ export class Lobby {
 
   /** Выйти из комнаты (из меню паузы, экрана итогов или лобби). */
   leaveRoom() {
+    this._forget();
     this.client.send({ t: 'leave' });
     this.room = null;
     this._toLobby('');
@@ -178,6 +288,8 @@ export class Lobby {
     this._save(name, $('net-server').value.trim());
     this._status('Подключаюсь…');
     $('btn-net-connect').disabled = true;
+    this.url = url;
+    this.name = name;
     try {
       const w = await this.client.connect(url, name);
       const gameVer = w.game?.version;

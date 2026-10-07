@@ -584,11 +584,12 @@ class Game {
     this._syncTouchUI();
   }
 
-  /** Начать сетевой заезд (из лобби, по сообщению сервера start). */
-  startNet(client, room, slots) {
+  /** Начать сетевой заезд (из лобби, по сообщению сервера start); resume — вернулся посреди заезда. */
+  startNet(client, room, slots, resume = null) {
     if (this.net) this.net.dispose();
     this.net = new Netplay(this, client, room);
     this.restart(slots);
+    if (resume) this.net.resume(resume);
   }
 
   /** Выйти из сетевой игры: машины — как для одиночной, игра — в меню. */
@@ -1076,6 +1077,9 @@ class Game {
       this.time += dt;
       for (const r of this.rivals) r.think(dt, { cars: this.cars, running: false });
       this._physics(dt, NO_INPUT);
+      // в меню машина стоит — мотор и визг шин молчат
+      this.audio.engine(0, 0, false);
+      this.audio.skid(0);
       for (const r of this.rivals) r.updateTag(car);
       this.carTag.update(car);
       this.peds.update(dt, this.cars);

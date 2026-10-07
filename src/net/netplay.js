@@ -135,6 +135,8 @@ export class Netplay {
       client.on('place', (m) => this._place(m)),
       client.on('result', (m) => this._result(m)),
       client.on('left', (m) => this._left(m)),
+      client.on('away', (m) => this._away(m, true)),
+      client.on('back', (m) => this._away(m, false)),
     ];
   }
 
@@ -246,7 +248,7 @@ export class Netplay {
       car.kills = kills;
       if (car === g.car) {
         // я в пушке чужой машины: таймер и круги — как у водителя
-        if (timeLeft > 0) g.race.timeLeft = timeLeft;
+        g.race.restore({ lap, next, passed, timeLeft });
       } else {
         const t = car.ai ? car.ai.tr : car.netRace;
         t.lap = lap;
@@ -289,6 +291,54 @@ export class Netplay {
   _result(m) {
     this.result = m;
     this.game._result(m.kind, this.byId.get(m.car), m.name);
+  }
+
+  /** Игрок выпал (away = true) или вернулся: пока его нет, в пушке моей машины стреляет бот. */
+  _away(m, away) {
+    const g = this.game;
+    for (const car of g.cars) {
+      if (car.remote || car.crew?.gunner !== m.id) continue;
+      car.botGunner = away ? new BotGunner(car, g.city.world, 0.4) : null;
+    }
+    g.hud.popup(away ? `${m.name}: СВЯЗЬ ПОТЕРЯНА, ЖДЁМ…` : `${m.name} ВЕРНУЛСЯ`, away ? 'warn' : 'info');
+  }
+
+  /**
+   * Вернулся в идущий заезд (после обрыва и перезагрузки страницы): без отсчёта, свои машины — с последнего
+   * снимка, который запомнил сервер (место, корпус, круг, время), чужие — как обычные снимки.
+   */
+  resume({ rows, stats, result }) {
+    const g = this.game;
+    g.countdown = 0;
+    g.race.start();
+    g.race.clock = Math.max(g.race.clock, 30); // охотники уже вышли на охоту
+    if (stats) {
+      g.score = stats[0];
+      g.kills = stats[1];
+    }
+    const now = performance.now() / 1000;
+    for (const row of rows) {
+      const [id, x, z, yaw, vx, vz, angVel, , health, flags, lap, next, passed, kills, , turret, timeLeft] = row;
+      const car = this.byId.get(id);
+      if (!car) continue;
+      if (car.remote) {
+        this._snapshot({ c: [row] });
+        const st = this.state.get(id);
+        if (st) st.at = now;
+        car.x = x;
+        car.z = z;
+        car.yaw = yaw;
+        continue;
+      }
+      Object.assign(car, { x, z, yaw, vx, vz, angVel, kills, turretYaw: turret });
+      car.health = health;
+      if (car === g.car) g.race.restore({ lap, next, passed, timeLeft });
+      else if (car.ai) Object.assign(car.ai.tr, { lap, next, passed, finished: !!(flags & 8) });
+      if ((flags & 1) && !car.wrecked) car.explode();
+    }
+    g.aimYaw = g.car.yaw + g.car.turretYaw;
+    g.cam.snap(g.car);
+    if (result) this._result(result);
   }
 
   _left(m) {

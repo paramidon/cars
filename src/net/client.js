@@ -20,8 +20,11 @@ export class NetClient {
     return !!this.ws && this.ws.readyState === WebSocket.OPEN && this.id != null;
   }
 
-  /** Подключиться и представиться; промис — с ответом welcome. */
-  connect(url, name) {
+  /**
+   * Подключиться и представиться; промис — с ответом welcome.
+   * token — выданный сервером раньше: если связь оборвалась посреди игры, сервер вернёт на прежнее место (welcome.rejoin).
+   */
+  connect(url, name, token = null) {
     this.close();
     return new Promise((resolve, reject) => {
       let ws;
@@ -39,7 +42,7 @@ export class NetClient {
           reject(new Error('Сервер не отвечает'));
         }
       }, 6000);
-      ws.onopen = () => ws.send(JSON.stringify({ t: 'hello', name, version: GAME_VERSION }));
+      ws.onopen = () => ws.send(JSON.stringify({ t: 'hello', name, version: GAME_VERSION, token }));
       ws.onmessage = (ev) => {
         let msg;
         try {
@@ -51,6 +54,7 @@ export class NetClient {
           opened = true;
           clearTimeout(timer);
           this.id = msg.id;
+          this.token = msg.token;
           resolve(msg);
         }
         this._dispatch(msg);

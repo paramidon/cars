@@ -10,11 +10,13 @@ import { join, normalize, extname, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { networkInterfaces } from 'node:os';
 import { WebSocketServer } from 'ws';
+import { randomUUID } from 'node:crypto';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
 const PORT = Number(process.argv[2] || process.env.PORT || 8080);
 const MAX_PLAYERS = 4; // людей в комнате; соперники-боты (0–4, по настройке) добавляются к ним
+const AWAY_MS = 90000; // столько ждём выпавшего из комнаты игрока, прежде чем выкинуть
 const PKG = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 const DIST_BUILD = (() => {
   try {
@@ -64,8 +66,11 @@ const server = http.createServer(async (req, res) => {
 });
 
 // ------------------------------------------------------------------ лобби и комнаты
-const clients = new Map(); // id → { id, ws, name, version, room, team, car, seat }
-const rooms = new Map(); // id → { id, name, version, hostId, players: Set<id>, settings, state, result, finished }
+// id → { id, ws, token, name, version, room, team, car, seat, away, awayTimer }; у выпавшего ws = null, away = true
+const clients = new Map();
+// id → { id, name, version, hostId, players: Set<id>, settings, state, result, finished, slots, rows, stats }
+// rows — последний снимок каждой машины, stats — очки игроков: чтобы вернувшийся продолжил с того же места
+const rooms = new Map();
 const MODES = ['classic', 'crew'];
 
 /** Настройки комнаты от клиента — в допустимые рамки. */
@@ -106,7 +111,7 @@ function fixSeats(room) {
 let nextId = 1;
 
 const send = (c, msg) => {
-  if (c.ws.readyState === c.ws.OPEN) c.ws.send(JSON.stringify(msg));
+  if (c.ws && c.ws.readyState === c.ws.OPEN) c.ws.send(JSON.stringify(msg));
 };
 const toRoom = (room, msg, except = null) => {
   for (const id of room.players) if (id !== except) send(clients.get(id), msg);
@@ -123,7 +128,7 @@ function roomInfo(room) {
     settings: room.settings,
     players: [...room.players].map((id) => {
       const c = clients.get(id);
-      return { id, name: c.name, team: c.team, car: c.car, seat: c.seat };
+      return { id, name: c.name, team: c.team, car: c.car, seat: c.seat, away: !!c.away };
     }),
   };
 }
@@ -141,17 +146,55 @@ function pushRooms() {
   for (const c of clients.values()) if (!c.room && c.version) send(c, { t: 'rooms', list });
 }
 
+/** Связь с игроком в комнате оборвалась: держим место AWAY_MS, вдруг вернётся. */
+function goAway(c) {
+  const room = c.room && rooms.get(c.room);
+  c.ws = null;
+  if (!room) {
+    clients.delete(c.id);
+    return;
+  }
+  c.away = true;
+  toRoom(room, { t: 'away', id: c.id, name: c.name });
+  toRoom(room, { t: 'room', room: roomInfo(room) });
+  log(`${c.name} выпал из «${room.name}» — ждём ${AWAY_MS / 1000} с`);
+  c.awayTimer = setTimeout(() => {
+    leave(c, 'lost');
+    clients.delete(c.id);
+    log(`${c.name} так и не вернулся`);
+  }, AWAY_MS);
+}
+
+/** Выпавший вернулся по своему токену: та же запись, тот же id, то же место. */
+function comeBack(old, ws) {
+  clearTimeout(old.awayTimer);
+  old.ws = ws;
+  old.away = false;
+  old.alive = true;
+  const room = old.room && rooms.get(old.room);
+  if (room) {
+    toRoom(room, { t: 'back', id: old.id, name: old.name }, old.id);
+    toRoom(room, { t: 'room', room: roomInfo(room) }, old.id);
+  }
+  log(`${old.name} вернулся${room ? ` в «${room.name}»` : ''}`);
+  return room;
+}
+
 function leave(c, why = 'left') {
   const room = c.room && rooms.get(c.room);
   c.room = null;
   if (!room) return;
   room.players.delete(c.id);
-  if (room.hostId === c.id || room.players.size === 0) {
+  if (room.hostId === c.id || ![...room.players].some((id) => !clients.get(id).away)) {
     // хост ушёл — мир (соперники, результаты) считал он, комнату закрываем
     for (const id of room.players) {
       const o = clients.get(id);
       o.room = null;
-      send(o, { t: 'closed', why: why === 'left' ? 'Хост вышел из комнаты' : 'Хост отключился' });
+      send(o, { t: 'closed', why: why === 'left' ? 'Хост вышел из комнаты' : 'Хост отключился и не вернулся' });
+      if (o.away) {
+        clearTimeout(o.awayTimer);
+        clients.delete(o.id);
+      }
     }
     rooms.delete(room.id);
     log(`комната «${room.name}» закрыта`);
@@ -166,14 +209,19 @@ function leave(c, why = 'left') {
 function onMessage(c, msg) {
   const room = c.room && rooms.get(c.room);
   switch (msg.t) {
-    case 's': // снимок машин — самое частое, сразу пересылаем
+    case 's': // снимок машин — самое частое, сразу пересылаем (и запоминаем — для вернувшихся)
+      if (!room || room.state !== 'race') return;
+      for (const row of msg.c || []) room.rows.set(row[0], row);
+      if (msg.p) room.stats.set(c.id, msg.p);
+      toRoom(room, { ...msg, from: c.id }, c.id);
+      return;
     case 'e': // событие (выстрел, удар, взрыв машины)
       if (room && room.state === 'race') toRoom(room, { ...msg, from: c.id }, c.id);
       return;
     case 'hello': {
       c.name = String(msg.name || 'Игрок').slice(0, 16);
       c.version = String(msg.version || '?').slice(0, 40);
-      send(c, { t: 'welcome', id: c.id, server: PKG.version, game: DIST_BUILD });
+      send(c, { t: 'welcome', id: c.id, token: c.token, server: PKG.version, game: DIST_BUILD });
       send(c, { t: 'rooms', list: roomList() });
       log(`${c.name} подключился (версия ${c.version})`);
       return;
@@ -244,6 +292,9 @@ function onMessage(c, msg) {
       room.state = 'race';
       room.result = null;
       room.finished = [];
+      room.slots = msg.slots;
+      room.rows = new Map();
+      room.stats = new Map();
       toRoom(room, { t: 'start', slots: msg.slots, room: roomInfo(room) });
       pushRooms();
       log(`«${room.name}»: старт (${room.players.size} чел.)`);
@@ -275,7 +326,7 @@ function onMessage(c, msg) {
 
 const wss = new WebSocketServer({ server, path: '/ws' });
 wss.on('connection', (ws) => {
-  const c = { id: String(nextId++), ws, name: 'Игрок', version: null, room: null, alive: true };
+  let c = { id: String(nextId++), token: randomUUID(), ws, name: 'Игрок', version: null, room: null, alive: true };
   clients.set(c.id, c);
   ws.on('pong', () => (c.alive = true));
   ws.on('message', (data) => {
@@ -285,10 +336,32 @@ wss.on('connection', (ws) => {
     } catch {
       return;
     }
+    // вернулся выпавший: продолжаем его старую запись (тот же id и место в комнате)
+    if (msg.t === 'hello' && msg.token) {
+      const old = [...clients.values()].find((o) => o.away && o.token === msg.token && o.version === String(msg.version));
+      if (old) {
+        clients.delete(c.id);
+        c = old;
+        const room = comeBack(old, ws);
+        const rejoin = room && {
+          room: roomInfo(room),
+          slots: room.slots,
+          rows: room.state === 'race' ? [...room.rows.values()] : [],
+          stats: room.stats?.get(old.id) || null,
+          result: room.result,
+        };
+        send(c, { t: 'welcome', id: c.id, token: c.token, server: PKG.version, game: DIST_BUILD, rejoin });
+        return;
+      }
+    }
     onMessage(c, msg);
   });
   ws.on('close', () => {
-    leave(c, 'lost');
+    if (c.ws !== ws) return; // эту запись уже подхватило новое соединение
+    if (c.room) {
+      goAway(c);
+      return;
+    }
     clients.delete(c.id);
     if (c.version) log(`${c.name} отключился`);
   });
@@ -297,6 +370,7 @@ wss.on('connection', (ws) => {
 // пинг — чтобы туннели и роутеры не рвали тихое соединение и чтобы замечать пропавших
 setInterval(() => {
   for (const c of clients.values()) {
+    if (!c.ws) continue;
     if (!c.alive) {
       c.ws.terminate();
       continue;
