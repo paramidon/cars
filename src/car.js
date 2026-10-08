@@ -3,6 +3,7 @@ import { clamp, lerp, moveToward, rand } from './utils.js';
 import { circleVsCollider } from './physics/collision.js';
 import { flashTexture, blobShadowTexture } from './world/textures.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { XRAY } from './xray.js';
 
 /** Копия геометрии, сдвинутая в (x, y, z); при color — с вертекс-цветом. */
 function placed(geo, x, y, z, color = null) {
@@ -267,6 +268,7 @@ export class Car {
     root.traverse((o) => {
       if (o.isMesh && o !== blob && (!this.flash || o.parent !== this.flash)) {
         o.castShadow = this.quality.shadows;
+        o.layers.enable(XRAY.car);
       }
     });
   }

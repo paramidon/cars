@@ -142,6 +142,16 @@ export class Zone {
     return this.active && Math.hypot(x - this.cx, z - this.cz) > this.radius;
   }
 
+  /** Скорость сжатия, м/с (до начала сжатия — 0). */
+  get speed() {
+    return this.t < ZONE.hold ? 0 : this.r0 / (ZONE.shrink - ZONE.hold);
+  }
+
+  /** Окажется ли точка снаружи через ahead секунд (с запасом margin м) — для ботов. */
+  unsafe(x, z, ahead = 0, margin = 0) {
+    return this.active && Math.hypot(x - this.cx, z - this.cz) > this.radius - this.speed * ahead - margin;
+  }
+
   /** Урон в секунду снаружи сейчас. */
   get dps() {
     return lerp(ZONE.dps[0], ZONE.dps[1], this.progress(this.t));

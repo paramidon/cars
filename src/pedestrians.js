@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { rand, pick, wrapAngle, dampAngle } from './utils.js';
 import { pushOutCircle, rayCircle } from './physics/collision.js';
 import { CAR_HALF_W, CAR_HALF_L } from './car.js';
+import { XRAY } from './xray.js';
 
 const SHIRTS = ['#c0392b', '#2980b9', '#27ae60', '#f1c40f', '#8e44ad', '#e67e22', '#ecf0f1', '#34495e', '#16a085', '#d35400', '#7f8c8d', '#e84393', '#2c3e50', '#ff7675'];
 const PANTS = ['#2c3e50', '#34495e', '#1e272e', '#57606f', '#6d4c41', '#3d3d3d', '#1f3a93', '#4b6584', '#a4b0be'];
@@ -184,6 +185,7 @@ export class Pedestrians {
         m.setMatrixAt(i, _zero);
         m.setColorAt(i, _c.setRGB(1, 1, 1));
       }
+      m.layers.enable(XRAY.ped);
       scene.add(m);
       return m;
     };

@@ -24,6 +24,9 @@ export const RIVALS = [
 /** Больше машин в заезде не бывает (мест на стартовой решётке — столько же). */
 export const MAX_CARS = 8;
 
+/** Бот в битве: не лезет туда, где стена окажется через столько с; снаружи (или почти) — бросает всё и бежит внутрь. */
+const ZONE_SAFE = { ahead: 5, margin: 6, flee: 3 };
+
 /** В королевской битве гонщиков нет: они становятся «выживальщиками» — держатся середины зоны и огрызаются. */
 const SURVIVOR_AGGR = 0.5;
 
@@ -143,9 +146,20 @@ export class Rival {
     this.wp = null;
   }
 
+  /** Точка там, где скоро будет зона смерти (ahead — на сколько с вперёд смотреть). */
+  _unsafe(x, z, ahead = ZONE_SAFE.ahead) {
+    return !!this.zone && this.zone.unsafe(x, z, ahead, ZONE_SAFE.margin);
+  }
+
   /** Королевская битва: кататься по улицам внутри зоны, ближе к её середине; новая точка — когда доехал. */
   _roam() {
     const car = this.car, z = this.zone;
+    if (this._unsafe(car.x, car.z, ZONE_SAFE.flee)) {
+      // у стены или уже снаружи — прямиком к центру (за домами — по улицам)
+      const c = { x: z.cx, z: z.cz };
+      this.wp = null;
+      return this._clearLine(c.x, c.z) ? c : this._navPoint(c);
+    }
     const wp = this.wp;
     if (!wp || Math.hypot(wp.x - car.x, wp.z - car.z) < 10 || Math.hypot(wp.x - z.cx, wp.z - z.cz) > z.radius * 0.75) {
       this.wp = roadPointNear(this.city, z.cx, z.cz, Math.max(12, z.radius * 0.6));
@@ -229,6 +243,7 @@ export class Rival {
     let best = null, bs = Infinity;
     for (const c of cars) {
       if (c === car || c.wrecked || sameTeam(c, car)) continue;
+      if (this._unsafe(c.x, c.z)) continue; // за зону смерти не гонимся
       const sc = score(c);
       if (sc < bs) {
         bs = sc;
@@ -254,7 +269,7 @@ export class Rival {
       this.patience -= dt * (mutual ? HUNT.mutual : 1);
       if (T.wrecked || this.patience <= 0) return this._dropHunt(at(HUNT.cooldown, a));
       // жертва удрала за зону — за ней не лезем
-      if (this.zone && this.zone.outside(T.x, T.z) && !this.zone.outside(car.x, car.z)) return this._dropHunt(3);
+      if (this._unsafe(T.x, T.z)) return this._dropHunt(3);
       if (this.retarget <= 0) {
         this.retarget = 1.5;
         const next = this._pickTarget(ctx.cars, T);
@@ -292,7 +307,7 @@ export class Rival {
     let best = null, bs = Infinity;
     for (const p of peds.peds) {
       if (p.state === ST.FREE || p.state === ST.DEAD || p.state === ST.FLYING) continue;
-      if (this.zone && this.zone.outside(p.x, p.z)) continue; // за пешеходом в зону смерти не едем
+      if (this._unsafe(p.x, p.z)) continue; // за пешеходом в зону смерти не едем
       const { ang, d } = this._bearing(p.x, p.z);
       if (d > range || Math.abs(ang) > cone) continue;
       const lying = p.state === ST.DOWN || p.state === ST.GETUP;
@@ -310,7 +325,7 @@ export class Rival {
     if (this.mode === 'gore') {
       const p = this.prey;
       this.preyT += dt;
-      const gone = !peds.isLiving(p);
+      const gone = !peds.isLiving(p) || this._unsafe(p.x, p.z);
       if (gone || this.preyT > at(GORE.give, g) || Math.hypot(p.x - this.preyX, p.z - this.preyZ) > 15) {
         this.mode = 'race';
         this.prey = null;
@@ -418,8 +433,16 @@ export class Rival {
     const finished = this.tr.finished;
     let tx, tz, maxV;
 
-    this._huntDecision(dt, ctx);
-    if (this.mode !== 'hunt') this._goreDecision(dt, finished ? null : ctx.peds);
+    // битва: у стены или снаружи — не до охоты, сначала спастись
+    const flee = this._unsafe(car.x, car.z, ZONE_SAFE.flee);
+    if (flee) {
+      this._dropHunt(2);
+      if (this.mode === 'gore') this.mode = 'race';
+      this.prey = null;
+    } else {
+      this._huntDecision(dt, ctx);
+      if (this.mode !== 'hunt') this._goreDecision(dt, finished ? null : ctx.peds);
+    }
 
     if (this.mode === 'hunt') {
       // погоня: напрямую с упреждением, а если цель за домами — по улицам
@@ -448,7 +471,7 @@ export class Rival {
       const p = this._roam();
       tx = p.x;
       tz = p.z;
-      maxV = TOP_SPEED * def.speed * 0.8;
+      maxV = TOP_SPEED * def.speed * (flee ? 1 : 0.8);
     } else {
       // гонка по трассе; гонщики «на резинке»: отставший прибавляет, убежавший сбрасывает
       if (this.role === 'racer') {

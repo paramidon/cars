@@ -21,6 +21,7 @@ import { CarTag } from './tag.js';
 import { Netplay } from './net/netplay.js';
 import { Lobby } from './net/lobby.js';
 import { CrashReporter } from './crash.js';
+import { Xray } from './xray.js';
 import { phrase } from './words.js';
 import { version } from '../package.json';
 
@@ -31,7 +32,7 @@ const STOP_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: true, fire: fal
 const HEAL = { car: 6, gib: 8, crush: 8, explosion: 2 };
 const WRECK_HEAL = 15; // разбил машину тараном или из пушки — подлатался
 const WRECK_CREDIT_MS = 4000; // чей последний удар был за столько мс до взрыва, тот и разбил
-const GORE_WARN = [25, 40, 45]; // на скольких пешеходах предупредить, что соперник близок к победе
+const GORE_WARN = [20, 30, 35]; // на скольких пешеходах предупредить, что соперник близок к победе
 const BEST_KEY = 'cars-and-guts:best';
 const WIN_BONUS = 3000;
 const PLAYER_COLOR = '#e5262b';
@@ -54,7 +55,7 @@ const LOSE_TEXT = {
 class Game {
   constructor() {
     // ------------------------------------------------------------ рендер
-    const renderer = (this.renderer = new THREE.WebGLRenderer({ antialias: QUALITY.antialias, powerPreference: 'high-performance' }));
+    const renderer = (this.renderer = new THREE.WebGLRenderer({ antialias: QUALITY.antialias, powerPreference: 'high-performance', stencil: true }));
     this.pixelRatio = QUALITY.pixelRatio;
     renderer.setPixelRatio(this.pixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -89,6 +90,7 @@ class Game {
 
     // ------------------------------------------------------------ мир
     this.city = buildCity(scene, QUALITY);
+    this.xray = new Xray(renderer, scene);
     this.fx = new FX(scene, this.city.groundHeight, QUALITY);
     this.debris = new Debris(scene, this.city.groundHeight, this.city.world);
     this.audio = new AudioFX({ forceMute: MUTE });
@@ -1262,6 +1264,7 @@ class Game {
     this.fx.normal.material.uniforms.uScale.value = scale;
     this.fx.glow.material.uniforms.uScale.value = scale;
     this.renderer.render(this.scene, this.camera);
+    this.xray.render(this.camera);
   }
 }
 

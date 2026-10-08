@@ -4,6 +4,7 @@ import { mulberry32, clamp } from '../utils.js';
 import { GeoBuilder, addBox, addCyl, addBlob } from './geom.js';
 import { CollisionWorld } from '../physics/collision.js';
 import * as TX from './textures.js';
+import { XRAY } from '../xray.js';
 
 const col = (hex) => new THREE.Color(hex);
 
@@ -615,6 +616,7 @@ export function buildCity(scene, quality) {
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
     mesh.name = `city-${key}`;
+    if (key === 'foliage') mesh.layers.enable(XRAY.mask); // кроны: за ними машины и пешеходы видны рентгеном
     scene.add(mesh);
   }
 
