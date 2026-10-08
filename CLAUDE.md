@@ -1,0 +1,61 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project
+
+Cars & Guts is a Carmageddon-style arcade racing and car-combat prototype built on three.js. It uses plain ES-module JavaScript, with no framework and no TypeScript. It runs on desktop and phones, and it has optional multiplayer through a small Node WebSocket server. `README.md` (in Russian) is the source of truth for gameplay rules, exact tuning numbers, controls and how the netcode works. Read the relevant section before changing behavior.
+
+**Language:** code comments, UI strings, README and commit messages are all in Russian. Keep writing them in Russian.
+
+## Commands
+
+```bash
+npm install
+npm run dev      # Vite dev server on :5173 (+ LAN address); also "dev" in .claude/launch.json
+npm run build    # vite build → dist/, then scripts/inline.mjs → dist/cars-and-guts.html (single file) + dist/build.json
+npm run server   # node server/server.js [port]: serves dist/ + WebSocket lobby on :8080 (or PORT env)
+npm run serve    # build, then server
+```
+
+The project has no linter and no test suite. Use `npm run build` to check that everything compiles. To verify behavior, run the game in a browser:
+
+- `window.game` is the `Game` instance.
+- `game.step(dt)` is public so scripts can step the simulation.
+- `game.debugState()` dumps the current state.
+- `window.crash` is the crash reporter.
+
+URL parameters: `?mute` (use it for automated runs), `?debug` (FPS counter), `?q=low|high` (graphics quality), `?peds=N` (number of live pedestrians).
+
+## Architecture
+
+- **`src/main.js` holds the `Game` class.** It owns every subsystem, the state machine (`menu` / `play` / `pause` / `over`), scoring, healing, win and lose, and the wiring between systems (callbacks set in `_wire()`). `step(dt)` defines the per-frame update order. `_physics()` substeps car physics at ≤1/120 s and calls `collideCars`. Damage routing lives here, not in `car.js`: `_carHit`, `_ramDamage`, `_shellHit`, `_carWrecked`.
+- **`this.cars[0]` is always the car I'm in (`game.car`).** In network crew mode this can be someone else's car, because I may sit in its gun turret, so it isn't necessarily `game.mainCar`. `applyLineup()` is the one place that sets who races, seats, mode (`classic` / `crew`), game type (`race` / `royale`), bot gunners and the autopilot. Both solo and network starts go through it.
+- **There is no physics engine.** All collisions happen in the XZ plane (`physics/collision.js`): buildings are AABBs, props are circles, lookups use a spatial grid, and raycasts use DDA. Each car is three circles (`HIT_Z` / `HIT_R` in `car.js`).
+- **The world:** `world/city.js` generates the city from a fixed seed, so every client builds the same world. `world/geom.js` merges static geometry into ~11 meshes, and `world/textures.js` draws textures on canvases. Pedestrians are drawn with one `InstancedMesh` per body part.
+- **Bots:** `Rival` in `racers.js` drives: it follows the track and hunts cars or pedestrians, steered by two 0..1 scales, `aggr` and `gore`. `BotGunner` in `gunner.js` aims and fires turrets in crew mode. When the player sits in the gun turret, a `Rival` built from the `AUTOPILOT` definition drives their car.
+- **Tuning constants** are uppercase objects at the top of each module: `P` (`car.js`), `RACE`, `CANNON`, `RIVALS` / `HUNT` / `GORE` / `CAR_HIT` (`racers.js`), `ZONE`, `GUNNER`, `HEAL` (`main.js`), `QUALITY` / `CITY` (`config.js`). The last section of the README says what each one controls.
+
+### Networking (`server/server.js`, `src/net/`)
+
+- **The server never simulates the game.** It runs the lobby and rooms, relays messages, and decides who claimed a victory first. It also serves `dist/`, so `npm run server` only picks up game changes after `npm run build`.
+- **Ownership:**
+  - Each client simulates the car it drives. If a bot drives the car, the client in that car's gun turret simulates it.
+  - The host simulates the bots and the pedestrian crowd.
+  - Other players' cars have `car.remote = true`. Skip physics, AI and damage on them; `Netplay.update` interpolates them from snapshots.
+  - Before changing anything that modifies world state, check `remote`, `game.net` and `peds.netRole`, and decide which client owns the change.
+- **Damage:** whoever causes it computes it and broadcasts it as an `'e'` event. That is the rammer for rams, the hitter for pedestrians and the breaker for props. For shells, the hit car's owner computes damage locally.
+- **Snapshots:** cars are sent as `'s'` messages at 20 Hz, and the host sends the crowd as `'ped'` messages at 10 Hz.
+- **Version gating:** `__BUILD__` is a SHA-1 of `src/`, `index.html` and `package.json` (`scripts/build-id.mjs`, line endings normalized). Any source change produces a new version, and a room only admits clients with the same version, so all players must run the same build.
+- **Reconnects:** the server holds a disconnected player's slot for 90 s, along with their last snapshot, stats and broken props, so they can resume.
+
+### Crash reporting
+
+`crash.js` stops the loop on any exception in `_tick`, on a shader error or on WebGL context loss. It then shows the stack trace together with a `debugState()` snapshot, and keeps the last entries in localStorage. The build is minified with `mangle: false` on purpose so stack traces keep real function names. Don't change that.
+
+## Conventions
+
+- **Keep the single-file build working.** Assets are inlined (`assetsInlineLimit` 1 MB) so `dist/cars-and-guts.html` runs on its own. Make sure new assets don't end up as separate files.
+- **Keep the README in sync.** It documents gameplay rules and exact numbers (damage, speeds, timings). When you change behavior or a constant it describes, update the README in the same commit.
+- **`plan.md` is the user's to-do list** (in Russian). Remove an item once it's done; don't rewrite the file otherwise.
+- **Branches:** don't commit directly to `master` or `claude/carmageddon-game-prototype-m0zs5f`. Work on a `claude/*` branch.
