@@ -743,6 +743,8 @@ class Game {
   /** Королевская битва: сжать зону; снаружи свои машины (их считаю я) теряют корпус, разбитые — без виноватых. */
   _zoneTick(dt) {
     const z = this.zone;
+    // битва окончена (победа/поражение, не просто мой вылет) — зона замирает и больше не бьёт
+    if (this.winner || (this.state === 'over' && this.overKind !== 'wreck')) return;
     z.update(this.race.clock);
     if (!this.race.started) return;
     const dmg = z.dps * dt;
