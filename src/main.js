@@ -16,7 +16,7 @@ import { Input } from './input.js';
 import { ChaseCamera } from './camera.js';
 import { HUD } from './hud.js';
 import { Race, RACE } from './race.js';
-import { Rival, RIVALS, GRID, MAX_CARS, gridPoint, collideCars, carHitDamage } from './racers.js';
+import { Rival, RIVALS, GRID, maxCars, gridPoint, collideCars, carHitDamage } from './racers.js';
 import { CarTag } from './tag.js';
 import { Netplay } from './net/netplay.js';
 import { Lobby } from './net/lobby.js';
@@ -32,6 +32,7 @@ const STOP_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: true, fire: fal
 const HEAL = { car: 6, gib: 8, crush: 8, explosion: 2 };
 const WRECK_HEAL = 15; // разбил машину тараном или из пушки — подлатался
 const WRECK_CREDIT_MS = 4000; // чей последний удар был за столько мс до взрыва, тот и разбил
+const COMBO_TIME = 5; // убийства не дальше стольких с друг от друга копят комбо
 const GORE_WARN = [20, 30, 35]; // на скольких пешеходах предупредить, что соперник близок к победе
 const BEST_KEY = 'cars-and-guts:best';
 const WIN_BONUS = 3000;
@@ -366,7 +367,9 @@ class Game {
 
   _syncSoloUI() {
     for (const seg of document.querySelectorAll('#solo-setup .seg')) {
-      for (const b of seg.querySelectorAll('button')) b.classList.toggle('on', b.dataset.v === String(this.solo[seg.dataset.key]));
+      const key = seg.dataset.key;
+      const v = key === 'bots' ? Math.min(this.solo.bots, maxCars(this.solo.game) - 1) : this.solo[key];
+      for (const b of seg.querySelectorAll('button')) b.classList.toggle('on', b.dataset.v === String(v));
     }
     $('solo-setup').classList.toggle('crew', this.solo.mode === 'crew');
     $('solo-setup').classList.toggle('royale', this.solo.game === 'royale');
@@ -383,7 +386,7 @@ class Game {
     car.remote = false;
     car.netId = undefined;
     car.name = 'ТЫ';
-    const rivals = this.allRivals.slice(0, Math.max(1, Math.min(MAX_CARS - 1, bots)));
+    const rivals = this.allRivals.slice(0, Math.max(1, Math.min(maxCars(game) - 1, bots)));
     for (const r of rivals) {
       r.car.crew = { driver: 'bot', gunner: crew ? 'bot' : null };
       r.car.team = null;
@@ -476,10 +479,10 @@ class Game {
     }
     this.kills++;
     const t = this.time;
-    this.combo = t - this.lastKill < 3.5 ? this.combo + 1 : 1;
+    this.combo = t - this.lastKill < COMBO_TIME ? this.combo + 1 : 1;
     this.multi = t - this.lastKill < 0.7 ? this.multi + 1 : 1;
     this.lastKill = t;
-    this.comboTimer = 3.5;
+    this.comboTimer = COMBO_TIME;
     this.bestCombo = Math.max(this.bestCombo, this.combo);
     const base = { car: 100, gib: 150, crush: 100, gun: 75, explosion: 120 }[cause] ?? 100;
     const cls = cause === 'gib' || cause === 'explosion' ? 'big' : '';
@@ -953,7 +956,7 @@ class Game {
     if (this.state !== 'play') return;
     if (shooter === player && local && victim !== player && dmg >= 3) {
       this.score += Math.round(dmg) * 10;
-      this.hud.popup(`${direct ? 'ПРЯМОЕ ПОПАДАНИЕ!' : 'ЗАДЕЛ!'} −${Math.round(dmg)}`, 'gold');
+      this.hud.popup(`${direct ? 'ЕСТЬ ПРОБИТИЕ!' : 'ЗАДЕЛ!'} −${Math.round(dmg)}`, 'gold');
     }
     if (victim === player) this.cam.shake(direct ? 0.7 : 0.35);
   }
@@ -1206,7 +1209,7 @@ class Game {
       this.carTag.update(car);
       this._updateStandings();
       this._checkAnnihilation();
-      cam.update(dt, car, this.seat === 'gunner' && !car.wrecked ? this.aimYaw : null);
+      cam.update(dt, car, this.seat === 'gunner' && !car.wrecked ? this.aimYaw : null, input.lookBack && this.state === 'play' && !car.wrecked);
       this._followSun(car.x, car.z);
       this.comboTimer = Math.max(0, this.comboTimer - dt);
       if (this.comboTimer === 0) this.combo = 0;

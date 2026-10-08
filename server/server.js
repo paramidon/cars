@@ -15,7 +15,8 @@ import { randomUUID } from 'node:crypto';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
 const PORT = Number(process.argv[2] || process.env.PORT || 8080);
-const MAX_PLAYERS = 4; // людей в комнате; соперники-боты (0–7, по настройке) добавляются к ним — всего машин не больше 8
+const MAX_PLAYERS = 4; // людей в комнате; соперники-боты (по настройке) добавляются к ним — всего машин не больше 8 в гонке и 20 в битве
+const MAX_BOTS = 19;
 const AWAY_MS = 90000; // столько ждём выпавшего из комнаты игрока, прежде чем выкинуть
 const PKG = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 const DIST_BUILD = (() => {
@@ -79,7 +80,7 @@ const GAMES = ['race', 'royale'];
 function cleanSettings(s = {}, old = { game: 'race', bots: 4, mode: 'classic', teams: false }) {
   return {
     game: GAMES.includes(s.game) ? s.game : old.game || 'race',
-    bots: Number.isInteger(s.bots) ? Math.max(0, Math.min(7, s.bots)) : old.bots,
+    bots: Number.isInteger(s.bots) ? Math.max(0, Math.min(MAX_BOTS, s.bots)) : old.bots,
     mode: MODES.includes(s.mode) ? s.mode : old.mode,
     teams: typeof s.teams === 'boolean' ? s.teams : old.teams,
   };

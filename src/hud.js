@@ -3,6 +3,7 @@ import { rand } from './utils.js';
 import { RACE } from './race.js';
 
 const $ = (id) => document.getElementById(id);
+const STANDINGS_MAX = 10; // строк в таблице участников на экране
 
 /** HUD: очки, корпус, спидометр, всплывающие надписи, кровь на экране, миникарта. */
 export class HUD {
@@ -159,8 +160,13 @@ export class HUD {
     const key = game.standings.map((e) => `${e.name}${e.car.wrecked ? 'x' : ''}${e.finished ? 'f' : ''}${e.car.kills}`).join('|');
     if (key === this.cache.standings) return;
     this.cache.standings = key;
-    this.el.standings.innerHTML = game.standings
-      .map((e, i) => {
+    // в битве до 20 машин — показываем первых, а себя всегда (последней строкой, если не попал в первые)
+    const rows = game.standings.map((e, i) => [e, i]);
+    const top = rows.slice(0, STANDINGS_MAX);
+    const me = rows.find(([e]) => e.player);
+    if (me && !top.includes(me)) top[STANDINGS_MAX - 1] = me;
+    this.el.standings.innerHTML = top
+      .map(([e, i]) => {
         const note = e.finished ? ' ✓' : e.car.wrecked ? ' ✕' : '';
         return `<div class="${e.player ? 'me' : ''}${e.car.wrecked ? ' out' : ''}"><i style="background:${e.color}"></i>${i + 1}. ${e.name}${note}<small title="сбито пешеходов">${e.car.kills}</small></div>`;
       })

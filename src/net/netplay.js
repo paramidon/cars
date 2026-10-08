@@ -1,6 +1,6 @@
 import { Car } from '../car.js';
 import { CarTag } from '../tag.js';
-import { GRID, MAX_CARS } from '../racers.js';
+import { GRID, maxCars } from '../racers.js';
 import { spawnPoints, zoneCenter } from '../zone.js';
 import { BotGunner } from '../gunner.js';
 import { dampAngle } from '../utils.js';
@@ -67,9 +67,9 @@ export function crewsOf(room) {
     });
 }
 
-/** Сколько ботов будет в заезде: по настройке, но всего машин — не больше MAX_CARS. */
+/** Сколько ботов будет в заезде: по настройке, но всего машин — не больше maxCars (8 в гонке, 20 в битве). */
 export function botCount(room) {
-  return Math.max(0, Math.min(room.settings?.bots ?? 4, MAX_CARS - crewsOf(room).length));
+  return Math.max(0, Math.min(room.settings?.bots ?? 4, maxCars(room.settings?.game) - crewsOf(room).length));
 }
 
 /**

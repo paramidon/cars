@@ -22,6 +22,7 @@ export class ChaseCamera {
     this.distMul = 1;
     this.inited = false;
     this.orbit = 0;
+    this.back = false; // смотрим назад (зажата V)
   }
 
   get modeName() {
@@ -41,16 +42,23 @@ export class ChaseCamera {
     this.update(1 / 60, car);
   }
 
-  /** aimYaw — сидим в башне: камера смотрит вдоль ствола, а не по курсу машины. */
-  update(dt, car, aimYaw = null) {
+  /**
+   * aimYaw — сидим в башне: камера смотрит вдоль ствола, а не по курсу машины.
+   * back — вид назад: камера сразу перескакивает вперёд машины и смотрит ей за спину.
+   */
+  update(dt, car, aimYaw = null, back = false) {
     const m = MODES[this.mode];
     const cam = this.camera;
     const portrait = cam.aspect < 1;
     const speed = car.speed;
+    if (back !== this.back) {
+      this.back = back;
+      this.inited = false; // без плавного облёта — перескок, как в зеркале
+    }
 
     // направление: по курсу машины, при быстром заносе — немного по вектору скорости
-    let dirYaw = aimYaw ?? car.yaw;
-    if (aimYaw == null && speed > 6 && car.vF > 0) {
+    let dirYaw = (aimYaw ?? car.yaw) + (back ? Math.PI : 0);
+    if (aimYaw == null && !back && speed > 6 && car.vF > 0) {
       const velYaw = Math.atan2(car.vx, car.vz);
       dirYaw = car.yaw + Math.atan2(Math.sin(velYaw - car.yaw), Math.cos(velYaw - car.yaw)) * 0.35;
     }

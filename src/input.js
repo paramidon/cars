@@ -5,7 +5,7 @@ const BLOCK_DEFAULT = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'
 
 /**
  * Единый ввод: клавиатура + мышь, сенсорный джойстик + кнопки, геймпад.
- * Результат — state: { throttle, brake, steer, handbrake, fire, aim, aimDX }.
+ * Результат — state: { throttle, brake, steer, handbrake, fire, aim, aimDX, lookBack }.
  * Для стрелка в башне: aim — скорость поворота −1…1 (клавиши, стик), aimDX — сдвиг мыши в пикселях
  * (мышь захватывается кликом, когда gunner = true).
  */
@@ -13,7 +13,7 @@ export class Input {
   constructor(canvas, touchUI) {
     this.canvas = canvas;
     this.keys = new Set();
-    this.state = { throttle: 0, brake: 0, steer: 0, handbrake: false, fire: false, aim: 0, aimDX: 0 };
+    this.state = { throttle: 0, brake: 0, steer: 0, handbrake: false, fire: false, aim: 0, aimDX: 0, lookBack: false };
     this.gunner = false; // сидим в башне: клик захватывает мышь, пробел — тоже огонь
     this.aimDX = 0;
     this.mouse = { x: 0, y: 0, down: false, lastMove: -1e9, over: false };
@@ -172,6 +172,7 @@ export class Input {
     let fire = this.mouse.down || FIRE_KEYS.some((c) => k.has(c)) || (this.gunner && k.has('Space'));
     const turnKeys = (k.has('KeyD') || k.has('ArrowRight') || k.has('KeyE') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') || k.has('KeyQ') ? 1 : 0);
     let aim = turnKeys;
+    let back = k.has('KeyV'); // пока зажата — смотрим назад
 
     // сенсорный джойстик: направление стика ≈ куда ехать относительно машины
     if (this.touch.joyId !== null) {
@@ -209,6 +210,7 @@ export class Input {
       thr = Math.max(thr, b(7).value);
       brk = Math.max(brk, b(6).value);
       if (b(0).pressed) hb = true;
+      if (b(4).pressed) back = true; // LB
       if (b(2).pressed || b(5).pressed) fire = true;
       const edges = [[3, 'camera'], [9, 'pause'], [8, 'respawn']];
       for (const [i, name] of edges) {
@@ -226,6 +228,7 @@ export class Input {
     s.fire = fire;
     s.aim = clamp(aim, -1, 1);
     s.aimDX = this.aimDX;
+    s.lookBack = back;
     this.aimDX = 0;
     return s;
   }

@@ -1,5 +1,6 @@
 import { NetClient, GAME_VERSION, defaultServer, wsUrl } from './client.js';
 import { makeStart, botCount, TEAMS } from './netplay.js';
+import { MAX_CARS, maxCars } from '../racers.js';
 
 const $ = (id) => document.getElementById(id);
 const KEY = 'cars-and-guts:net';
@@ -12,9 +13,12 @@ const parse = (key, v) => (key === 'bots' || key === 'team' ? Number(v) : key ==
 
 /** Подсветить в переключателях .seg выбранные значения; enabled = false — только показать. */
 function showSegs(root, values, enabled = true) {
+  // ботов больше 7 бывает только в битве: в гонке эти кнопки спрятаны, а подсвечена 7
+  root.classList.toggle('royale', values.game === 'royale');
+  const shown = (key) => (key === 'bots' && values.game !== 'royale' ? Math.min(values.bots, MAX_CARS - 1) : values[key]);
   for (const seg of root.querySelectorAll('.seg')) {
     for (const b of seg.querySelectorAll('button')) {
-      b.classList.toggle('on', b.dataset.v === String(values[seg.dataset.key]));
+      b.classList.toggle('on', b.dataset.v === String(shown(seg.dataset.key)));
       b.disabled = !enabled;
     }
   }
@@ -330,7 +334,7 @@ export class Lobby {
         const who = [p.id === r.host ? 'хост' : '', p.id === me ? 'ты' : ''].filter(Boolean).join(', ');
         return `<div>${team}<b>${esc(p.name)}</b><span>${seatText(p)}${who ? ` · ${who}` : ''}</span></div>`;
       })
-      .join('') + `<p class="fine">${r.players.length} из ${r.max} · ботов ${botCount(r)} (всего машин не больше 8) · версия ${esc(r.version)}</p>`;
+      .join('') + `<p class="fine">${r.players.length} из ${r.max} · ботов ${botCount(r)} (всего машин не больше ${maxCars(st.game)}) · версия ${esc(r.version)}</p>`;
 
     // моя команда (подсевший к другому — в команде хозяина машины)
     const mine = byId.get(me);

@@ -1437,3 +1437,8 @@ body.royale #race-lap {
 .panel .seg[data-key='bots'] button {
   min-width: 30px;
 }
+
+/* ботов больше 7 — только в королевской битве */
+.setup:not(.royale) .royale-btn {
+  display: none;
+}

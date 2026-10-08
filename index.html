@@ -79,6 +79,7 @@
           <div><kbd>Пробел</kbd><span>ручник, занос</span></div>
           <div><kbd>ЛКМ</kbd> / <kbd>F</kbd><span>пушка — бьёт строго по курсу, перезарядка ~1 с</span></div>
           <div><kbd>C</kbd> <kbd>R</kbd> <kbd>M</kbd> <kbd>Esc</kbd><span>камера, к чекпоинту, звук, пауза</span></div>
+          <div><kbd>V</kbd><span>зажать — смотреть назад</span></div>
         </div>
         <div class="controls mobile">
           <div><b>Левый палец</b><span>джойстик: куда тянешь — туда едешь</span></div>
@@ -90,7 +91,7 @@
           <div class="seg-row"><span>Игра</span><div class="seg" data-key="game"><button data-v="race">ГОНКА</button><button data-v="royale">КОРОЛЕВСКАЯ БИТВА</button></div></div>
           <div class="seg-row"><span>Режим</span><div class="seg" data-key="mode"><button data-v="classic">КЛАССИКА</button><button data-v="crew">ЭКИПАЖ</button></div></div>
           <div class="seg-row crew-only"><span>Ты</span><div class="seg" data-key="seat"><button data-v="driver">ЗА РУЛЁМ</button><button data-v="gunner">В ПУШКЕ</button></div></div>
-          <div class="seg-row"><span>Соперников</span><div class="seg" data-key="bots"><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button><button data-v="6">6</button><button data-v="7">7</button></div></div>
+          <div class="seg-row"><span>Соперников</span><div class="seg" data-key="bots"><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button><button data-v="6">6</button><button data-v="7">7</button><button data-v="10" class="royale-btn">10</button><button data-v="15" class="royale-btn">15</button><button data-v="19" class="royale-btn">19</button></div></div>
           <p class="fine royale-only">Королевская битва: все разбросаны по городу, каждый сам за себя. Таймера нет — есть красная зона, за ~2 минуты она сжимается в точку; снаружи корпус тает. Победа — разбить всех или первым сбить 40 пешеходов.</p>
           <p class="fine crew-only">Экипаж: у каждой машины водитель и стрелок, башня крутится на 360°. Второе место занимает бот — и у соперников тоже. В пушке: мышь (клик — захват), A/D или стик — поворот, ЛКМ / пробел — огонь.</p>
         </div>
@@ -139,7 +140,7 @@
           <div id="create-setup" class="setup">
             <div class="seg-row"><span>Игра</span><div class="seg" data-key="game"><button data-v="race">ГОНКА</button><button data-v="royale">КОРОЛЕВСКАЯ БИТВА</button></div></div>
             <div class="seg-row"><span>Режим</span><div class="seg" data-key="mode"><button data-v="classic">КЛАССИКА</button><button data-v="crew">ЭКИПАЖ</button></div></div>
-            <div class="seg-row"><span>Ботов</span><div class="seg" data-key="bots"><button data-v="0">0</button><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button><button data-v="6">6</button><button data-v="7">7</button></div></div>
+            <div class="seg-row"><span>Ботов</span><div class="seg" data-key="bots"><button data-v="0">0</button><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button><button data-v="6">6</button><button data-v="7">7</button><button data-v="10" class="royale-btn">10</button><button data-v="15" class="royale-btn">15</button><button data-v="19" class="royale-btn">19</button></div></div>
             <div class="seg-row"><span>Команды</span><div class="seg" data-key="teams"><button data-v="false">НЕТ</button><button data-v="true">2 КОМАНДЫ</button></div></div>
           </div>
           <button id="btn-room-create" class="big">СОЗДАТЬ КОМНАТУ</button>
@@ -149,7 +150,7 @@
           <div id="room-setup" class="setup">
             <div class="seg-row"><span>Игра</span><div class="seg" data-key="game"><button data-v="race">ГОНКА</button><button data-v="royale">КОРОЛЕВСКАЯ БИТВА</button></div></div>
             <div class="seg-row"><span>Режим</span><div class="seg" data-key="mode"><button data-v="classic">КЛАССИКА</button><button data-v="crew">ЭКИПАЖ</button></div></div>
-            <div class="seg-row"><span>Ботов</span><div class="seg" data-key="bots"><button data-v="0">0</button><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button><button data-v="6">6</button><button data-v="7">7</button></div></div>
+            <div class="seg-row"><span>Ботов</span><div class="seg" data-key="bots"><button data-v="0">0</button><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button><button data-v="6">6</button><button data-v="7">7</button><button data-v="10" class="royale-btn">10</button><button data-v="15" class="royale-btn">15</button><button data-v="19" class="royale-btn">19</button></div></div>
             <div class="seg-row"><span>Команды</span><div class="seg" data-key="teams"><button data-v="false">НЕТ</button><button data-v="true">2 КОМАНДЫ</button></div></div>
           </div>
           <div id="room-players" class="room-players"></div>
