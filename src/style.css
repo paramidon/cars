@@ -750,6 +750,13 @@ body.touch .health .bar {
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
 }
 
+.logo {
+  width: min(220px, 60%);
+  aspect-ratio: 3 / 2;
+  margin: -8px auto -6px;
+  background: url("./logo.png") center / contain no-repeat;
+}
+
 h1 {
   font-family: var(--font-display);
   font-size: clamp(38px, 9vw, 64px);

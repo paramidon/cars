@@ -10,6 +10,8 @@ export default defineConfig({
   },
   build: {
     target: 'es2020',
+    // лого встраиваем в код, чтобы одиночный cars-and-guts.html оставался самодостаточным
+    assetsInlineLimit: 1024 * 1024,
     chunkSizeWarningLimit: 2000,
     // сжимаем, но не переименовываем функции и классы — чтобы стектрейс в журнале ошибок был читаемым
     minify: false,
