@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Cars & Guts is a Carmageddon-style arcade racing and car-combat prototype built on three.js. It uses plain ES-module JavaScript, with no framework and no TypeScript. It runs on desktop and phones, and it has optional multiplayer through a small Node WebSocket server. `README.md` (in Russian) is the source of truth for gameplay rules, exact tuning numbers, controls and how the netcode works. Read the relevant section before changing behavior.
+Cars & Guts is a Carmageddon-style arcade racing and car-combat prototype built on three.js. It uses plain ES-module JavaScript, with no framework and no TypeScript. It runs on desktop and phones, and it has optional multiplayer through a small Node WebSocket server. `README.md` is the source of truth for gameplay rules, exact tuning numbers, controls and how the netcode works. Read the relevant section before changing behavior.
 
-**Language:** code comments, UI strings, README and commit messages are all in Russian. Keep writing them in Russian.
+**Language:** all Markdown docs (`README.md`, `CLAUDE.md`, `plan.md`) and commit messages are in English. Existing code comments are in Russian — leave them as they are, don't translate them; new code comments go in English. In-game UI strings stay in Russian. Talk to the user in Russian.
 
 ## Commands
 
@@ -57,6 +57,5 @@ URL parameters: `?mute` (use it for automated runs), `?debug` (FPS counter), `?q
 
 - **Keep the single-file build working.** Assets are inlined (`assetsInlineLimit` 1 MB) so `dist/cars-and-guts.html` runs on its own. Make sure new assets don't end up as separate files.
 - **Keep the README in sync.** It documents gameplay rules and exact numbers (damage, speeds, timings). When you change behavior or a constant it describes, update the README in the same commit.
-- **`plan.md` is the user's to-do list** (in Russian). Remove an item once it's done; don't rewrite the file otherwise.
+- **`plan.md` is the user's to-do list.** Remove an item once it's done; don't rewrite the file otherwise.
 - **Branches:** don't commit directly to `master` or `claude/carmageddon-game-prototype-m0zs5f`. Work on a `claude/*` branch.
-- Write everything you add to the repo — code, docs, commit messages — in English, even when the conversation is in Russian.

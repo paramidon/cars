@@ -1,264 +1,264 @@
 # Cars & Guts
 
-Прототип аркадной гонки-давилки в духе Carmageddon на **three.js**. Небольшой город, трасса с чекпоинтами,
-четыре соперника, толпы пешеходов, красная тачка с шипованным кенгурятником и пушкой на крыше.
-Играется с ПК и с телефона.
+A Carmageddon-style arcade racing and car-mayhem prototype built on **three.js**. A small city, a checkpoint track,
+four rivals, crowds of pedestrians, and a red car with a spiked bull bar and a cannon on the roof.
+Plays on desktop and on phones.
 
-**Как победить** — три способа: прийти первым после 3 кругов, разбить все машины соперников или первым
-сбить 50 пешеходов. Если соперник успел раньше (финишировал или набил 50 пешеходов) — поражение. Ещё можно
-проиграть, разбив свою тачку или не успев по времени.
+**How to win** — three ways: finish first after 3 laps, wreck all rival cars, or be the first to run down
+50 pedestrians. If a rival gets there first (finishes or racks up 50 pedestrians), you lose. You can also
+lose by wrecking your own car or running out of time.
 
-**Игры** (в меню — игра, режим, твоё место и сколько соперников: в гонке 1–7, всего машин не больше 8; в королевской битве ещё 10, 15 или 19 — до 20 машин):
+**Games** (the menu sets the game, the mode, your seat and the number of rivals: 1–7 in a race, at most 8 cars in total; battle royale also offers 10, 15 or 19 — up to 20 cars):
 
-- **Гонка** — 3 круга по чекпоинтам, как описано выше.
-- **Королевская битва** — все машины разбросаны по городу (не ближе 45 м друг к другу), каждый сам за себя.
-  Трассы и таймера нет; есть красная зона-цилиндр, видная из любой точки города (и на миникарте). Её центр — случайная точка города, но не ближе квартала к забору и не в доме: на дороге, тротуаре, площади или во дворе, куда можно доехать (в 4 м вокруг ничего твёрдого и хоть в одну сторону до улицы не мешает ни один дом). Через 5 с она
-  начинает сжиматься и примерно за 2 минуты стягивается в точку; снаружи корпус тает — 2.5 в секунду вначале,
-  до 8 к концу. Побеждает последний выживший или тот, кто первым сбил 50 пешеходов. Боты в битве катаются по улицам
-  внутри зоны, за жертвой за край зоны не лезут, людей не выделяют; гонщики становятся «выживальщиками» —
-  задиристее (агрессия не ниже 0.5). `R` возвращает на дорогу внутри зоны. Можно и экипажем, и по сети.
+- **Race** — 3 laps through checkpoints, as described above.
+- **Battle royale** — all cars are scattered around the city (at least 45 m apart), every man for himself.
+  There is no track and no timer; instead there is a red cylindrical zone visible from anywhere in the city (and on the minimap). Its center is a random point in the city, but at least one block away from the wall and not inside a building: on a road, sidewalk, plaza or courtyard that can be driven to (nothing solid within 4 m, and at least one direction reaches a street without a building in the way). After 5 s it
+  starts to shrink and collapses to a point in about 2 minutes; outside it the car's hull melts — 2.5 per second at first,
+  up to 8 at the end. The last survivor wins, or whoever first runs down 50 pedestrians. In the battle, bots cruise the streets
+  inside the zone, don't chase a victim out of it, and don't single out humans; racers turn into "survivors" —
+  more aggressive (aggression at least 0.5). `R` puts you back on a road inside the zone. Works in crew mode and online.
 
-**Режимы**:
+**Modes**:
 
-- **Классика** — ты за рулём, пушка смотрит строго по курсу.
-- **Экипаж** — у каждой машины водитель и стрелок, башня крутится на 360°. Сядь за руль — стрелять будет бот,
-  или в пушку — тогда рулит автопилот (едет по трассе, иногда отвлекается на пешеходов и врагов).
-  У соперников в башнях тоже боты: они сами выбирают ближайшую машину (если машин нет — пешеходов), чуть мажут
-  и стреляют с паузами. Режим заметно кровавее: за 2 минуты боты разбивают друг друга в 2–3 раза чаще, чем в классике.
+- **Classic** — you drive, the cannon points straight ahead.
+- **Crew** — every car has a driver and a gunner, the turret rotates 360°. Take the wheel and a bot shoots,
+  or take the gun and the autopilot drives (it follows the track and is sometimes distracted by pedestrians and enemies).
+  Rival turrets are manned by bots too: they pick the nearest car (or pedestrians if there are no cars), miss a little
+  and fire with pauses. The mode is noticeably bloodier: in 2 minutes bots wreck each other 2–3 times more often than in classic.
 
-## Что есть
+## Features
 
-- **Соперники**: характер у каждого — не жёсткая роль, а две шкалы от 0 до 1: `aggr` (тяга охотиться на машины)
-  и `gore` (тяга к пешеходам). От них плавно зависят дальность, с которой бот замечает жертву, сектор обзора,
-  шанс ввязаться, терпение, частота выстрелов:
-  - синий МОЛНИЯ (№7, aggr 0.1) — чистый гонщик: едет по трассе, стреляет редко и только по тем, кто прямо
-    перед носом, за машиной сворачивает редко и ненадолго;
-  - фиолетовый РАКЕТА (№21, aggr 0.3) — гонщик-задира: чаще стреляет и иногда ввязывается в драку;
-  - жёлтый БУЛЬДОЗЕР (№66, aggr 0.8) — охотник: замечает машины издалека и гоняется за ними по улицам. Жертву не
-    толкает, а таранит раз за разом: после удара сдаёт назад ~1–1.5 с, держа её в прицеле, и разгоняется снова;
-  - зелёный МЯСНИК (№13, gore 1) — мясник: хочет выиграть, первым набив 50 пешеходов. Рыщет по тротуарам,
-    охотнее добивает лежачих, стреляет по толпе (если рядом с ней нет машин), а когда никого не видно — едет
-    по трассе.
+- **Rivals**: each one's personality is not a fixed role but two scales from 0 to 1: `aggr` (urge to hunt cars)
+  and `gore` (urge to hunt pedestrians). They smoothly drive the range at which a bot notices a victim, its field of view,
+  the chance to engage, patience and fire rate:
+  - blue МОЛНИЯ ("Lightning", #7, aggr 0.1) — a pure racer: follows the track, fires rarely and only at whoever is
+    right in front of its nose, rarely and briefly turns off to chase a car;
+  - purple РАКЕТА ("Rocket", #21, aggr 0.3) — a scrappy racer: fires more often and sometimes joins a fight;
+  - yellow БУЛЬДОЗЕР ("Bulldozer", #66, aggr 0.8) — a hunter: spots cars from afar and chases them through the streets. It doesn't
+    push its victim but rams it again and again: after a hit it backs up for ~1–1.5 s, keeping it in its sights, and speeds up again;
+  - green МЯСНИК ("Butcher", #13, gore 1) — a butcher: wants to win by being the first to run down 50 pedestrians. It prowls the sidewalks,
+    prefers finishing off people who are down, shoots at crowds (if no cars are near them), and when nobody is in sight it
+    follows the track.
 
-  Гонщики «на резинке»: если сильно отстать, чуть притормаживают, если обогнать — чуть поджимают. Первые ~10 с все
-  едут вместе. Чтобы двое не кружили бесконечно, паля мимо, у охоты есть терпение: каждое попадание обнуляет его,
-  а без попаданий бот через несколько секунд бросает жертву и какое-то время едет по трассе (если жертва охотится
-  на него же, терпение тает быстрее). Все сдают назад, если упёрлись, и давят пешеходов (им это тоже чинит корпус). Место видно вверху экрана,
-  там же — сколько врагов осталось; на ПК слева — таблица участников со счётом сбитых пешеходов (соперника, который
-  подбирается к 50, объявляют на 25, 40 и 45); соперники отмечены на миникарте,
-  над машинами — имя и полоска корпуса.
-- **Таран**: лоб с кенгурятником для того и нужен — таран лбом в бок или в зад ему не вредит вовсе. Лбом в бок
-  Урон зависит от встречной скорости: до ~60 км/ч растёт линейно, дальше втрое медленнее, чтобы одним ударом с
-  полного корпуса не разбить. Лбом в бок: 20 км/ч — сопернику −3, 40 — −20, 60 — −36, 80 — −48, 100 — −55,
-  130 — −68, 160 — −81; себе 0. Толкание урона не наносит. Стены, здания и толстые столбы лбом бить по-прежнему больно (лоб держит их лишь чуть лучше).
-  Отвалился кенгурятник — лоб мягче и страдает при таране. Кто разбил машину тараном или из пушки (последний удар
-  за 4 с до взрыва), тот получает +15 к корпусу — и игрок, и боты; игроку ещё +1000 очков и +12 с к таймеру (`RACE.wreckTime`) — охотиться выгодно. Разбитый выбывает.
-- **Пушка** — у каждой машины на крыше. Не наводится: снаряд летит строго по курсу машины, целиться надо
-  носом. Перезарядка у игрока 1.26 с, у ботов 1.89 с (и боты чуть мажут). Прямое попадание («ЕСТЬ ПРОБИТИЕ!» и другие надписи наугад) — около −19
-  корпуса (машину разбивают ~6 попаданий), взрыв задевает всех в радиусе ~4 м, толкает машины, рвёт пешеходов и раскидывает уличную мелочь.
-  Своим снарядом себя не повредишь.
-- **Пулемёт** — второе оружие человека (у ботов только пушка); активно одно, переключение `1` / `2`
-  (на телефоне — кнопка «ОРУЖИЕ», на геймпаде — B). 14 выстрелов в секунду, пули мгновенные, дальность 85 м;
-  машине −0.7 за пулю (~10 в секунду, без взрыва и толчка), стоящего пешехода валит 3-я пуля, сбитого с ног — 2-я (раненые разбегаются)
-  («РЕШЕТО!» и т.п., +75 очков, +2 к корпусу, +1 с). В классике башня с пулемётом сама доворачивает на ближайшую
-  цель в секторе ±25° перед носом (до 55 м; пешеходы чуть в приоритете), с пушкой — смотрит вперёд. Перегрев:
-  4 с непрерывной стрельбы — и пулемёт молчит, пока не остынет совсем (2.5 с с полного нагрева).
-  Готовность оружия — полоска под корпусом над своей машиной и полоска слева вверху (на телефоне — заливка кнопки огня):
-  у пушки она растёт до выстрела, у пулемёта тает с нагревом, при перегреве краснеет. Настройки — `MG` в `src/mg.js`.
-- **Коктейли Молотова** — у ~8% пешеходов в руке бутылка. Заметив машину в 8–30 м (и если не мешает дом),
-  такой пешеход замахивается (0.6 с, горящая бутылка над головой) и кидает её с упреждением (не всегда точным);
-  потом 5–9 с ищет новую цель. Прямое попадание — −6 корпуса; разбитая бутылка 3 с горит лужей (просто огонь).
-  По сети бросок решает хост (он считает толпу) и рассылает его, бутылка летит у всех, а урон машине считает её
-  владелец. Настройки — `MOLOTOV` в `src/molotov.js`.
+  Racers are rubber-banded: if they fall far behind they ease off a little, if they get ahead they press a little. For the first ~10 s
+  everyone drives together. So that two cars don't circle forever firing and missing, hunting has patience: every hit resets it,
+  and without hits the bot gives up the victim after a few seconds and follows the track for a while (if the victim is hunting
+  it back, patience runs out faster). Everyone backs up when stuck and runs over pedestrians (it repairs their hull too). Your place is shown at the top of the screen,
+  along with how many enemies are left; on desktop the left side shows a table of participants with their pedestrian counts (a rival
+  approaching 50 is announced at 25, 40 and 45); rivals are marked on the minimap,
+  and each car shows a name and a hull bar above it.
+- **Ramming**: that's what the bull bar on the nose is for — ramming nose-first into a side or a rear doesn't hurt it at all.
+  Damage depends on the closing speed: it grows linearly up to ~60 km/h and three times slower after that, so a single hit can't
+  wreck a car from full hull. Nose into a side: 20 km/h — rival −3, 40 — −20, 60 — −36, 80 — −48, 100 — −55,
+  130 — −68, 160 — −81; yourself 0. Pushing does no damage. Walls, buildings and thick poles still hurt when hit nose-first (the nose resists them only slightly better).
+  Once the bull bar has fallen off, the nose is softer and takes damage when ramming. Whoever wrecks a car by ramming or with the cannon (the last hit
+  within 4 s before the explosion) gets +15 hull — both the player and bots; the player also gets +1000 points and +12 s on the timer (`RACE.wreckTime`) — hunting pays off. A wrecked car is out.
+- **Cannon** — on the roof of every car. It doesn't aim: the shell flies straight along the car's heading, so you aim
+  with the nose. Reload is 1.26 s for the player and 1.89 s for bots (and bots miss a little). A direct hit ("ЕСТЬ ПРОБИТИЕ!" and other random captions) does about −19
+  hull (~6 hits wreck a car); the blast hits everyone within ~4 m, pushes cars, tears pedestrians apart and scatters street props.
+  Your own shell can't hurt you.
+- **Machine gun** — the human's second weapon (bots only have the cannon); one is active at a time, switch with `1` / `2`
+  (on a phone — the «ОРУЖИЕ» button, on a gamepad — B). 14 rounds per second, instant bullets, 85 m range;
+  −0.7 per bullet to a car (~10 per second, no blast or push); a standing pedestrian drops on the 3rd bullet, one already knocked down on the 2nd (the wounded scatter)
+  ("РЕШЕТО!" etc., +75 points, +2 hull, +1 s). In classic mode the turret auto-aims the machine gun at the nearest
+  target within ±25° of the nose (up to 55 m; pedestrians get slight priority); with the cannon it faces forward. Overheating:
+  after 4 s of continuous fire the machine gun goes silent until it has fully cooled (2.5 s from full heat).
+  Weapon readiness is shown by a bar under the hull bar above your car and by a bar at the top left (on a phone — the fill of the fire button):
+  for the cannon it grows until it can fire, for the machine gun it shrinks with heat and turns red when overheated. Settings — `MG` in `src/mg.js`.
+- **Molotov cocktails** — ~8% of pedestrians hold a bottle. On spotting a car 8–30 m away (with no building in the way),
+  such a pedestrian winds up (0.6 s, burning bottle over the head) and throws it with a lead (not always accurate);
+  then looks for a new target for 5–9 s. A direct hit does −6 hull; the broken bottle burns as a puddle for 3 s (just fire).
+  Online, the host decides the throw (it simulates the crowd) and broadcasts it, the bottle flies for everyone, and the damage to a car is computed by its
+  owner. Settings — `MOLOTOV` in `src/molotov.js`.
 
-- **Старт**: места на стартовой решётке (5 мест в 2 ряда) каждый заезд раздаются случайно — и игроку, и соперникам.
-- **Заезд**: 3 круга по улицам через жёлтые ворота-чекпоинты, пока не кончилось время. Каждые ворота
-  добавляют столько секунд, сколько нужно на следующий отрезок при средней скорости ~58 км/ч, за круг
-  ещё +5 с. Сбитые пешеходы добавляют немного времени (насмерть +2 с, в клочья +3, раздавлен +2,
-  взорван +1), но главное — доехать до финиша. Над следующими воротами светит столб, вверху экрана
-  стрелка и расстояние, маршрут нарисован на миникарте. Остаток времени на финише идёт в очки.
+- **Start**: grid slots (5 slots in 2 rows) are dealt randomly every race — to the player and the rivals alike.
+- **Race**: 3 laps through the streets via yellow checkpoint gates, before time runs out. Each gate
+  adds as many seconds as the next leg takes at an average speed of ~58 km/h, plus +5 s per lap.
+  Pedestrians add a little time (killed +2 s, gibbed +3, crushed +2,
+  blown up +1), but the main thing is to reach the finish. A light beam shines above the next gate, the top of the screen shows an
+  arrow and the distance, and the route is drawn on the minimap. Time left at the finish turns into points.
 
-- **Город** генерируется процедурно (с фиксированным сидом): 6×6 кварталов — офисные башни, панельки,
-  магазины с маркизами, частные дома со скатными крышами, парки с фонтаном, площадь с памятником и колоннами,
-  заправки. Дороги с разметкой и зебрами, тротуары с бордюрами, ограждающая стена по периметру.
-- **Пешеходы** ходят по графу тротуаров и переходят дороги по зебрам. Толпа пополняется: вместо погибших
-  появляются новые — в 45–170 м от игрока и только там, где в 30 м нет ни одной машины. Замечая несущуюся машину или взрыв —
-  пугаются: кто-то замирает, кто-то бежит, размахивая руками (иногда не в ту сторону).
-- **Давить**: на малой скорости (до ~40 км/ч) пешеход только сбит с ног — лежит, корчится, через пару секунд
-  встаёт и убегает. Лежачего можно раздавить, наехав на него. Быстрее 40 км/ч — тело
-  улетает и кувыркается, бьётся о стены (кровь на стенах), остаётся труп с растущей лужей крови. Быстрее
-  ~85 км/ч — разрывает на куски. Переезд трупов, кровавые следы шин, брызги крови на «лобовом стекле» (на экране).
-- **Повреждения**: удар о стену, здание, толстый бетонный столб, дерево или колонну на скорости выше ~29 км/ч
-  отнимает «корпус» (лоб в стену на 100 км/ч — около 45%). Кузов мнётся в месте удара, отлетают кенгурятник
-  и бампер, сыпется стекло, идёт дым, потом огонь. На нуле — взрыв: отлетают колёса и пушка, ближайших
-  пешеходов раскидывает. Тонкие фонари, светофоры, знаки, урны, гидранты (бьёт фонтан) и скамейки просто сносятся.
-- **Ворота чинят**: каждые ворота (чекпоинт или финишная линия круга) дают +6 к корпусу (`RACE.cpHeal`) — и
-  игроку, и соперникам. Итого корпус и время добавляют три вещи: сбитые пешеходы, разбитые машины соперников и ворота.
-  Над своей машиной видна полоска корпуса с числом.
-- **Ремонт кровью**: каждое убийство немного чинит корпус (сбил +6, раздавил +8, в клочья +8,
-  взорвал из пушки всего +2 — давить выгоднее).
-- **Очки и комбо**: убийства не дальше 4 с друг от друга (`COMBO_TIME`) умножают очки, а серия получает имя: 2 — «дуплет», 3 — «триплет», 4 — «каре», 5 — «пятилетка», 6 — «кровавая баня», 7 — «джекпот 777», 8 — «жатва», 9 и больше — «беспредел ×N» (у каждой ступени несколько надписей наугад, список — `SERIES` в `src/words.js`); бонусы за полёт, удар о стену и т.д.
-  Каждое убийство сопровождается надписью из «кулинарного» словаря — «КОТЛЕТА!», «ОТБИВНАЯ!», «ФАРШ!»,
-  «ЛАВАШ!», «ДУРШЛАГ!»… Списки лежат в `src/words.js`, дописывайте свои.
-- **Кровавые следы шин** появляются, только когда колесо проехало по луже или пятну крови, и тянутся
-  за этим колесом ~26 м.
-- Весь звук синтезируется WebAudio (мотор с передачами, визг шин, выстрел пушки, разрыв снаряда, шмяк, крики, взрыв).
-  **Настройки звука** — в главном меню и в паузе: общая громкость, «мотор и шины», «эффекты» (выстрелы, удары,
-  крики) и «выключить весь звук». Ползунок сразу даёт послушать пример, настройки запоминаются в браузере.
-  Мотор слышно только в заезде — в меню, на паузе и на экране итогов он молчит.
-- **Тестовый полигон** — кнопка «ТЕСТОВЫЙ ПОЛИГОН» в главном меню (или `?map=test`; назад — «В ГОРОД»).
-  Площадка того же размера, что город, и за той же стеной, но вместо кварталов ровный асфальт с сеткой через 20 м,
-  два дома и ряд уличной мелочи. Пешеходы стоят на местах и не пугаются (сбитый с ног встаёт и стоит, где упал):
-  один с коктейлями Молотова (кидает, как обычно), поодаль толпа из 20, дальше шеренга из 50 через 2 м. Погибший
-  через 5 с встаёт на своё место заново, если в 8 м нет машины. Соперников, трассы, таймера и победы нет — только
-  своя машина; разбилась — «ещё заезд». Только для игры одному. Новые механики стоит добавлять и сюда.
-  Раскладка — `testGround()` в `src/world/city.js`.
-- **Выйти в меню** в одиночной игре можно из паузы и с экрана итогов (по сети там же — «ВЫЙТИ ИЗ КОМНАТЫ»): заезд сбрасывается, машины возвращаются на старт.
+- **The city** is generated procedurally (with a fixed seed): 6×6 blocks — office towers, apartment blocks,
+  shops with awnings, houses with pitched roofs, parks with a fountain, a plaza with a monument and columns,
+  gas stations. Roads with markings and zebra crossings, sidewalks with curbs, a boundary wall around the perimeter.
+- **Pedestrians** walk along a sidewalk graph and cross roads at zebra crossings. The crowd is replenished: the dead are replaced
+  by new ones — 45–170 m from the player and only where there is no car within 30 m. When they notice a speeding car or an explosion
+  they get scared: some freeze, some run waving their arms (sometimes in the wrong direction).
+- **Running people over**: at low speed (up to ~40 km/h) a pedestrian is only knocked down — lies there writhing, gets up after a couple of seconds
+  and runs away. Someone who is down can be crushed by driving over them. Above 40 km/h the body
+  flies off tumbling, hits walls (blood on the walls), and leaves a corpse with a growing pool of blood. Above
+  ~85 km/h it is torn to pieces. Driving over corpses, bloody tire tracks, blood spatter on the "windshield" (on screen).
+- **Damage**: hitting a wall, building, thick concrete pole, tree or column above ~29 km/h
+  takes away "hull" (nose into a wall at 100 km/h — about 45%). The body dents where it was hit, the bull bar
+  and bumper fall off, glass scatters, smoke appears, then fire. At zero — an explosion: wheels and the cannon fly off, nearby
+  pedestrians are thrown around. Thin lamp posts, traffic lights, signs, bins, hydrants (they spout water) and benches are simply knocked down.
+- **Gates repair**: every gate (a checkpoint or a lap's finish line) gives +6 hull (`RACE.cpHeal`) — to
+  the player and rivals alike. So three things add hull and time: pedestrians, wrecked rival cars and gates.
+  A hull bar with a number is shown above your car.
+- **Blood repair**: every kill repairs the hull a little (hit +6, crushed +8, gibbed +8,
+  blown up with the cannon only +2 — running over pays better).
+- **Points and combos**: kills no more than 4 s apart (`COMBO_TIME`) multiply points, and the streak gets a name: 2 — "дуплет", 3 — "триплет", 4 — "каре", 5 — "пятилетка", 6 — "кровавая баня", 7 — "джекпот 777", 8 — "жатва", 9 and more — "беспредел ×N" (each tier has several random captions, list — `SERIES` in `src/words.js`); bonuses for air time, wall hits, etc.
+  Every kill comes with a caption from a "culinary" vocabulary — "КОТЛЕТА!", "ОТБИВНАЯ!", "ФАРШ!",
+  "ЛАВАШ!", "ДУРШЛАГ!"… The lists live in `src/words.js`, add your own.
+- **Bloody tire tracks** appear only when a wheel has rolled through a pool or spot of blood, and trail
+  behind that wheel for ~26 m.
+- All sound is synthesized with WebAudio (engine with gears, tire squeal, cannon shot, shell blast, splat, screams, explosion).
+  **Sound settings** — in the main menu and in pause: master volume, "engine and tires", "effects" (shots, hits,
+  screams) and "mute all sound". A slider plays a sample right away; settings are remembered in the browser.
+  The engine is only heard during a race — it is silent in the menu, in pause and on the results screen.
+- **Test ground** — the «ТЕСТОВЫЙ ПОЛИГОН» button in the main menu (or `?map=test`; back — «В ГОРОД»).
+  A lot the same size as the city and behind the same wall, but instead of blocks it is flat asphalt with a 20 m grid,
+  two buildings and a row of street props. Pedestrians stand in place and don't get scared (one knocked down gets up and stands where they fell):
+  one with Molotov cocktails (throws as usual), a crowd of 20 further away, and beyond it a line of 50 spaced 2 m apart. A dead one
+  stands up again in their spot after 5 s if no car is within 8 m. No rivals, no track, no timer and no win condition — only
+  your own car; if it gets wrecked — «ЕЩЁ ЗАЕЗД». Single player only. New mechanics should be added here too.
+  Layout — `testGround()` in `src/world/city.js`.
+- **Back to menu** in single player is available from pause and from the results screen (online, the same place has «ВЫЙТИ ИЗ КОМНАТЫ»): the race is reset and cars return to the start.
 
-## Игра по сети
+## Multiplayer
 
-До 4 человек в комнате плюс боты: в гонке 0–7 (всего машин не больше 8), в королевской битве до 19 (всего машин не больше 20). Нужен один компьютер с сервером — белый IP не нужен.
+Up to 4 people per room plus bots: 0–7 in a race (at most 8 cars in total), up to 19 in battle royale (at most 20 cars in total). You need one computer running the server — no public IP needed.
 
 ```bash
 npm install
-npm run serve      # соберёт игру и запустит сервер на порту 8080 (npm run server — без сборки)
+npm run serve      # builds the game and starts the server on port 8080 (npm run server — without building)
 ```
 
-Сервер сам раздаёт игру, поэтому друг открывает её **с твоего сервера** — тогда версия у вас совпадёт автоматически.
-Как до него достучаться без белого IP:
+The server serves the game itself, so your friend opens it **from your server** — then your versions match automatically.
+How to reach it without a public IP:
 
-- **Туннель Cloudflare** (без регистрации, бесплатно): поставить `cloudflared`
-  (`winget install Cloudflare.cloudflared`) и запустить `cloudflared tunnel --url http://localhost:8080`.
-  Он выдаст адрес `https://….trycloudflare.com` — его и скинуть другу. Работает через любой NAT, WebSocket пропускает.
-- **VPN-сеть** — Radmin VPN, ZeroTier, Tailscale: оба в одной виртуальной сети, друг открывает
-  `http://<твой VPN-адрес>:8080` (сервер печатает адреса при запуске). Пинг обычно ниже, чем через туннель.
-- **Одна Wi-Fi сеть** — `http://<адрес в сети>:8080`.
+- **Cloudflare tunnel** (no sign-up, free): install `cloudflared`
+  (`winget install Cloudflare.cloudflared`) and run `cloudflared tunnel --url http://localhost:8080`.
+  It gives you an address `https://….trycloudflare.com` — send that to your friend. Works through any NAT and passes WebSocket.
+- **VPN network** — Radmin VPN, ZeroTier, Tailscale: both on the same virtual network, your friend opens
+  `http://<your VPN address>:8080` (the server prints its addresses on start). Ping is usually lower than through a tunnel.
+- **Same Wi-Fi network** — `http://<LAN address>:8080`.
 
-В игре: «ИГРА ПО СЕТИ» → имя → «ПОДКЛЮЧИТЬСЯ» → один создаёт комнату, другой заходит, хост жмёт «СТАРТ».
-Если игру открыли не с сервера (например, `npm run dev`), в лобби появится поле для адреса сервера.
+In the game: «ИГРА ПО СЕТИ» → name → «ПОДКЛЮЧИТЬСЯ» → one player creates a room, the other joins, the host presses «СТАРТ».
+If the game wasn't opened from the server (e.g. `npm run dev`), the lobby shows a field for the server address.
 
-**Настройки комнаты** (задаются при создании, хост может менять до старта): игра (гонка / королевская битва),
-режим (классика / экипаж), сколько ботов (0–7, в битве ещё 10 / 15 / 19; всего машин не больше 8 в гонке и 20 в битве), команды (нет / 2 команды).
+**Room settings** (set on creation, the host can change them before the start): game (race / battle royale),
+mode (classic / crew), number of bots (0–7, in battle also 10 / 15 / 19; at most 8 cars in a race and 20 in battle), teams (none / 2 teams).
 
-- **Команды** — красные и синие, каждый выбирает свою. Своих не бьёшь: снаряды пролетают сквозь, таран — без урона,
-  боты-стрелки по своим не стреляют. Очки и сбитые пешеходы общие (в HUD — сумма команды), победа одного — победа всех.
-  Разбить всех = разбить все машины чужих.
-- **Экипаж по сети** — каждый выбирает место: за рулём своей машины (в пушке бот), в пушке своей (рулит бот)
-  или на свободное место к другу: «В ПУШКЕ У …» — друг рулит, ты стреляешь (или наоборот). Напарники по машине —
-  тоже команда: общие очки, друг друга не бьют. Против друга можно играть и водителем, и стрелком.
+- **Teams** — red and blue, everyone picks their own. You don't hurt your own: shells pass through, ramming does no damage,
+  bot gunners don't fire at teammates. Points and pedestrian kills are shared (the HUD shows the team total), one player's win is everyone's win.
+  Wreck everyone = wreck all the other team's cars.
+- **Crew online** — everyone picks a seat: driving their own car (a bot in the gun), in the gun of their own car (a bot drives)
+  or a free seat with a friend: «В ПУШКЕ У …» ("in …'s gun") — your friend drives, you shoot (or the other way round). Car mates
+  are a team too: shared points, they don't hurt each other. You can play against a friend both as a driver and as a gunner.
 
-**Версии.** У игры есть отпечаток: номер из `package.json` + хеш исходников (`scripts/build-id.mjs`), он виден
-в лобби. В комнату пускает только с тем же отпечатком, у чужой версии комната в списке серая с пометкой.
+**Versions.** The game has a fingerprint: the version from `package.json` + a hash of the sources (`scripts/build-id.mjs`), shown
+in the lobby. A room only admits players with the same fingerprint; a room with a different version is greyed out in the list with a note.
 
-**Как устроено.** Сервер (`server/server.js`) — лобби, комнаты и пересылка сообщений; игру он не считает.
-Каждый считает свою машину сам, хост — ещё и ботов; чужие машины приходят снимками 20 раз в секунду и
-сглаживаются. Урон от тарана считает тот, кто таранил (у него своя машина точная), и шлёт владельцу жертвы;
-снаряды летят у всех, урон от них владелец машины считает у себя. Машину считает тот, кто за рулём (а если за
-рулём бот — тот, кто в пушке); стрелок в чужой машине крутит башню у себя и шлёт её поворот хозяину, стреляет тоже
-у себя. Уличную мелочь (фонари, светофоры, знаки, урны, гидранты, скамейки) ломает тот, чья машина или снаряд в неё
-попали, и сразу рассылает номера сломанного — у всех падает одно и то же, обломки летят в ту же сторону.
-Толпу пешеходов считает хост: 10 раз в секунду рассылает, кто где идёт, бежит, куда смотрит и кто перепугался
-(новые появляются возле случайного из людей); у остальных пешеходы плавно идут за снимками. Сбил пешехода тот,
-чья машина или снаряд в него попали: он сразу рассылает, что случилось (сбит с ног, убит, раздавлен, разорван),
-где тело и куда и с какой силой ударило, — полёт тела, кровь и куски каждый считает и рисует сам, а очки получает
-только сбивший. Кто первым
-финишировал, разбил всех или набил 50 пешеходов — решает сервер (кто первым заявил). Пауза по сети мир не останавливает.
+**How it works.** The server (`server/server.js`) handles the lobby, rooms and message relaying; it doesn't simulate the game.
+Everyone simulates their own car, and the host also simulates the bots; other cars arrive as snapshots 20 times a second and
+are smoothed. Ram damage is computed by the rammer (their own car is exact) and sent to the victim's owner;
+shells fly for everyone, and the owner of the hit car computes the damage locally. A car is simulated by whoever is driving it (and if a bot
+is driving — by whoever is in the gun); a gunner in someone else's car rotates the turret locally and sends its angle to the owner, and also fires
+locally. Street props (lamp posts, traffic lights, signs, bins, hydrants, benches) are broken by whoever's car or shell hit them,
+and they immediately broadcast the ids of what broke — the same thing falls for everyone, and the debris flies the same way.
+The host simulates the pedestrian crowd: 10 times a second it broadcasts who is walking or running where, which way they face and who got scared
+(new ones appear near a random human player); for everyone else pedestrians smoothly follow the snapshots. A pedestrian is hit by whoever's
+car or shell hit them: they immediately broadcast what happened (knocked down, killed, crushed, torn apart),
+where the body is and where and how hard it was hit — everyone simulates and draws the body's flight, blood and pieces themselves, and only
+the hitter gets the points. Who finished first,
+wrecked everyone or ran down 50 pedestrians is decided by the server (whoever claimed first). Pausing online doesn't stop the world.
 
-**Если выпал.** Связь оборвалась — игра сама переподключается каждые 2 с, а сервер 90 с держит твоё место
-(у остальных надпись «СВЯЗЬ ПОТЕРЯНА, ЖДЁМ…»; пока стрелка нет, в его пушке стреляет бот). Даже если страница
-перезагрузилась или вкладку закрыли и открыли снова — игра вернёт в тот же заезд: машина, корпус, круг, ворота,
-время и очки — с последнего снимка, который запомнил сервер; сломанная без тебя уличная мелочь тоже убрана. Так же может вернуться и хост (пока его нет, боты стоят).
-Кнопка «ВЫЙТИ ИЗ КОМНАТЫ» выходит насовсем; если хост вышел или не вернулся за 90 с, комната закрывается.
+**If you drop out.** When the connection breaks, the game reconnects by itself every 2 s, and the server holds your slot for 90 s
+(the others see «СВЯЗЬ ПОТЕРЯНА, ЖДЁМ…» — "connection lost, waiting"; while the gunner is away, a bot fires their gun). Even if the page
+reloaded or the tab was closed and reopened, the game returns you to the same race: car, hull, lap, gates,
+time and points — from the last snapshot the server remembered; street props broken while you were away are removed too. The host can come back the same way (while they are away, bots stand still).
+The «ВЫЙТИ ИЗ КОМНАТЫ» button leaves for good; if the host leaves or doesn't come back within 90 s, the room closes.
 
-## Управление
+## Controls
 
-| ПК | Действие |
+| Desktop | Action |
 | --- | --- |
-| `W A S D` / стрелки | газ, руль, тормоз / задний ход (быстрее всего машина поворачивает на ~40 км/ч, дальше руль плавно тяжелеет: 60 км/ч — ~107°/с, 100 — ~69°/с, 125 — ~56°/с; машина отзывается с ленцой — в крутой поворот на скорости входи с ручником; выпрямить руль и переложить его в другую сторону можно всегда быстро) |
-| `Пробел` | ручник (занос; отпустил — шины цепляются не сразу, машину ещё ~1 с несёт боком) |
-| ЛКМ / `F` | огонь (пушка в классике бьёт по курсу, пулемёт сам доворачивает на цель) |
-| `1` / `2` | оружие: пушка / пулемёт |
-| в пушке: мышь, `A`/`D`, `Q`/`E` | поворот башни (клик по экрану захватывает мышь, `Esc` — отпустить); огонь — ЛКМ, `F`, пробел |
-| `C` | камера (сзади / дальняя / сверху) |
-| `V` (зажать) | смотреть назад |
-| `R` | вернуть машину к последнему чекпоинту (после финиша/аварии — новый заезд) |
-| `M` / `Esc` | звук вкл/выкл / пауза (в паузе — продолжить, настройки звука, выйти в меню) |
+| `W A S D` / arrows | throttle, steering, brake / reverse (the car turns fastest at ~40 km/h, above that steering gradually gets heavier: 60 km/h — ~107°/s, 100 — ~69°/s, 125 — ~56°/s; the car responds lazily — enter a sharp turn at speed with the handbrake; straightening the wheel and flicking it the other way is always quick) |
+| `Space` | handbrake (drift; when released the tires don't grip right away, the car keeps sliding sideways for ~1 s) |
+| LMB / `F` | fire (in classic the cannon fires straight ahead, the machine gun auto-aims at a target) |
+| `1` / `2` | weapon: cannon / machine gun |
+| in the gun: mouse, `A`/`D`, `Q`/`E` | rotate the turret (a click on the screen captures the mouse, `Esc` releases it); fire — LMB, `F`, space |
+| `C` | camera (behind / far / top-down) |
+| `V` (hold) | look back |
+| `R` | return the car to the last checkpoint (after a finish/crash — new race) |
+| `M` / `Esc` | sound on/off / pause (in pause — resume, sound settings, back to menu) |
 
-Геймпад: RT — газ, LT — тормоз, левый стик — руль, A — ручник, X/RB — огонь, B — сменить оружие, Y — камера, LB (зажать) — смотреть назад; в пушке — правый
-(или левый) стик крутит башню.
+Gamepad: RT — throttle, LT — brake, left stick — steering, A — handbrake, X/RB — fire, B — switch weapon, Y — camera, LB (hold) — look back; in the gun the right
+(or left) stick rotates the turret.
 
-**Телефон**: левый палец — плавающий джойстик (куда тянешь, туда и едешь; вниз — тормоз/назад),
-справа — кнопки огня (на ней название оружия), **ОРУЖИЕ** и **ДРИФТ**. В пушке джойстик влево-вправо крутит башню. Лучше держать горизонтально.
+**Phone**: left thumb — a floating joystick (drive where you pull; down — brake/reverse),
+on the right — the fire button (it shows the weapon name), **ОРУЖИЕ** (weapon) and **ДРИФТ** (drift). In the gun, moving the joystick left-right rotates the turret. Best held in landscape.
 
-## Запуск
+## Running
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173, а также адрес в локальной сети — открой его с телефона
-npm run build      # сборка в dist/ + один самодостаточный файл dist/cars-and-guts.html
-npm run preview    # посмотреть сборку
+npm run dev        # http://localhost:5173, plus a LAN address — open it from your phone
+npm run build      # build into dist/ + one self-contained file dist/cars-and-guts.html
+npm run preview    # preview the build
 ```
 
-Параметры URL:
+URL parameters:
 
-- `?q=low` / `?q=high` — принудительно слабая (без теней, меньше пешеходов) или высокая графика
-  (по умолчанию: телефон — low, ПК — high);
-- `?peds=100` — сколько живых пешеходов держать в городе (по умолчанию 84 на ПК, 54 на телефоне);
-- `?map=test` — тестовый полигон вместо города;
-- `?debug` — счётчик FPS;
-- `?mute` — начать без звука, не трогая сохранённые настройки (так гоняются автотесты, вместе с `--mute-audio` у Chromium).
+- `?q=low` / `?q=high` — force low (no shadows, fewer pedestrians) or high graphics
+  (default: phone — low, desktop — high);
+- `?peds=100` — how many live pedestrians to keep in the city (default 84 on desktop, 54 on a phone);
+- `?map=test` — the test ground instead of the city;
+- `?debug` — FPS counter;
+- `?mute` — start muted without touching saved settings (automated tests run this way, together with Chromium's `--mute-audio`).
 
-## Если игра упала
+## If the game crashes
 
-Любая ошибка (исключение в игровом цикле, ошибка шейдера, потеря WebGL-контекста) останавливает игру
-и открывает окно со стектрейсом и снимком состояния: где машина, сколько пешеходов в каком состоянии,
-сколько декалей и т.д. Кнопка «Скопировать» кладёт отчёт в буфер обмена. Зависания дольше 2 с тоже
-пишутся в журнал. Журнал открывается из меню паузы, а последние записи сохраняются в браузере —
-если страница перезагрузилась, в главном меню появится ссылка «В прошлый раз игра упала».
-Сборка не переименовывает функции, поэтому в стектрейсе видны настоящие имена (`Pedestrians._compose` и т.п.).
+Any error (an exception in the game loop, a shader error, losing the WebGL context) stops the game
+and opens a window with the stack trace and a state snapshot: where the car is, how many pedestrians are in which state,
+how many decals, etc. The «Скопировать» (copy) button puts the report on the clipboard. Freezes longer than 2 s are
+logged too. The log opens from the pause menu, and the latest entries are saved in the browser —
+if the page reloaded, the main menu shows a link «В прошлый раз игра упала» ("the game crashed last time").
+The build doesn't rename functions, so the stack trace shows real names (`Pedestrians._compose`, etc.).
 
-## Как устроено
+## Architecture
 
 ```
 src/
-  main.js             игровой цикл, состояния (меню/игра/пауза/авария), очки, связи между системами
-  config.js           настройки качества и размеров города
-  car.js              аркадная физика (велосипедная модель + боковое сцепление → заносы),
-                      импульсные столкновения, урон, деформация вершин кузова, взрыв
-  pedestrians.js      толпа: инстансинг частей тела, ИИ (граф тротуаров, паника), полёт, трупы, ошмётки
-  cannon.js           пушки и снаряды: выстрел по курсу, полёт, взрыв, урон (настройки — CANNON)
-  mg.js               пулемёт: пули-лучи, трассеры, автодоводка башни, перегрев (настройки — MG)
-  molotov.js          коктейли Молотова: полёт бутылки, попадание в машину, горящая лужа (настройки — MOLOTOV)
-  camera.js           камера преследования (инерция, тряска, не прячет машину за домами)
-  input.js            клавиатура/мышь, сенсорный джойстик, геймпад
-  hud.js              HUD, всплывающие надписи, кровь на экране, миникарта
-  audio.js            синтезированный звук: шины мотора и эффектов, настройки громкости
-  physics/collision.js  2D-коллизии: AABB + круги, пространственная сетка, DDA-рейкаст
-  world/city.js       генерация города (и тестового полигона), граф для пешеходов, миникарта
-  race.js             трасса, ворота-чекпоинты, круги, таймер (настройки — RACE в начале файла)
-  racers.js           соперники: характеры (RIVALS), ИИ — трасса, охота на машины и на пешеходов, удары машин (CAR_HIT)
-  tag.js              табличка над машиной: имя и полоска корпуса
-  gunner.js           бот-стрелок в башне (режим «экипаж»): выбор цели, поворот, стрельба (настройки — GUNNER)
-  zone.js             королевская битва: зона-цилиндр, точки спавна (настройки — ZONE)
-  net/client.js       соединение с сервером, версия игры для комнат
-  net/lobby.js        экран «Игра по сети»: подключение, комнаты, старт
-  net/netplay.js      сетевой заезд: свои/чужие машины, снимки, события, заявки на победу
-  crash.js            журнал ошибок и окно со стектрейсом
-  words.js            надписи при убийствах и трюках
-  world/props.js      ломаемая уличная мелочь
-  world/geom.js       сборщик геометрии (всё статичное сливается в ~11 мешей)
-  world/textures.js   процедурные canvas-текстуры (фасады, асфальт, кровь…)
-  effects/            частицы (свой шейдер), декали (кровь, следы шин), обломки
-server/server.js      сервер: раздаёт dist/, лобби и комнаты, пересылка, кто первый
+  main.js             game loop, states (menu/play/pause/crash), scoring, wiring between systems
+  config.js           quality settings and city dimensions
+  car.js              arcade physics (bicycle model + lateral grip → drifts),
+                      impulse collisions, damage, body vertex deformation, explosion
+  pedestrians.js      crowd: instanced body parts, AI (sidewalk graph, panic), flight, corpses, gibs
+  cannon.js           cannons and shells: firing along the heading, flight, blast, damage (settings — CANNON)
+  mg.js               machine gun: hitscan bullets, tracers, turret auto-aim, overheating (settings — MG)
+  molotov.js          Molotov cocktails: bottle flight, hitting a car, burning puddle (settings — MOLOTOV)
+  camera.js           chase camera (inertia, shake, doesn't hide the car behind buildings)
+  input.js            keyboard/mouse, touch joystick, gamepad
+  hud.js              HUD, popup captions, blood on screen, minimap
+  audio.js            synthesized sound: engine and effects buses, volume settings
+  physics/collision.js  2D collisions: AABBs + circles, spatial grid, DDA raycast
+  world/city.js       city generation (and the test ground), pedestrian graph, minimap
+  race.js             track, checkpoint gates, laps, timer (settings — RACE at the top of the file)
+  racers.js           rivals: personalities (RIVALS), AI — track, hunting cars and pedestrians, car hits (CAR_HIT)
+  tag.js              label above a car: name and hull bar
+  gunner.js           bot gunner in the turret (crew mode): target choice, turning, firing (settings — GUNNER)
+  zone.js             battle royale: cylindrical zone, spawn points (settings — ZONE)
+  net/client.js       server connection, game version for rooms
+  net/lobby.js        the multiplayer screen: connecting, rooms, start
+  net/netplay.js      network race: own/remote cars, snapshots, events, victory claims
+  crash.js            error log and the stack trace window
+  words.js            captions for kills and stunts
+  world/props.js      breakable street props
+  world/geom.js       geometry builder (all static geometry is merged into ~11 meshes)
+  world/textures.js   procedural canvas textures (facades, asphalt, blood…)
+  effects/            particles (custom shader), decals (blood, tire tracks), debris
+server/server.js      server: serves dist/, lobby and rooms, relaying, who was first
 ```
 
-Физического движка нет: столкновения считаются в плоскости XZ (машина — три круга, здания — AABB, столбы — круги),
-этого хватает для аркады и это дёшево на телефонах. Пешеходы (все части тела) рисуются ~6 draw call'ами через
-`InstancedMesh`. На слабом устройстве разрешение рендера автоматически снижается, если FPS проседает.
+There is no physics engine: collisions are computed in the XZ plane (a car is three circles, buildings are AABBs, poles are circles),
+which is enough for an arcade game and cheap on phones. Pedestrians (all body parts) are drawn in ~6 draw calls via
+`InstancedMesh`. On a weak device the render resolution drops automatically if the FPS sags.
 
-Основные числа для подстройки: `P` в `src/car.js` (тяга, сцепление, руль на скорости — таблица `yawCap` и `hardFrom`/`hardTo`/`steerTime`/`yawResp`, возврат руля — `steerReturn`/`yawUnwind`, порог и множитель урона),
-`HEAL` в `src/main.js` (ремонт за убийства), `RACE` в `src/race.js` (круги, темп, бонусы времени),
-`CANNON` в `src/cannon.js` (перезарядка, урон, радиус взрыва), `MG` в `src/mg.js` (пулемёт), `MOLOTOV` в `src/molotov.js` (коктейли), `RIVALS` (характер `aggr`/`gore`, скорость; боты битвы сверх семи — те же характеры под именами из `EXTRA`), `MAX_CARS`/`MAX_CARS_ROYALE` (машин в гонке / в битве),
-`HUNT`/`GORE`/`PREY_WEIGHT`/`HUNT_DELAY` и `CAR_HIT` в `src/racers.js` (как шкалы характера превращаются в поведение,
-кого охотники мочат, урон при таране), `RACE.goreWin` (сколько пешеходов для победы), `KNOCK_SPEED`/`KILL_SPEED` и реакция пешеходов в `_panic()`
-в `src/pedestrians.js`, `QUALITY`/`CITY` в `src/config.js`.
+Main tuning numbers: `P` in `src/car.js` (thrust, grip, steering at speed — the `yawCap` table and `hardFrom`/`hardTo`/`steerTime`/`yawResp`, steering return — `steerReturn`/`yawUnwind`, damage threshold and multiplier),
+`HEAL` in `src/main.js` (repair for kills), `RACE` in `src/race.js` (laps, pace, time bonuses),
+`CANNON` in `src/cannon.js` (reload, damage, blast radius), `MG` in `src/mg.js` (machine gun), `MOLOTOV` in `src/molotov.js` (cocktails), `RIVALS` (personality `aggr`/`gore`, speed; battle bots beyond seven reuse the same personalities under names from `EXTRA`), `MAX_CARS`/`MAX_CARS_ROYALE` (cars in a race / in battle),
+`HUNT`/`GORE`/`PREY_WEIGHT`/`HUNT_DELAY` and `CAR_HIT` in `src/racers.js` (how personality scales turn into behavior,
+whom hunters go after, ram damage), `RACE.goreWin` (how many pedestrians to win), `KNOCK_SPEED`/`KILL_SPEED` and pedestrian reactions in `_panic()`
+in `src/pedestrians.js`, `QUALITY`/`CITY` in `src/config.js`.
