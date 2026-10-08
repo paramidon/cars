@@ -11,10 +11,13 @@ import { dampAngle } from '../utils.js';
  * Урон от тарана считает таранящий (у него своя машина точная) и шлёт владельцу жертвы; снаряды рассылаются событиями
  * и летят у всех, урон от них владелец машины считает у себя. Стрелок в чужой машине крутит башню у себя и шлёт
  * её поворот хозяину. Уличную мелочь ломает тот, чья машина или снаряд в неё попали, и рассылает номера сломанного
- * (сервер их запоминает для вернувшихся). Пешеходы у каждого свои. Кто первый финишировал / разбил всех / набил
- * пешеходов — решает сервер.
+ * (сервер их запоминает для вернувшихся). Толпу пешеходов считает хост и рассылает снимки стоящих (кто где идёт,
+ * бежит, пугается); удар по пешеходу считает тот, чья машина или снаряд ударили, и рассылает событие — что
+ * случилось, куда и с какой силой; полёт тела, кровь и куски каждый считает и рисует сам. Кто первый
+ * финишировал / разбил всех / набил пешеходов — решает сервер.
  */
 const SNAP_HZ = 20;
+const PED_HZ = 10; // снимков толпы в секунду (их шлёт хост)
 const EXTRAP_MAX = 0.25; // дольше снимок вперёд не угадываем, с
 const SNAP_DIST = 8; // разошлись сильнее — переставить сразу, м
 /** Цвета машин людей по порядку входа в комнату. */
@@ -98,6 +101,10 @@ export class Netplay {
     this.crews = crewsOf(room);
     this.broken = []; // сломанная здесь уличная мелочь, ещё не разосланная: [номер, vx, vz]
     game.breakables.onBreak = (it, vx, vz) => this.broken.push([it.id, r1(vx), r1(vz)]);
+    this.pedHits = []; // мои удары по пешеходам, ещё не разосланные
+    this.pedAcc = 0;
+    game.peds.netRole = this.isHost ? 'host' : 'guest';
+    game.peds.onNet = (row) => this.pedHits.push(row);
 
     const g = game;
     const me = this.myId;
@@ -155,6 +162,7 @@ export class Netplay {
     this.off = [
       client.on('s', (m) => this._snapshot(m)),
       client.on('e', (m) => this._event(m)),
+      client.on('ped', (m) => m.from === room.host && this.game.peds.netSnap(m.l)),
       client.on('place', (m) => this._place(m)),
       client.on('result', (m) => this._result(m)),
       client.on('left', (m) => this._left(m)),
@@ -168,6 +176,8 @@ export class Netplay {
     for (const off of this.off) off();
     const g = this.game;
     g.breakables.onBreak = null;
+    g.peds.netRole = null;
+    g.peds.onNet = null;
     for (const rc of g.remotes) {
       rc.car.root.visible = false;
       rc.tag.sprite.visible = false;
@@ -239,6 +249,18 @@ export class Netplay {
       this.client.send({ t: 'e', k: 'prop', l: this.broken });
       this.broken = [];
     }
+    if (this.pedHits.length) {
+      this.client.send({ t: 'e', k: 'peds', l: this.pedHits });
+      this.pedHits = [];
+    }
+    // хост — снимок толпы (после событий: гость сперва узнаёт, кого сбили, потом — что тот уже не стоит)
+    if (this.isHost) {
+      this.pedAcc += dt;
+      if (this.pedAcc >= 1 / PED_HZ) {
+        this.pedAcc = 0;
+        this.client.send({ t: 'ped', l: g.peds.netRows() });
+      }
+    }
 
     this.sendAcc += dt;
     if (this.sendAcc < 1 / SNAP_HZ) return;
@@ -292,6 +314,10 @@ export class Netplay {
 
   _event(m) {
     if (m.k === 'prop') return this._props(m.l);
+    if (m.k === 'peds') {
+      for (const row of m.l || []) this.game.peds.netHit(row, this.byId.get(row[14]) || null);
+      return;
+    }
     const car = this.byId.get(m.id);
     if (!car) return;
     if (m.k === 'fire') {

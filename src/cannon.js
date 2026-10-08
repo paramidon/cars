@@ -174,7 +174,7 @@ export class Artillery {
       if (this.onCarHit) this.onCarHit(car, shooter, dmg, direct, local);
     }
     if (this.peds) {
-      this.peds.explosion(x, z, R, local ? shooter : REMOTE_SHOT);
+      this.peds.explosion(x, z, R, local ? shooter : REMOTE_SHOT, local);
       this.peds.alert(x, z, 30);
     }
     // уличную мелочь ломает только снаряд стрелявшего: остальным она придёт по сети, у всех одна и та же

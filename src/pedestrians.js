@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { rand, pick, wrapAngle, dampAngle } from './utils.js';
+import { rand, pick, wrapAngle, dampAngle, mulberry32 } from './utils.js';
 import { pushOutCircle, rayCircle } from './physics/collision.js';
 import { CAR_HALF_W, CAR_HALF_L } from './car.js';
 import { XRAY } from './xray.js';
@@ -16,6 +16,8 @@ export const KNOCK_SPEED = 2.5;
 export const KILL_SPEED = 11; // ≈ 40 км/ч
 const GIB_SPEED = 24;
 const GETUP_TIME = 0.7;
+const LED_TIMEOUT = 10; // по сети: стоящего нет в стольких снимках хоста подряд — у хоста он уже не стоит
+const r2 = (v) => Math.round(v * 100) / 100;
 
 const _root = new THREE.Matrix4();
 const _ry = new THREE.Matrix4();
@@ -168,13 +170,18 @@ export class Pedestrians {
     this.fx = fx;
     this.audio = audio;
     this.target = quality.pedCount;
-    this.pool = this.target + 40;
+    // запас одинаковый при любом качестве: по сети номера пешеходов у хоста и у гостя должны помещаться
+    this.pool = Math.max(this.target, 84) + 40;
     this.maxCorpses = 35;
     this.onKill = null; // (ped, cause, speed)
     this.onEvent = null; // (type, ped)
     this.time = 0;
     this.spawnTimer = 0;
-
+    // сеть: null — играю один; 'host' — толпу считаю я и рассылаю снимки; 'guest' — стоящих ведёт хост
+    this.netRole = null;
+    this.onNet = null; // (строка) — мой удар по пешеходу: разослать остальным
+    this.snapSeq = 0; // сколько снимков толпы пришло от хоста
+    this.serial = Math.floor(Math.random() * 1e9); // номер «поколения» пешехода: новый у каждого появившегося
     const mat = new THREE.MeshLambertMaterial();
     const mk = (geo, count) => {
       const m = new THREE.InstancedMesh(geo, mat, count);
@@ -206,6 +213,7 @@ export class Pedestrians {
   reset(cars) {
     for (const p of this.peds) this._free(p);
     this.gibs.clear();
+    if (this.netRole === 'guest') return; // толпу пришлёт хост
     for (let k = 0; k < this.target; k++) this._spawn(cars, true);
   }
 
@@ -222,38 +230,47 @@ export class Pedestrians {
   }
 
   /**
-   * Новый пешеход — на случайном узле не слишком далеко от игрока (cars[0]), но там, где рядом нет ни одной
-   * машины: на глазах никто не возникает из воздуха. Если за 24 попытки такого места нет — не спавним.
+   * Новый пешеход — на случайном узле не слишком далеко от человека за рулём (по сети — от случайного из людей),
+   * но там, где рядом нет ни одной машины: на глазах никто не возникает из воздуха. Если за 24 попытки такого
+   * места нет — не спавним.
    */
   _spawn(cars, initial = false) {
     const p = this.peds.find((x) => x.state === ST.FREE);
     if (!p) return;
-    const player = cars[0];
+    const humans = cars.filter((c) => c.human);
+    const anchor = humans.length ? pick(humans) : cars[0];
     let n = -1;
     for (let tries = 0; tries < 24 && n < 0; tries++) {
       const k = Math.floor(Math.random() * this.nodes.length);
       const node = this.nodes[k];
-      const d = Math.hypot(node.x - player.x, node.z - player.z);
+      const d = Math.hypot(node.x - anchor.x, node.z - anchor.z);
       if (d < (initial ? 25 : 45) || d > 170) continue;
       let clear = true;
-      for (let c = 1; c < cars.length && clear; c++) {
-        if (Math.hypot(node.x - cars[c].x, node.z - cars[c].z) < (initial ? 12 : 30)) clear = false;
+      for (let c = 0; c < cars.length && clear; c++) {
+        if (cars[c] !== anchor && Math.hypot(node.x - cars[c].x, node.z - cars[c].z) < (initial ? 12 : 30)) clear = false;
       }
       if (clear) n = k;
     }
     if (n < 0) return;
     const node = this.nodes[n];
-    p.x = node.x + rand(-1, 1);
-    p.z = node.z + rand(-1, 1);
     p.from = n;
     p.to = pick(node.links);
     p.lane = rand(-0.9, 0.9);
-    this._setTarget(p);
-    p.state = ST.WALK;
     p.walkSpeed = rand(1.1, 1.8);
-    p.speed = p.walkSpeed;
-    p.phase = rand(0, 6.28);
+    this._init(p, node.x + rand(-1, 1), node.z + rand(-1, 1), ++this.serial);
+    this._setTarget(p);
     p.yaw = Math.atan2(p.tx - p.x, p.tz - p.z);
+  }
+
+  /** Поставить пешехода на ноги в точке x, z: всё по нулям, одежда — по номеру поколения (у всех игроков одна). */
+  _init(p, x, z, gen) {
+    p.gen = gen;
+    p.x = x;
+    p.z = z;
+    p.state = ST.WALK;
+    p.speed = p.walkSpeed || 1.4;
+    p.phase = rand(0, 6.28);
+    p.yaw = 0;
     p.health = 100;
     p.cy = this.city.groundHeight(p.x, p.z) + 1;
     p.vx = p.vy = p.vz = 0;
@@ -277,15 +294,18 @@ export class Pedestrians {
     p.knocked = false;
     p.killer = null;
     p.bonus = 0;
+    p.downDur = 0;
     const i = p.i;
-    const shirt = pick(SHIRTS), skin = pick(SKIN);
-    const sleeves = Math.random() < 0.5 ? shirt : skin;
+    const rng = mulberry32(gen);
+    const of = (arr) => arr[Math.floor(rng() * arr.length)];
+    const shirt = of(SHIRTS), skin = of(SKIN);
+    const sleeves = rng() < 0.5 ? shirt : skin;
     this.mHead.setColorAt(i, _c.set(skin));
-    this.mHair.setColorAt(i, _c.set(pick(HAIR)));
+    this.mHair.setColorAt(i, _c.set(of(HAIR)));
     this.mTorso.setColorAt(i, _c.set(shirt));
     this.mArm.setColorAt(i * 2, _c.set(sleeves));
     this.mArm.setColorAt(i * 2 + 1, _c.set(sleeves));
-    const pants = pick(PANTS);
+    const pants = of(PANTS);
     this.mLeg.setColorAt(i * 2, _c.set(pants));
     this.mLeg.setColorAt(i * 2 + 1, _c.set(pants));
     for (const m of this.meshes) m.instanceColor.needsUpdate = true;
@@ -329,6 +349,7 @@ export class Pedestrians {
 
   // ------------------------------------------------------------------ паника
   _panic(p, sx, sz, svx, svz, allowCower) {
+    if (this.netRole === 'guest') return; // стоящих по сети ведёт хост: его испуг придёт снимком
     const dx = p.x - sx, dz = p.z - sz;
     const d = Math.hypot(dx, dz) || 1;
     const sp = Math.hypot(svx, svz);
@@ -399,6 +420,7 @@ export class Pedestrians {
     }
     p.knocked = false;
     if (s > GIB_SPEED) {
+      this._send('gib', p, car, s, car.vx / s, car.vz / s);
       this._gib(p, car.vx, car.vz);
       if (this.onKill) this.onKill(p, 'gib', s);
       this.alert(p.x, p.z, 25);
@@ -411,20 +433,10 @@ export class Pedestrians {
     p.wX = rand(6, 13) * (Math.random() < 0.5 ? -1 : 1) * (0.5 + s / 25);
     p.wZ = rand(-7, 7);
     p.cy = Math.max(p.cy, g + 1.1);
-    p.state = ST.FLYING;
-    p.airT = 0;
-    p.bounces = 0;
-    p.hitCD = 0.35;
-    p.flail = rand(0, 10);
-    p.health = 0;
-    this.fx.bloodBurst(p.x, p.cy, p.z, car.vx / s, car.vz / s, s * 0.6, Math.floor(18 + s));
-    this.fx.bloodSplat(p.x, p.z, rand(1, 2));
-    this.fx.bloodSpot(p.x, p.z, 1.3);
-    this.audio.splat((s / 18) * car.vol());
-    if (Math.random() < 0.6 * car.vol()) this.audio.scream();
+    this._fly(p, false, s, car.vx / s, car.vz / s, car.vol());
+    this._send('kill', p, car, s, car.vx / s, car.vz / s);
     car.vx *= 0.97;
     car.vz *= 0.97;
-    this.alert(p.x, p.z, 22);
     if (this.onKill) this.onKill(p, 'car', s);
   }
 
@@ -434,26 +446,47 @@ export class Pedestrians {
     const ax = car.axes();
     const g = this.city.groundHeight(p.x, p.z);
     const push = rand(1.5, 3.5);
-    p.knocked = true;
     p.vx = car.vx * rand(0.5, 0.85) + ax.rx * side * push;
     p.vz = car.vz * rand(0.5, 0.85) + ax.rz * side * push;
     p.vy = rand(1.5, 3) + s * 0.1;
     p.wX = rand(3, 6) * (Math.random() < 0.5 ? -1 : 1);
     p.wZ = rand(-3, 3);
     p.cy = Math.max(p.cy, g + 1.0);
-    p.state = ST.FLYING;
-    p.airT = 0;
-    p.bounces = 2;
-    p.hitCD = 0.5;
-    p.flail = rand(0, 10);
-    p.health = Math.min(p.health, 60);
-    this.fx.bloodBurst(p.x, p.cy, p.z, car.vx / (s || 1), car.vz / (s || 1), s * 0.3, 6);
-    this.audio.crunch(car.vol());
-    if (Math.random() < 0.7 * car.vol()) this.audio.scream();
+    p.downDur = rand(2.2, 3.8); // сколько пролежит — заранее, чтобы по сети встал у всех почти разом
+    const dx = car.vx / (s || 1), dz = car.vz / (s || 1);
+    this._fly(p, true, s, dx, dz, car.vol());
+    this._send('knock', p, car, s, dx, dz, p.downDur);
     car.vx *= 0.985;
     car.vz *= 0.985;
-    this.alert(p.x, p.z, 15);
     if (this.onEvent) this.onEvent('knock', p);
+  }
+
+  /**
+   * Удар машиной, скорости тела уже заданы: полетел насмерть (knocked = false) или только сбит с ног.
+   * s — сила удара (скорость машины), dx, dz — его направление: по ним кровь и звук, у каждого игрока свои.
+   */
+  _fly(p, knocked, s, dx, dz, vol) {
+    p.knocked = knocked;
+    p.state = ST.FLYING;
+    p.airT = 0;
+    p.bounces = knocked ? 2 : 0;
+    p.hitCD = knocked ? 0.5 : 0.35;
+    p.flail = rand(0, 10);
+    if (knocked) {
+      p.health = Math.min(p.health, 60);
+      this.fx.bloodBurst(p.x, p.cy, p.z, dx, dz, s * 0.3, 6);
+      this.audio.crunch(vol);
+      if (Math.random() < 0.7 * vol) this.audio.scream();
+      this.alert(p.x, p.z, 15);
+      return;
+    }
+    p.health = 0;
+    this.fx.bloodBurst(p.x, p.cy, p.z, dx, dz, s * 0.6, Math.floor(18 + s));
+    this.fx.bloodSplat(p.x, p.z, rand(1, 2));
+    this.fx.bloodSpot(p.x, p.z, 1.3);
+    this.audio.splat((s / 18) * vol);
+    if (Math.random() < 0.6 * vol) this.audio.scream();
+    this.alert(p.x, p.z, 22);
   }
 
   /** Поза лёжа после приземления. */
@@ -470,19 +503,20 @@ export class Pedestrians {
     p.still = false;
   }
 
-  /** Живой лежачий (или поднимающийся) становится трупом. */
-  _finish(p, cause, speed) {
+  /** Живой лежачий (или поднимающийся) становится трупом. notify = false — пришло по сети, очки не мои. */
+  _finish(p, cause, speed, notify = true) {
     p.health = 0;
     p.cause = cause;
     if (p.state === ST.FLYING) {
       p.knocked = false; // приземлится уже мёртвым
     } else {
+      if (this.isAlive(p)) this._lieDown(p); // по сети: у меня он уже успел встать
       p.state = ST.DEAD;
       p.deadT = 0;
       p.still = false;
       this.fx.bloodPool(p.x, p.z, rand(2.2, 3.2), 1.8);
     }
-    if (this.onKill) this.onKill(p, cause, speed);
+    if (notify && this.onKill) this.onKill(p, cause, speed);
   }
 
   /** Наезд на сбитого с ног: раздавлен. */
@@ -490,24 +524,31 @@ export class Pedestrians {
     p.killer = car;
     p.runCD = 0.5;
     const s = car.speed;
+    const dirx = car.vx / (s || 1), dirz = car.vz / (s || 1);
     if (s > GIB_SPEED) {
       p.cause = 'car';
+      this._send('gib', p, car, s, dirx, dirz);
       this._gib(p, car.vx, car.vz);
       if (this.onKill) this.onKill(p, 'gib', s);
       return;
     }
-    const g = this.city.groundHeight(p.x, p.z);
-    const dirx = car.vx / (s || 1), dirz = car.vz / (s || 1);
-    this.fx.bloodBurst(p.x, g + 0.3, p.z, dirx, dirz, Math.max(4, s * 0.4), 26);
-    this.fx.bloodSpot(p.x, p.z, 1.3);
     car.pitchVel += 1.5;
     car.hopVel = Math.max(car.hopVel, 1.3);
-    this.audio.crunch(car.vol());
-    this.audio.splat(0.6 * car.vol());
     p.vx += car.vx * 0.2;
     p.vz += car.vz * 0.2;
-    this.alert(p.x, p.z, 20);
+    this._crushed(p, s, dirx, dirz, car.vol());
+    this._send('crush', p, car, s, dirx, dirz);
     this._finish(p, 'crush', s);
+  }
+
+  /** Сбитого с ног раздавили: кровь и хруст. */
+  _crushed(p, s, dx, dz, vol) {
+    const g = this.city.groundHeight(p.x, p.z);
+    this.fx.bloodBurst(p.x, g + 0.3, p.z, dx, dz, Math.max(4, s * 0.4), 26);
+    this.fx.bloodSpot(p.x, p.z, 1.3);
+    this.audio.crunch(vol);
+    this.audio.splat(0.6 * vol);
+    this.alert(p.x, p.z, 20);
   }
 
   _gib(p, vx, vz) {
@@ -547,20 +588,172 @@ export class Pedestrians {
     p.runCD = 0.5;
     const s = car.speed;
     if (s > 22) {
+      this._send('gib', p, car, s, car.vx / s, car.vz / s);
       this._gib(p, car.vx, car.vz);
       if (this.onEvent) this.onEvent('mince', p);
       return;
     }
-    const g = this.city.groundHeight(p.x, p.z);
-    this.fx.bloodBurst(p.x, g + 0.3, p.z, car.vx / s, car.vz / s, s * 0.3, 10);
-    this.fx.bloodSplat(p.x, p.z, rand(1, 1.8));
     car.pitchVel += 1.2;
     car.hopVel = Math.max(car.hopVel, 1.1);
-    this.audio.crunch(car.vol());
     p.vx += car.vx * 0.3;
     p.vz += car.vz * 0.3;
+    this._ranOver(p, s, car.vx / s, car.vz / s, car.vol());
+    this._send('over', p, car, s, car.vx / s, car.vz / s);
+  }
+
+  /** Переехали труп: кровь, тело проскальзывает. */
+  _ranOver(p, s, dx, dz, vol) {
+    const g = this.city.groundHeight(p.x, p.z);
+    this.fx.bloodBurst(p.x, g + 0.3, p.z, dx, dz, s * 0.3, 10);
+    this.fx.bloodSplat(p.x, p.z, rand(1, 1.8));
+    this.audio.crunch(vol);
     p.slide = 1;
     p.still = false;
+  }
+
+  /** Летящее тело поддали ещё раз. */
+  _juggled(p, s, dx, dz, vol) {
+    this.fx.bloodBurst(p.x, p.cy, p.z, dx, dz, s * 0.5, 12);
+    this.audio.splat(0.6 * vol);
+  }
+
+  // ------------------------------------------------------------------ сеть
+  /**
+   * Мой удар по пешеходу — остальным: что случилось, где тело и как летит, сила (s) и направление (dx, dz) удара.
+   * Кровь и куски тел каждый рисует сам.
+   */
+  _send(kind, p, car, s, dx, dz, aux = 0) {
+    if (!this.onNet) return;
+    this.onNet([p.i, p.gen, kind, r2(p.x), r2(p.z), r2(p.cy), r2(p.vx), r2(p.vy), r2(p.vz), r2(p.wX), r2(p.wZ), r2(s), r2(dx), r2(dz), car?.netId ?? null, r2(aux)]);
+  }
+
+  /** Удар по пешеходу у другого игрока (строка из _send); car — чья машина, по ней громкость. */
+  netHit(row, car) {
+    const [i, gen, kind, x, z, cy, vx, vy, vz, wX, wZ, s, dx, dz, , aux] = row;
+    const p = this.peds[i];
+    if (!p || p.gen !== gen || p.state === ST.FREE) return;
+    const vol = car ? car.vol() : 1;
+    p.killer = { remote: true, vol: () => vol }; // очки за него — тому, кто ударил, не мне
+    if (kind === 'gib') {
+      if (!p.cause) p.cause = 'car';
+      this._gib(p, dx * s, dz * s);
+      this.alert(x, z, 25);
+      return;
+    }
+    p.x = x;
+    p.z = z;
+    p.cy = cy;
+    p.vx = vx;
+    p.vy = vy;
+    p.vz = vz;
+    p.wX = wX;
+    p.wZ = wZ;
+    if (kind === 'kill' || kind === 'knock') {
+      p.cause = 'car';
+      if (kind === 'knock') p.downDur = aux;
+      this._fly(p, kind === 'knock', s, dx, dz, vol);
+    } else if (kind === 'blast') {
+      p.cause = 'explosion';
+      p.knocked = false;
+      p.health = 0;
+      p.state = ST.FLYING;
+      p.airT = 0;
+      p.bounces = 0;
+      p.flail = rand(0, 10);
+    } else if (kind === 'juggle') {
+      if (p.state !== ST.FLYING) {
+        p.state = ST.FLYING;
+        p.knocked = false;
+        p.airT = 0;
+        p.bounces = 0;
+        p.flail = rand(0, 10);
+      }
+      p.hitCD = 0.35;
+      this._juggled(p, s, dx, dz, vol);
+    } else if (kind === 'crush') {
+      p.runCD = 0.5;
+      this._crushed(p, s, dx, dz, vol);
+      this._finish(p, 'crush', s, false);
+    } else if (kind === 'over') {
+      p.runCD = 0.5;
+      this._ranOver(p, s, dx, dz, vol);
+    }
+  }
+
+  /** Хост: снимок стоящих на ногах — [номер, поколение, состояние, x·10, z·10, курс·100, vx·10, vz·10, замер]. */
+  netRows() {
+    const rows = [];
+    const q = (v) => Math.round(v * 10);
+    for (const p of this.peds) {
+      if (!this.isAlive(p)) continue;
+      let vx = 0, vz = 0;
+      if (p.state === ST.WALK) {
+        const dx = p.tx - p.x, dz = p.tz - p.z;
+        const d = Math.hypot(dx, dz);
+        if (d >= 0.4) {
+          vx = (dx / d) * p.speed;
+          vz = (dz / d) * p.speed;
+        }
+      } else if (p.state === ST.PANIC && !(p.react > 0)) {
+        vx = p.pdx * p.speed;
+        vz = p.pdz * p.speed;
+      }
+      rows.push([p.i, p.gen, p.state, q(p.x), q(p.z), Math.round(p.yaw * 100), q(vx), q(vz), p.react > 0 ? 1 : 0]);
+    }
+    return rows;
+  }
+
+  /**
+   * Гость: снимок толпы от хоста. Новое поколение в слоте — новый пешеход (старое тело в этом слоте пропадает);
+   * тех, кто у меня летит или лежит (сам сбил или пришло событием), не трогаем — их тела считаем сами.
+   */
+  netSnap(rows) {
+    this.snapSeq++;
+    for (const [i, gen, st, x, z, yaw, vx, vz, react] of rows) {
+      const p = this.peds[i];
+      if (!p || st < ST.WALK || st > ST.COWER) continue;
+      if (p.gen !== gen) {
+        this._init(p, x / 10, z / 10, gen);
+        p.yaw = yaw / 100;
+      } else if (!this.isAlive(p)) continue;
+      else if ((p.state === ST.WALK || p.state === ST.WAIT) && (st === ST.PANIC || st === ST.COWER) && Math.random() < 0.3) this.audio.scream();
+      p.state = st;
+      p.react = react;
+      p.nx = x / 10;
+      p.nz = z / 10;
+      p.nyaw = yaw / 100;
+      p.nvx = vx / 10;
+      p.nvz = vz / 10;
+      p.nT = this.time;
+      p.nSeen = this.snapSeq;
+    }
+  }
+
+  /** Гость: стоящий идёт за снимками хоста — чуть вперёд по скорости и плавно. */
+  _follow(p, dt) {
+    const age = Math.min(0.4, this.time - p.nT);
+    const tx = p.nx + p.nvx * age, tz = p.nz + p.nvz * age;
+    if (Math.abs(tx - p.x) + Math.abs(tz - p.z) > 4) {
+      p.x = tx;
+      p.z = tz;
+    } else {
+      const k = 1 - Math.exp(-10 * dt);
+      p.x += (tx - p.x) * k;
+      p.z += (tz - p.z) * k;
+    }
+    p.yaw = dampAngle(p.yaw, p.nyaw, 12, dt);
+    p.phase += dt * Math.hypot(p.nvx, p.nvz) * (p.state === ST.PANIC ? 3.2 : 4.2);
+  }
+
+  /** Гость: встал у меня сам (после того как сбили с ног) — бежит, пока хост не пришлёт, где он на самом деле. */
+  _lead(p) {
+    p.nx = p.x;
+    p.nz = p.z;
+    p.nvx = p.pdx * p.speed;
+    p.nvz = p.pdz * p.speed;
+    p.nyaw = Math.atan2(p.pdx, p.pdz);
+    p.nT = this.time;
+    p.nSeen = this.snapSeq;
   }
 
   /** Ближайший пешеход на луче (снаряды). standingOnly — лежачих не задевает. */
@@ -579,8 +772,12 @@ export class Pedestrians {
     return best ? { ped: best, t: bt } : null;
   }
 
-  /** Взрыв: ближних рвёт, дальних раскидывает. */
-  explosion(x, z, radius, source = null) {
+  /**
+   * Взрыв: ближних рвёт, дальних раскидывает. local — взрыв посчитан здесь (мой снаряд, моя машина, бот у хоста);
+   * по сети чужой взрыв пешеходов не трогает — что с ними стало, придёт от того, чей он.
+   */
+  explosion(x, z, radius, source = null, local = !source?.remote) {
+    if (this.netRole && !local) return;
     for (const p of this.peds) {
       if (p.state === ST.FREE) continue;
       const dx = p.x - x, dz = p.z - z;
@@ -592,6 +789,7 @@ export class Pedestrians {
       p.knocked = false;
       if (d < radius * 0.4) {
         p.cause = 'explosion';
+        this._send('gib', p, source, 15, nx, nz);
         this._gib(p, nx * 15, nz * 15);
         if (wasAlive && this.onKill) this.onKill(p, 'explosion', 0);
         continue;
@@ -607,6 +805,7 @@ export class Pedestrians {
       p.airT = 0;
       p.bounces = 0;
       p.flail = rand(0, 10);
+      this._send('blast', p, source, f, nx, nz);
       if (wasAlive) {
         p.cause = 'explosion';
         if (this.onKill) this.onKill(p, 'explosion', 0);
@@ -640,7 +839,15 @@ export class Pedestrians {
       p.hitCD -= dt;
       p.runCD -= dt;
 
-      switch (p.state) {
+      // по сети у гостя стоящих ведёт хост; кого нет в его снимках — у хоста уже не стоит
+      const led = this.netRole === 'guest' && this.isAlive(p);
+      if (led) {
+        if (this.snapSeq - p.nSeen > LED_TIMEOUT) {
+          this._free(p);
+          continue;
+        }
+        this._follow(p, dt);
+      } else switch (p.state) {
         case ST.WALK: {
           const dx = p.tx - p.x, dz = p.tz - p.z;
           const d = Math.hypot(dx, dz);
@@ -757,7 +964,7 @@ export class Pedestrians {
             } else if (p.knocked) {
               p.knocked = false;
               p.state = ST.DOWN;
-              p.downT = rand(2.2, 3.8);
+              p.downT = p.downDur || rand(2.2, 3.8);
               p.runCD = 0.15;
               this._lieDown(p);
               this.fx.bloodSplat(p.x, p.z, rand(0.5, 0.9));
@@ -807,6 +1014,7 @@ export class Pedestrians {
             const d = Math.hypot(dx, dz) || 1;
             p.pdx = dx / d;
             p.pdz = dz / d;
+            if (this.netRole === 'guest') this._lead(p);
           }
           break;
         }
@@ -832,7 +1040,10 @@ export class Pedestrians {
       }
 
       // толкаемся о стены
-      if (p.state >= ST.WALK && p.state <= ST.COWER) {
+      if (led) {
+        alive++;
+        p.cy = ground(p.x, p.z) + 1;
+      } else if (p.state >= ST.WALK && p.state <= ST.COWER) {
         alive++;
         const push = pushOutCircle(world, p.x, p.z, 0.3);
         if (push.hit) {
@@ -879,7 +1090,7 @@ export class Pedestrians {
 
     // пополнение толпы
     this.spawnTimer -= dt;
-    if (alive + living < this.target && this.spawnTimer <= 0) {
+    if (this.netRole !== 'guest' && alive + living < this.target && this.spawnTimer <= 0) {
       this.spawnTimer = 0.15;
       this._spawn(cars);
     }
@@ -897,6 +1108,8 @@ export class Pedestrians {
     const lx = dx * ax.rx + dz * ax.rz;
     if (Math.abs(lx) >= CAR_HALF_W + 0.3 || Math.abs(lz) >= CAR_HALF_L + 0.3) return;
     const cs = car.speed;
+    // чужая машина по сети только расталкивает: сбила ли она кого — решает её хозяин и присылает событием
+    if (car.remote && (cs > KNOCK_SPEED || !this.isAlive(p))) return;
     if (this.isAlive(p)) {
       if (cs > KNOCK_SPEED) this._hitByCar(p, car, lx);
       else {
@@ -915,8 +1128,8 @@ export class Pedestrians {
       p.vx = car.vx * rand(1, 1.2);
       p.vz = car.vz * rand(1, 1.2);
       p.vy = Math.max(p.vy, 3 + cs * 0.2);
-      this.fx.bloodBurst(p.x, p.cy, p.z, car.vx / cs, car.vz / cs, cs * 0.5, 12);
-      this.audio.splat(0.6 * car.vol());
+      this._juggled(p, cs, car.vx / cs, car.vz / cs, car.vol());
+      this._send('juggle', p, car, cs, car.vx / cs, car.vz / cs);
       if (this.onEvent) this.onEvent('juggle', p);
     } else if (p.state === ST.DEAD && p.runCD <= 0 && cs > 3) {
       this._runOver(p, car);

@@ -218,7 +218,10 @@ function onMessage(c, msg) {
       if (msg.p) room.stats.set(c.id, msg.p);
       toRoom(room, { ...msg, from: c.id }, c.id);
       return;
-    case 'e': // событие (выстрел, удар, взрыв машины, сломанная уличная мелочь)
+    case 'ped': // снимок толпы пешеходов — её считает хост
+      if (room && room.state === 'race' && room.hostId === c.id) toRoom(room, { ...msg, from: c.id }, c.id);
+      return;
+    case 'e': // событие (выстрел, удар, взрыв машины, сломанная уличная мелочь, удар по пешеходу)
       if (!room || room.state !== 'race') return;
       // номера сломанной мелочи запоминаем — вернувшемуся посреди заезда
       if (msg.k === 'prop' && Array.isArray(msg.l)) for (const row of msg.l) if (Number.isInteger(row?.[0]) && row[0] >= 0 && row[0] < 100000) room.broken.add(row[0]);
