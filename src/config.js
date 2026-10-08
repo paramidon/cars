@@ -31,3 +31,5 @@ export const CITY = {
 export const DEBUG = params.has('debug');
 /** `?mute` — начать без звука, не меняя сохранённых настроек (удобно для автотестов). */
 export const MUTE = params.has('mute');
+/** `?map=test` — тестовый полигон: пустая площадка с парой домов, неподвижные пешеходы, без соперников и победы. */
+export const TEST_MAP = params.get('map') === 'test';

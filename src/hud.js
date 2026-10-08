@@ -293,7 +293,7 @@ export class HUD {
     const e = cx + scale * (-c * ox + s * oz);
     const f = cy - scale * (s * ox + c * oz);
     ctx.setTransform(a, b, cc, d, e, f);
-    ctx.drawImage(game.royale && mm.plain ? mm.plain : mm.canvas, 0, 0);
+    ctx.drawImage((game.royale || game.test) && mm.plain ? mm.plain : mm.canvas, 0, 0);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     const toScreen = (x, z) => {
       const dx = x - car.x, dz = z - car.z;
@@ -323,7 +323,7 @@ export class HUD {
     const R = W / 2 - 9;
     const marks = [[race.cps[(race.next + 1) % race.cps.length], 0.45], [race.target, 1]];
     for (const [cp, alpha] of marks) {
-      if (!cp || race.done || game.royale) continue;
+      if (!cp || race.done || game.royale || game.test) continue;
       let [sx, sy] = toScreen(cp.x, cp.z);
       const ox = sx - cx, oy = sy - cy;
       const d = Math.hypot(ox, oy);

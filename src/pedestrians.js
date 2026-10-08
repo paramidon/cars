@@ -19,6 +19,7 @@ export const KILL_SPEED = 11; // ≈ 40 км/ч
 const GIB_SPEED = 24;
 const GETUP_TIME = 0.7;
 const LED_TIMEOUT = 10; // по сети: стоящего нет в стольких снимках хоста подряд — у хоста он уже не стоит
+const FIXED_RESPAWN = 5; // с — на тестовом полигоне погибший снова встаёт на своё место (если рядом нет машины)
 const r2 = (v) => Math.round(v * 100) / 100;
 
 const _root = new THREE.Matrix4();
@@ -211,6 +212,8 @@ export class Pedestrians {
 
     this.peds = [];
     for (let i = 0; i < this.pool; i++) this.peds.push({ i, state: ST.FREE });
+    // тестовый полигон: пешеходы стоят на заданных местах и не разбегаются, вместо погибших встают новые там же
+    this.layout = city.pedLayout ? city.pedLayout.map((s) => ({ ...s, p: null, gen: 0, t: 0 })) : null;
   }
 
   // ------------------------------------------------------------------ жизненный цикл
@@ -219,7 +222,42 @@ export class Pedestrians {
     for (const p of this.peds) this._free(p);
     this.gibs.clear();
     if (this.netRole === 'guest') return; // толпу пришлёт хост
+    if (this.layout) {
+      for (const s of this.layout) this._place(s);
+      return;
+    }
     for (let k = 0; k < this.target; k++) this._spawn(cars, true);
+  }
+
+  /** Полигон: поставить нового пешехода на место s — стоит, не ходит и не пугается. */
+  _place(s) {
+    const p = this.peds.find((x) => x.state === ST.FREE);
+    if (!p) return;
+    p.from = p.to = 0;
+    p.walkSpeed = 1.4;
+    this._init(p, s.x, s.z, ++this.serial);
+    p.fixed = true;
+    p.state = ST.WAIT;
+    p.timer = Infinity;
+    p.yaw = s.yaw;
+    p.molotov = !!s.molotov;
+    p.molCD = rand(1, 2);
+    s.p = p;
+    s.gen = p.gen;
+    s.t = 0;
+  }
+
+  /** Полигон: место пустует FIXED_RESPAWN с (пешеход погиб) и рядом нет машины — ставим нового. */
+  _refill(dt, cars) {
+    for (const s of this.layout) {
+      if (s.p && s.p.gen === s.gen && this.isLiving(s.p)) {
+        s.t = 0;
+        continue;
+      }
+      s.t += dt;
+      if (s.t < FIXED_RESPAWN || cars.some((c) => Math.hypot(c.x - s.x, c.z - s.z) < 8)) continue;
+      this._place(s);
+    }
   }
 
   _free(p) {
@@ -298,6 +336,7 @@ export class Pedestrians {
     p.slide = 0;
     p.still = false;
     p.knocked = false;
+    p.fixed = false;
     p.killer = null;
     p.bonus = 0;
     p.downDur = 0;
@@ -362,6 +401,7 @@ export class Pedestrians {
   // ------------------------------------------------------------------ паника
   _panic(p, sx, sz, svx, svz, allowCower) {
     if (this.netRole === 'guest') return; // стоящих по сети ведёт хост: его испуг придёт снимком
+    if (p.fixed) return; // на полигоне стоят как вкопанные
     const dx = p.x - sx, dz = p.z - sz;
     const d = Math.hypot(dx, dz) || 1;
     const sp = Math.hypot(svx, svz);
@@ -1056,8 +1096,14 @@ export class Pedestrians {
           p.tumZ = p.fromZ * (1 - e);
           p.cy = ground(p.x, p.z) + 0.16 + 0.84 * e;
           if (f >= 1) {
-            // встал — и бежать подальше от машины
             p.tumX = p.tumZ = 0;
+            if (p.fixed) {
+              // полигон: встал и стоит, где упал
+              p.state = ST.WAIT;
+              p.timer = Infinity;
+              break;
+            }
+            // встал — и бежать подальше от машины
             p.state = ST.PANIC;
             p.react = 0;
             p.timer = rand(3, 5);
@@ -1143,7 +1189,8 @@ export class Pedestrians {
 
     // пополнение толпы
     this.spawnTimer -= dt;
-    if (this.netRole !== 'guest' && alive + living < this.target && this.spawnTimer <= 0) {
+    if (this.layout) this._refill(dt, cars);
+    else if (this.netRole !== 'guest' && alive + living < this.target && this.spawnTimer <= 0) {
       this.spawnTimer = 0.15;
       this._spawn(cars);
     }

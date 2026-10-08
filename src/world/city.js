@@ -24,7 +24,8 @@ const ROOF_COLORS = ['#8b3a2b', '#6b4a3a', '#4a5560', '#9c4f30', '#5a3a2a', '#3f
 const AWNING_COLORS = ['#c0392b', '#1f618d', '#239b56', '#b9770e', '#7d3c98', '#d35400'];
 const LEAF_COLORS = ['#3f7a2e', '#4c8a34', '#5a9a3a', '#356b28', '#6aa443'];
 
-export function buildCity(scene, quality) {
+/** test — тестовый полигон: те же размеры и стена, но вместо кварталов ровный асфальт и пара домов. */
+export function buildCity(scene, quality, test = false) {
   const rng = mulberry32(20251);
   const R = (a, b) => a + rng() * (b - a);
   const RI = (a, b) => Math.floor(R(a, b + 1));
@@ -59,6 +60,9 @@ export function buildCity(scene, quality) {
   const props = []; // ломаемые предметы: {type, x, z, yaw}
   const nodes = [];
   const trees = [];
+  const pads = []; // полигон: площадки с бордюром под домами
+  const gridN = test ? 0 : N; // на полигоне кварталов и разметки улиц нет
+  let pedLayout = null;
 
   // ---------------------------------------------------------------- земля и границы
   g.asphalt.flat(-outer - 4, -outer - 4, outer + 4, outer + 4, 0, WHITE, 8);
@@ -462,8 +466,8 @@ export function buildCity(scene, quality) {
 
   // ---------------------------------------------------------------- раскладка кварталов
   const forced = { '2,3': 'plaza', '4,1': 'park', '0,4': 'park', '1,1': 'gas', '4,5': 'gas' };
-  for (let i = 0; i < N; i++) {
-    for (let j = 0; j < N; j++) {
+  for (let i = 0; i < gridN; i++) {
+    for (let j = 0; j < gridN; j++) {
       const ring = Math.max(Math.abs(i - (N - 1) / 2), Math.abs(j - (N - 1) / 2));
       let type = forced[`${i},${j}`];
       if (!type) {
@@ -533,8 +537,8 @@ export function buildCity(scene, quality) {
   const markCol = col('#f2f2ee');
   const MY = 0.015;
   const markRect = (x0, z0, x1, z1) => g.marks.quad([x0, MY, z0], [x0, MY, z1], [x1, MY, z1], [x1, MY, z0], null, markCol, [0, 1, 0]);
-  for (let r = 0; r <= N; r++) {
-    for (let s = 0; s < N; s++) {
+  for (let r = 0; r <= gridN; r++) {
+    for (let s = 0; s < gridN; s++) {
       const a = roads[s] + RD / 2 + 5, b2 = roads[s + 1] - RD / 2 - 5;
       for (let p = a; p + 3 <= b2; p += 6) {
         markRect(roads[r] - 0.09, p, roads[r] + 0.09, p + 3); // вертикальные дороги (вдоль Z)
@@ -591,6 +595,52 @@ export function buildCity(scene, quality) {
     }
   }
 
+  if (test) pedLayout = testGround();
+
+  /**
+   * Тестовый полигон: разметка-сетка через 20 м, два дома, ряд уличной мелочи. Пешеходы стоят на местах:
+   * один с коктейлями, поодаль толпа, дальше шеренга из 50. Возвращает их места { x, z, yaw, molotov }.
+   */
+  function testGround() {
+    const sx = roads[3] - 3.5, sz = roads[1] + RD / 2 + 12; // старт машины (как spawn ниже)
+    const lim = edge - 2;
+    for (let p = -160; p <= 160; p += 20) {
+      markRect(p - 0.08, -lim, p + 0.08, lim);
+      markRect(-lim, p - 0.08, lim, p + 0.08);
+    }
+    const pad = (x0, z0, x1, z1) => {
+      g.walk.flat(x0, z0, x1, z1, CURB, WHITE, 4);
+      curbFace(x0, z0, x1, z0, [0, 0, -1]);
+      curbFace(x0, z1, x1, z1, [0, 0, 1]);
+      curbFace(x0, z0, x0, z1, [-1, 0, 0]);
+      curbFace(x1, z0, x1, z1, [1, 0, 0]);
+      pads.push({ x0, z0, x1, z1 });
+    };
+    pad(-91, -33, -64, -12);
+    rooftopStuff(addBuilding(-88, -30, -67, -15, 7, 'apartment', col(APT_COLORS[0])));
+    pad(57, 17, 87, 47);
+    addBuilding(60, 20, 84, 44, 12, 'office', col(OFFICE_COLORS[1]));
+    // уличная мелочь — проверять, как сносится
+    const types = ['lamp', 'bin', 'hydrant', 'bench', 'sign', 'traffic'];
+    for (let k = 0; k < 12; k++) props.push({ type: types[k % types.length], x: 15 + k * 4, z: -75, yaw: Math.PI });
+    // граф пешеходам почти не нужен (они стоят), но пусть будет: квадрат вокруг центра
+    for (const [x, z] of [[-120, -120], [120, -120], [120, 120], [-120, 120]]) nodes.push({ x, z, links: [] });
+    for (let k = 0; k < 4; k++) {
+      nodes[k].links.push((k + 1) % 4);
+      nodes[(k + 1) % 4].links.push(k);
+    }
+    const prng = mulberry32(777);
+    const face = (x, z) => Math.atan2(sx - x, sz - z); // лицом к старту
+    const layout = [{ x: -30, z: -55, yaw: face(-30, -55), molotov: true }];
+    for (let k = 0; k < 20; k++) {
+      const a = prng() * Math.PI * 2, r = 0.8 + Math.sqrt(prng()) * 5;
+      const x = 35 + Math.cos(a) * r, z = -40 + Math.sin(a) * r;
+      layout.push({ x, z, yaw: face(x, z) + (prng() - 0.5) * 1.5 });
+    }
+    for (let k = 0; k < 50; k++) layout.push({ x: -49 + k * 2, z: 0, yaw: Math.PI });
+    return layout;
+  }
+
   // ---------------------------------------------------------------- меши
   const maps = {
     apartment: TX.facadeTexture('apartment'),
@@ -645,14 +695,16 @@ export function buildCity(scene, quality) {
       c2.fill();
     }
   }
+  for (const p of pads) rect(p.x0, p.z0, p.x1, p.z1, '#8f8b82');
   for (const b of buildings) {
-    const v = Math.round(clamp(150 + b.h * 2.2, 150, 235));
+    const v =Math.round(clamp(150 + b.h * 2.2, 150, 235));
     rect(b.x0, b.z0, b.x1, b.z1, `rgb(${v},${v - 6},${v - 16})`);
   }
 
   // ---------------------------------------------------------------- запросы
   function groundHeight(x, z) {
     if (x < -edge || x > edge || z < -edge || z > edge) return CURB;
+    if (test) return pads.some((p) => x >= p.x0 && x <= p.x1 && z >= p.z0 && z <= p.z1) ? CURB : 0;
     const u = (((x + half) % cell) + cell) % cell;
     const v = (((z + half) % cell) + cell) % cell;
     if (u < RD / 2 || u > cell - RD / 2 || v < RD / 2 || v > cell - RD / 2) return 0;
@@ -684,6 +736,8 @@ export function buildCity(scene, quality) {
     outer,
     groundHeight,
     findRoadSpawn,
+    test,
+    pedLayout,
     spawn: { x: roads[3] - 3.5, z: roads[1] + RD / 2 + 12, yaw: 0 },
     minimap: { canvas: mm, ext, k },
   };

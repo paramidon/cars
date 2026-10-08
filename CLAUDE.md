@@ -25,7 +25,7 @@ The project has no linter and no test suite. Use `npm run build` to check that e
 - `game.debugState()` dumps the current state.
 - `window.crash` is the crash reporter.
 
-URL parameters: `?mute` (use it for automated runs), `?debug` (FPS counter), `?q=low|high` (graphics quality), `?peds=N` (number of live pedestrians).
+URL parameters: `?mute` (use it for automated runs), `?debug` (FPS counter), `?q=low|high` (graphics quality), `?peds=N` (number of live pedestrians), `?map=test` (test ground: flat lot, two buildings, stationary pedestrians, no rivals and no win condition; add new mechanics there too).
 
 ## Architecture
 

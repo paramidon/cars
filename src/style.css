@@ -1458,3 +1458,19 @@ body.royale #race-lap {
 .setup:not(.royale) .royale-btn {
   display: none;
 }
+
+/* ------------------------------------------------------------- тестовый полигон */
+.test-only {
+  display: none;
+}
+
+body.test .test-only {
+  display: block;
+}
+
+body.test #menu .goal:not(.test-only),
+body.test #solo-setup,
+body.test #btn-net,
+body.test #race {
+  display: none;
+}

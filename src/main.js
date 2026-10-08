@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import './style.css';
-import { QUALITY, IS_TOUCH, DEBUG, MUTE } from './config.js';
+import { QUALITY, IS_TOUCH, DEBUG, MUTE, TEST_MAP } from './config.js';
 import { buildCity } from './world/city.js';
 import { Breakables } from './world/props.js';
 import { FX } from './effects/fx.js';
@@ -93,7 +93,8 @@ class Game {
     scene.add(sun, sun.target);
 
     // ------------------------------------------------------------ мир
-    this.city = buildCity(scene, QUALITY);
+    this.test = TEST_MAP; // тестовый полигон: один, без соперников, трассы и условий победы
+    this.city = buildCity(scene, QUALITY, TEST_MAP);
     this.xray = new Xray(renderer, scene);
     this.fx = new FX(scene, this.city.groundHeight, QUALITY);
     this.debris = new Debris(scene, this.city.groundHeight, this.city.world);
@@ -146,6 +147,7 @@ class Game {
     this.lobby = new Lobby(this);
     this._resetStats();
     this.peds.reset(this.cars);
+    if (this.test) this._resetWorld(); // на полигоне и в меню на фоне — одна моя машина
 
     this.state = 'menu';
     this.soundOpen = null; // 'menu' | 'pause' — откуда открыли настройки звука
@@ -162,6 +164,7 @@ class Game {
     window.addEventListener('resize', () => this._resize());
     this._resize();
     document.body.classList.toggle('touch', IS_TOUCH);
+    document.body.classList.toggle('test', this.test);
     renderer.setAnimationLoop((t) => this._tick(t));
   }
 
@@ -261,6 +264,15 @@ class Game {
     click('btn-resume', () => this._setPaused(false));
     click('btn-restart', () => this._again());
     click('btn-net', () => this.lobby.open());
+    // полигон ⇄ город: другая карта строится при запуске, поэтому — перезагрузка с ?map=test или без
+    $('btn-map').textContent = this.test ? 'В ГОРОД' : 'ТЕСТОВЫЙ ПОЛИГОН';
+    click('btn-map', () => {
+      const q = new URLSearchParams(location.search);
+      if (this.test) q.delete('map');
+      else q.set('map', 'test');
+      const qs = q.toString();
+      location.href = location.pathname + (qs ? `?${qs}` : '') + location.hash;
+    });
     click('btn-net-leave', () => this.lobby.leaveRoom());
     click('btn-net-leave2', () => this.lobby.leaveRoom());
     click('btn-net-lobby', () => this.net?.toLobby());
@@ -409,7 +421,7 @@ class Game {
 
   /** Расстановка для игры одному: моя машина и боты по настройкам меню. */
   _soloLineup() {
-    const { mode, bots, game } = this.solo;
+    const { mode, bots, game } = this.test ? { mode: 'classic', bots: 0, game: 'race' } : this.solo;
     const crew = mode === 'crew';
     const seat = crew ? this.solo.seat : 'driver';
     const car = this.mainCar;
@@ -418,7 +430,7 @@ class Game {
     car.remote = false;
     car.netId = undefined;
     car.name = 'ТЫ';
-    const rivals = this.allRivals.slice(0, Math.max(1, Math.min(maxCars(game) - 1, bots)));
+    const rivals = this.test ? [] : this.allRivals.slice(0, Math.max(1, Math.min(maxCars(game) - 1, bots)));
     for (const r of rivals) {
       r.car.crew = { driver: 'bot', gunner: crew ? 'bot' : null };
       r.car.team = null;
@@ -436,7 +448,7 @@ class Game {
     this.seat = seat;
     // королевская битва: трассы и таймера нет, есть сжимающаяся зона
     this.royale = game === 'royale';
-    this.race.enabled = !this.royale;
+    this.race.enabled = !this.royale && !this.test;
     document.body.classList.toggle('royale', this.royale);
     for (const r of rivals) r.setZone(this.royale ? this.zone : null);
     for (const r of this.allRivals) {
@@ -531,7 +543,7 @@ class Game {
       this.hud.heal(Math.round(healed));
       if (this.car.health > 40) this.critWarned = false;
     }
-    if (this.state === 'play' && !this.car.wrecked && this.teamKills() >= RACE.goreWin) this._victory('carnage', this.car);
+    if (this.state === 'play' && !this.test && !this.car.wrecked && this.teamKills() >= RACE.goreWin) this._victory('carnage', this.car);
   }
 
   /** Соперник сбил пешехода: предупредить, если он близок к победе, или объявить его победу. */
@@ -617,7 +629,8 @@ class Game {
     this._resetWorld(slots, zoneAt);
     this.cam.snap(this.car);
     this.state = 'play';
-    this.countdown = RACE.countdown;
+    this.countdown = this.test ? 0 : RACE.countdown; // на полигоне — без отсчёта
+    if (this.test) this.race.start();
     this.countShown = Infinity;
     this.netPaused = false;
     this._hideScreens();
@@ -772,7 +785,7 @@ class Game {
     car.yaw = sp.yaw;
     car.vx = car.vz = car.angVel = 0;
     this.cam.snap(car);
-    this.hud.popup(this.royale ? 'В ЗОНУ' : 'К ЧЕКПОИНТУ', 'info');
+    this.hud.popup(this.royale ? 'В ЗОНУ' : this.test ? 'НА СТАРТ' : 'К ЧЕКПОИНТУ', 'info');
   }
 
   /** Королевская битва: сжать зону; снаружи свои машины (их считаю я) теряют корпус, разбитые — без виноватых. */
@@ -883,6 +896,11 @@ class Game {
       const place = 1 + this._enemies().filter((c) => !c.wrecked).length;
       rows = rows.filter(([k]) => !['Кругов пройдено', 'Время заезда', 'Лучший круг'].includes(k));
       rows.splice(1, 0, ['Место', `${won ? 1 : place} из ${this.cars.length}`], ['Продержался', fmt(race.clock)]);
+    }
+    if (this.test) {
+      // на полигоне ни соперников, ни трассы, ни победы
+      rows = rows.filter(([k]) => !['Итог', 'Соперников разбито', 'Кругов пройдено', 'Время заезда', 'Лучший круг', 'Сбито пешеходов'].includes(k));
+      rows.splice(1, 0, ['Сбито пешеходов', this.kills], ['Продержался', fmt(race.clock)]);
     }
     const table = this.standings
       .map((e, i) => {
@@ -1103,6 +1121,7 @@ class Game {
       pixelRatio: this.pixelRatio,
       quality: { low: QUALITY.low, shadows: QUALITY.shadows, peds: QUALITY.pedCount },
       touch: this.input.usingTouch,
+      map: this.test ? 'test' : 'city',
     };
   }
 
