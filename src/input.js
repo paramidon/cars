@@ -82,7 +82,10 @@ export class Input {
   }
 
   _actionKey(code) {
-    const map = { KeyC: 'camera', Escape: 'pause', KeyP: 'pause', KeyR: 'respawn', KeyM: 'mute', Enter: 'confirm' };
+    const map = {
+      KeyC: 'camera', Escape: 'pause', KeyP: 'pause', KeyR: 'respawn', KeyM: 'mute', Enter: 'confirm',
+      Digit1: 'weapon1', Numpad1: 'weapon1', Digit2: 'weapon2', Numpad2: 'weapon2',
+    };
     if (map[code] && this.onAction) this.onAction(map[code]);
   }
 
@@ -212,7 +215,7 @@ export class Input {
       if (b(0).pressed) hb = true;
       if (b(4).pressed) back = true; // LB
       if (b(2).pressed || b(5).pressed) fire = true;
-      const edges = [[3, 'camera'], [9, 'pause'], [8, 'respawn']];
+      const edges = [[3, 'camera'], [9, 'pause'], [8, 'respawn'], [1, 'weapon']];
       for (const [i, name] of edges) {
         const now = b(i).pressed;
         if (now && !this._padPrev[i] && this.onAction) this.onAction(name);

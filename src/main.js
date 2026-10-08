@@ -12,6 +12,8 @@ import { Zone, spawnPoints, zoneCenter, roadPointNear } from './zone.js';
 import { wrapAngle } from './utils.js';
 import { Pedestrians } from './pedestrians.js';
 import { Artillery, CANNON } from './cannon.js';
+import { MachineGuns } from './mg.js';
+import { Molotovs } from './molotov.js';
 import { Input } from './input.js';
 import { ChaseCamera } from './camera.js';
 import { HUD } from './hud.js';
@@ -29,7 +31,8 @@ const $ = (id) => document.getElementById(id);
 const NO_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: false, fire: false, aim: 0, aimDX: 0 };
 const STOP_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: true, fire: false, aim: 0, aimDX: 0 };
 // сколько корпуса чинит убийство: давить выгоднее, чем стрелять
-const HEAL = { car: 6, gib: 8, crush: 8, explosion: 2 };
+const HEAL = { car: 6, gib: 8, crush: 8, explosion: 2, gun: 2 };
+const WEAPON_NAME = { cannon: 'ПУШКА', mg: 'ПУЛЕМЁТ' };
 const WRECK_HEAL = 15; // разбил машину тараном или из пушки — подлатался
 const WRECK_CREDIT_MS = 4000; // чей последний удар был за столько мс до взрыва, тот и разбил
 const COMBO_TIME = 4; // убийства не дальше стольких с друг от друга копят комбо
@@ -101,6 +104,9 @@ class Game {
     this.carTag = new CarTag(scene, this.car);
     this.peds = new Pedestrians(scene, this.city, this.fx, this.audio, QUALITY);
     this.artillery = new Artillery(scene, this.city, this.fx, this.audio);
+    this.mg = new MachineGuns(scene, this.city, this.fx, this.audio);
+    this.molotovs = new Molotovs(scene, this.city, this.fx, this.audio);
+    this.weapon = 'cannon'; // моё оружие: cannon | mg (у ботов — только пушка)
     this.race = new Race(scene, this.city, this.fx, this.audio);
     this.raceLaps = RACE.laps;
     this.allRivals = RIVALS.map((def, i) => new Rival(scene, this.city, this.fx, this.audio, this.debris, QUALITY, this.race, def, i));
@@ -120,6 +126,8 @@ class Game {
     this.artillery.peds = this.peds;
     this.artillery.breakables = this.breakables;
     this.artillery.listener = this.car;
+    this.mg.peds = this.peds;
+    this.molotovs.listener = this.car;
     this.reloadTime = CANNON.reload;
     this.standings = [];
     this.position = 1;
@@ -180,6 +188,7 @@ class Game {
   setCars(list) {
     this.cars = list;
     this.artillery.cars = list;
+    this.molotovs.cars = list;
   }
 
   _resetStats() {
@@ -205,6 +214,21 @@ class Game {
     peds.onKill = (p, cause, speed) => this._kill(p, cause, speed);
     peds.onEvent = (type, p) => this._pedEvent(type, p);
     this.artillery.onCarHit = (victim, shooter, dmg, direct, local) => this._shellHit(victim, shooter, dmg, direct, local);
+    this.mg.onCarHit = (victim, shooter, dmg, x, z, dx, dz) => this._bulletHit(victim, shooter, dmg, x, z, dx, dz);
+    // пешеход бросил коктейль (считает толпу хост — он и рассылает бросок); урон машине — её владельцу
+    peds.onThrow = (...v) => {
+      if (this.state === 'menu') return; // в заставке меню не кидаются
+      this.molotovs.throw(...v);
+      this.net?.sendMolotov(v);
+    };
+    this.molotovs.onCarHit = (car, dmg, x, z, vx, vz) => {
+      const l = Math.hypot(vx, vz) || 1;
+      car.applyDamage(dmg, x, z, vx / l, vz / l);
+      if (car === this.car && this.state === 'play') {
+        this.hud.popup(`${phrase('molotov')} −${dmg}`, 'warn');
+        this.cam.shake(0.3);
+      }
+    };
     this.artillery.onBlast = (x, z, shooter) => {
       const car = this.car;
       const d = Math.hypot(x - car.x, z - car.z);
@@ -267,6 +291,10 @@ class Game {
     click('btn-log', () => crash.open());
     click('btn-prev-crash', () => crash.open(true));
     click('btn-cam', () => this._action('camera'));
+    $('btn-weapon').addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      this._action('weapon');
+    });
     click('btn-mute', () => this._action('mute'));
     click('btn-pause', () => this._action('pause'));
     document.addEventListener('visibilitychange', () => {
@@ -284,6 +312,11 @@ class Game {
 
   _action(a) {
     switch (a) {
+      case 'weapon1':
+      case 'weapon2':
+      case 'weapon':
+        this._setWeapon(a === 'weapon1' ? 'cannon' : a === 'weapon2' ? 'mg' : this.weapon === 'mg' ? 'cannon' : 'mg');
+        break;
       case 'camera':
         this.cam.next();
         this.hud.popup(`Камера: ${this.cam.modeName}`, 'info');
@@ -425,6 +458,7 @@ class Game {
       c.listener = c === car ? null : car;
     }
     this.artillery.listener = car;
+    this.molotovs.listener = car;
     this.input.gunner = seat === 'gunner';
     document.body.classList.toggle('gunner', seat === 'gunner');
     this.autoDriver = seat === 'gunner' && !car.remote && car.crew?.driver === 'bot'
@@ -609,12 +643,15 @@ class Game {
   _resetWorld(slots = null, zoneAt = null) {
     this.fx.clear();
     this.artillery.clear();
+    this.mg.clear();
+    this.molotovs.clear();
     this.winner = null;
     this.winReason = '';
     this.overKind = null;
     this.debris.clear();
     this.breakables.reset();
     if (!this.net) this.applyLineup(this._soloLineup());
+    for (const c of this.cars) Object.assign(c, { mgHeat: 0, mgLock: false, mgCD: 0, mgFiring: false, mgVisual: false, mgTarget: null });
     // места на старте — каждый заезд случайно: в гонке — на решётке, в битве — вразброс по городу
     let pointOf;
     if (this.royale) {
@@ -1176,16 +1213,26 @@ class Game {
       }
       // пушки
       const canShoot = this.state === 'play' && this.countdown <= 0 && !this.netPaused;
-      if (this.seat === 'gunner') {
-        if (this.state === 'play') this._aim(dt, inp);
-        if (canShoot && inp.fire) this._fire(car);
-      } else if (this.mode !== 'crew' && canShoot && inp.fire) this._fire(car);
+      const myGun = this.seat === 'gunner' || this.mode !== 'crew'; // стреляю я (в классике — водитель)
+      if (this.seat === 'gunner' && this.state === 'play') this._aim(dt, inp);
+      // классика: с пулемётом башня сама доворачивает на цель, с пушкой смотрит вперёд
+      if (this.seat === 'driver' && this.mode !== 'crew' && !car.remote) this.mg.autoAim(car, this.cars, dt, this.weapon === 'mg');
+      car.mgFiring = false;
+      if (myGun) {
+        const mg = this.weapon === 'mg';
+        car.mgFiring = this.mg.update(car, dt, mg && canShoot && inp.fire, this.cars);
+        if (!mg && canShoot && inp.fire) this._fire(car);
+      }
+      // чужие очереди по сети — только трассеры и звук (пули считает стрелок)
+      for (const c of this.cars) if (c.mgVisual && !(c === car && myGun)) this.mg.update(c, dt, true, this.cars, false);
       if (this.mode === 'crew' && running) {
         const gctx = { cars: this.cars, peds: this.peds, shellSpeed: CANNON.speed };
         for (const c of this.cars) if (c.botGunner && c.botGunner.update(dt, gctx)) this._fire(c);
       }
       this._physics(dt, drive);
       this.artillery.update(dt);
+      this.mg.tick(dt);
+      this.molotovs.update(dt);
       this.peds.update(dt, this.cars);
       this.breakables.update(dt);
       this.debris.update(dt);
@@ -1201,6 +1248,7 @@ class Game {
         if (rc.car === car) rc.tag.sprite.visible = false; // над своей машиной — своя полоска
         else rc.tag.update(car);
       }
+      this.carTag.weapon = this.seat === 'gunner' || this.mode !== 'crew' ? this.weaponInfo() : null;
       this.carTag.update(car);
       this._updateStandings();
       this._checkAnnihilation();
@@ -1226,6 +1274,31 @@ class Game {
       cam.orbitUpdate(dt, 0, -20);
       this._followSun(0, -20);
     }
+  }
+
+  /** Сменить своё оружие (активно только одно). */
+  _setWeapon(w) {
+    if (w === this.weapon) return;
+    this.weapon = w;
+    if (this.state === 'play') this.hud.popup(WEAPON_NAME[w], 'info');
+  }
+
+  /** Состояние моего оружия для HUD: p — готовность 0…1 (у пулемёта — сколько осталось до перегрева). */
+  weaponInfo() {
+    const car = this.car;
+    if (this.weapon === 'mg') return { name: WEAPON_NAME.mg, p: 1 - (car.mgHeat || 0), ready: !car.mgLock, hot: !!car.mgLock };
+    return { name: WEAPON_NAME.cannon, p: 1 - Math.min(1, car.reload / this.reloadTime), ready: car.reload <= 0, hot: false };
+  }
+
+  /** Моя пуля попала в машину: урон считаю я; машину другого игрока (или бота хоста) — пусть посчитает он. */
+  _bulletHit(victim, shooter, dmg, x, z, dx, dz) {
+    if (victim.remote) this.net?.sendHit(victim, shooter, dmg, x, z, dx, dz);
+    else {
+      victim.lastAttacker = shooter;
+      victim.lastAttackAt = performance.now();
+      victim.applyDamage(dmg, x, z, dx, dz);
+    }
+    if (shooter === this.car && this.state === 'play') this.score += Math.round(dmg * 10);
   }
 
   /** Выстрел своей машины или бота; по сети — всем остальным. */

@@ -15,6 +15,7 @@ export class HUD {
       kills: $('kills'),
       combo: $('combo'),
       health: $('health-fill'),
+      gunName: $('gun-name'),
       healthWrap: $('health'),
       speed: $('speed'),
       messages: $('messages'),
@@ -124,14 +125,19 @@ export class HUD {
     this._set('rl', this.el.raceLap, `КРУГ ${Math.min(race.lap, game.raceLaps)}/${game.raceLaps}`);
     this._set('rp', this.el.racePos, `${game.position}/${game.cars.length}`);
     this._set('re', this.el.raceEnemies, String(game._enemies().filter((c) => !c.wrecked).length));
-    // перезарядка пушки
-    const p = Math.round((1 - Math.min(1, game.car.reload / game.reloadTime)) * 20) / 20;
-    if (this.cache.gunP !== p) {
-      this.cache.gunP = p;
+    // оружие: перезарядка пушки или нагрев пулемёта
+    const w = game.weaponInfo();
+    const p = Math.round(w.p * 20) / 20;
+    const key = `${w.name}${p}${w.ready}${w.hot}`;
+    if (this.cache.gun !== key) {
+      this.cache.gun = key;
       for (const el of [this.el.gun, this.el.fire]) {
         el.style.setProperty('--p', p);
-        el.classList.toggle('ready', p >= 1);
+        el.classList.toggle('ready', w.ready);
+        el.classList.toggle('hot', w.hot);
       }
+      this.el.gunName.textContent = w.hot ? 'ПЕРЕГРЕВ' : w.name;
+      this.el.fire.textContent = w.name;
     }
     if (this.frame % 10 === 0) this._standings(game);
     if (zone) {

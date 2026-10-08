@@ -336,13 +336,13 @@ export class Car {
     return this.yaw + this.turretYaw;
   }
 
-  /** Анимация выстрела: отдача ствола и вспышка. */
-  kick() {
-    this.recoilT = 1;
-    this.flashT = 0.07;
+  /** Анимация выстрела: отдача ствола и вспышка; power < 1 — короче и меньше (пулемёт). */
+  kick(power = 1) {
+    this.recoilT = Math.max(this.recoilT, power);
+    this.flashT = 0.07 * power;
     if (this.flash) {
       this.flash.rotation.z = Math.random() * Math.PI;
-      const k = 0.8 + Math.random() * 0.5;
+      const k = (0.8 + Math.random() * 0.5) * (0.5 + power * 0.5);
       this.flash.scale.set(k, k, k * 1.3);
     }
   }
@@ -648,7 +648,8 @@ export class Car {
     const dx = px - this.x, dz = pz - this.z;
     const lx = dx * c - dz * s, lz = dx * s + dz * c;
     const nlx = nx * c - nz * s, nlz = nx * s + nz * c;
-    this._deform(lx, lz, nlx, nlz, Math.min(0.5, 0.06 + dmg * 0.012));
+    // мелкий урон (пули) мнёт кузов едва-едва, иначе очередь сминает машину в гармошку
+    this._deform(lx, lz, nlx, nlz, Math.min(0.5, 0.06 * Math.min(1, dmg / 3) + dmg * 0.012));
     if (lz > 1.2) this.frontHits += dmg;
     if (lz < -1.2) this.rearHits += dmg;
     const part = (k) => this.parts.find((p) => p.kind === k);

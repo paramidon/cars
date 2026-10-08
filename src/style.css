@@ -359,6 +359,14 @@ body {
   background: var(--gold);
 }
 
+.gun.hot .fill {
+  background: #ff3b30;
+}
+
+.gun.hot .lbl {
+  color: #ff5a4f;
+}
+
 body.touch .gun .bar {
   width: 110px;
 }
@@ -683,8 +691,16 @@ body.touch .standings {
   bottom: calc(26px + env(safe-area-inset-bottom));
   width: 112px;
   height: 112px;
-  font-size: 18px;
+  font-size: 16px;
   background: radial-gradient(circle at 40% 35%, #ff5a4f, var(--accent-dark));
+}
+
+#btn-weapon {
+  right: calc(40px + env(safe-area-inset-right));
+  bottom: calc(150px + env(safe-area-inset-bottom));
+  width: 76px;
+  height: 76px;
+  font-size: 11px;
 }
 
 #btn-brake {

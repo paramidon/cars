@@ -3,6 +3,8 @@ import { rand, pick, wrapAngle, dampAngle, mulberry32 } from './utils.js';
 import { pushOutCircle, rayCircle } from './physics/collision.js';
 import { CAR_HALF_W, CAR_HALF_L } from './car.js';
 import { XRAY } from './xray.js';
+import { MG } from './mg.js';
+import { MOLOTOV } from './molotov.js';
 
 const SHIRTS = ['#c0392b', '#2980b9', '#27ae60', '#f1c40f', '#8e44ad', '#e67e22', '#ecf0f1', '#34495e', '#16a085', '#d35400', '#7f8c8d', '#e84393', '#2c3e50', '#ff7675'];
 const PANTS = ['#2c3e50', '#34495e', '#1e272e', '#57606f', '#6d4c41', '#3d3d3d', '#1f3a93', '#4b6584', '#a4b0be'];
@@ -180,6 +182,7 @@ export class Pedestrians {
     // сеть: null — играю один; 'host' — толпу считаю я и рассылаю снимки; 'guest' — стоящих ведёт хост
     this.netRole = null;
     this.onNet = null; // (строка) — мой удар по пешеходу: разослать остальным
+    this.onThrow = null; // (x, y, z, vx, vy, vz) — пешеход бросил коктейль Молотова (у хоста или одному)
     this.snapSeq = 0; // сколько снимков толпы пришло от хоста
     this.serial = Math.floor(Math.random() * 1e9); // номер «поколения» пешехода: новый у каждого появившегося
     const mat = new THREE.MeshLambertMaterial();
@@ -201,7 +204,9 @@ export class Pedestrians {
     this.mTorso = mk(new THREE.BoxGeometry(0.5, 0.62, 0.28), this.pool);
     this.mArm = mk(new THREE.BoxGeometry(0.14, 0.6, 0.14), this.pool * 2);
     this.mLeg = mk(new THREE.BoxGeometry(0.19, 0.85, 0.21), this.pool * 2);
-    this.meshes = [this.mHead, this.mHair, this.mTorso, this.mArm, this.mLeg];
+    // бутылка с коктейлем в правой руке — у тех, кто их кидает
+    this.mBottle = mk(new THREE.CylinderGeometry(0.06, 0.08, 0.28, 6), this.pool);
+    this.meshes = [this.mHead, this.mHair, this.mTorso, this.mArm, this.mLeg, this.mBottle];
     this.gibs = new Gibs(scene, quality.low ? 140 : 240, quality.shadows);
 
     this.peds = [];
@@ -227,6 +232,7 @@ export class Pedestrians {
     this.mArm.setMatrixAt(i * 2 + 1, _zero);
     this.mLeg.setMatrixAt(i * 2, _zero);
     this.mLeg.setMatrixAt(i * 2 + 1, _zero);
+    this.mBottle.setMatrixAt(i, _zero);
   }
 
   /**
@@ -308,8 +314,14 @@ export class Pedestrians {
     const pants = of(PANTS);
     this.mLeg.setColorAt(i * 2, _c.set(pants));
     this.mLeg.setColorAt(i * 2 + 1, _c.set(pants));
+    this.mBottle.setColorAt(i, _c.set('#3f8a3a'));
     for (const m of this.meshes) m.instanceColor.needsUpdate = true;
     p.colors = { shirt, skin, pants };
+    // с бутылкой или нет — тоже по номеру поколения (после одежды, чтобы цвета не съехали)
+    p.molotov = rng() < MOLOTOV.share;
+    p.molCD = rand(2, MOLOTOV.cooldown[1]);
+    p.molWind = 0;
+    p.molTarget = null;
   }
 
   _setTarget(p) {
@@ -617,6 +629,39 @@ export class Pedestrians {
     this.audio.splat(0.6 * vol);
   }
 
+  /** Пуля пулемёта (считает стрелявший). Стоящего валит MG.pedShots-я пуля, лежачего — первая. */
+  shoot(p, dx, dz, car) {
+    const g = this.city.groundHeight(p.x, p.z);
+    const lying = this.isLying(p);
+    this.fx.bloodBurst(p.x, lying ? g + 0.3 : p.cy, p.z, dx, dz, 3, 5);
+    if (p.state === ST.DEAD || p.state === ST.FLYING) {
+      if (p.state === ST.DEAD && Math.random() < 0.3) this.fx.bloodSplat(p.x, p.z, rand(0.4, 0.8));
+      return;
+    }
+    p.killer = car;
+    if (lying) {
+      this._send('shotdown', p, car, 3, dx, dz);
+      this.fx.bloodPool(p.x, p.z, rand(1.5, 2.2), 1.5);
+      this._finish(p, 'gun', 0);
+      return;
+    }
+    p.shots++;
+    if (p.shots < MG.pedShots) {
+      this._panic(p, p.x - dx, p.z - dz, 0, 0, false);
+      return;
+    }
+    p.cause = 'gun';
+    p.vx = dx * rand(2, 4);
+    p.vz = dz * rand(2, 4);
+    p.vy = rand(1.5, 3);
+    p.wX = rand(3, 7) * (Math.random() < 0.5 ? -1 : 1);
+    p.wZ = rand(-3, 3);
+    p.cy = Math.max(p.cy, g + 1);
+    this._fly(p, false, 6, dx, dz, car.vol());
+    this._send('shot', p, car, 6, dx, dz);
+    if (this.onKill) this.onKill(p, 'gun', 0);
+  }
+
   // ------------------------------------------------------------------ сеть
   /**
    * Мой удар по пешеходу — остальным: что случилось, где тело и как летит, сила (s) и направление (dx, dz) удара.
@@ -652,6 +697,12 @@ export class Pedestrians {
       p.cause = 'car';
       if (kind === 'knock') p.downDur = aux;
       this._fly(p, kind === 'knock', s, dx, dz, vol);
+    } else if (kind === 'shot') {
+      p.cause = 'gun';
+      this._fly(p, false, s, dx, dz, vol);
+    } else if (kind === 'shotdown') {
+      this.fx.bloodBurst(p.x, this.city.groundHeight(p.x, p.z) + 0.3, p.z, dx, dz, 3, 5);
+      this._finish(p, 'gun', 0, false);
     } else if (kind === 'blast') {
       p.cause = 'explosion';
       p.knocked = false;
@@ -1069,6 +1120,7 @@ export class Pedestrians {
             if ((dot > 0.4 || d < 6) && Math.random() < dt * 3) this._panic(p, cx, cz, cvx, cvz, true);
           }
         }
+        if (p.molotov && this.onThrow) this._molotov(p, cars, dt);
       }
 
       // контакт с машинами
@@ -1097,6 +1149,57 @@ export class Pedestrians {
 
     this.gibs.update(dt, ground, world, this.fx);
     for (const m of this.meshes) m.instanceMatrix.needsUpdate = true;
+  }
+
+  /** С бутылкой: высматривает машину в пределах броска, замахивается и кидает с упреждением. */
+  _molotov(p, cars, dt) {
+    if (p.state === ST.COWER || p.react > 0) {
+      p.molWind = 0;
+      return;
+    }
+    const t = p.molTarget;
+    if (p.molWind > 0) {
+      if (!t || t.wrecked) {
+        p.molWind = 0;
+        return;
+      }
+      p.yaw = Math.atan2(t.x - p.x, t.z - p.z);
+      if (p.state === ST.WALK) p.phase -= dt * p.speed * 4.2; // замер на месте (позу ног не крутим)
+      p.molWind -= dt;
+      if (Math.random() < dt * 25) this.fx.fire(p.x - Math.cos(p.yaw) * 0.3, p.cy + 1.25, p.z + Math.sin(p.yaw) * 0.3, 0.25);
+      if (p.molWind <= 0) this._throw(p, t);
+      return;
+    }
+    p.molCD -= dt;
+    if (p.molCD > 0) return;
+    p.molCD = 0.5; // никого — посмотрим ещё раз чуть позже
+    const [r0, r1] = MOLOTOV.range;
+    let best = null, bd = r1;
+    for (const c of cars) {
+      if (c.wrecked) continue;
+      const d = Math.hypot(c.x - p.x, c.z - p.z);
+      if (d < r0 || d >= bd) continue;
+      if (this.world.raycast(p.x, p.z, (c.x - p.x) / d, (c.z - p.z) / d, d, (o) => o.kind === 'building' || o.kind === 'wall')) continue;
+      best = c;
+      bd = d;
+    }
+    if (!best) return;
+    p.molTarget = best;
+    p.molWind = MOLOTOV.windup;
+    p.molCD = rand(MOLOTOV.cooldown[0], MOLOTOV.cooldown[1]);
+  }
+
+  _throw(p, car) {
+    const hx = p.x - Math.cos(p.yaw) * 0.3, hz = p.z + Math.sin(p.yaw) * 0.3, hy = p.cy + 1.1;
+    const d = Math.hypot(car.x - hx, car.z - hz);
+    const t = Math.max(0.4, Math.min(1.8, d / MOLOTOV.speed));
+    const lead = rand(0.5, 1);
+    const tx = car.x + car.vx * t * lead + rand(-MOLOTOV.miss, MOLOTOV.miss);
+    const tz = car.z + car.vz * t * lead + rand(-MOLOTOV.miss, MOLOTOV.miss);
+    const ty = this.city.groundHeight(tx, tz) + 0.9;
+    const vy = (ty - hy + 0.5 * MOLOTOV.gravity * t * t) / t;
+    p.molTarget = null;
+    this.onThrow(r2(hx), r2(hy), r2(hz), r2((tx - hx) / t), r2(vy), r2((tz - hz) / t));
   }
 
   /** Пешеход и машина: сбить, оттолкнуть, раздавить, переехать. */
@@ -1243,6 +1346,8 @@ export class Pedestrians {
         break;
       }
     }
+    const holds = p.molotov && p.state >= ST.WALK && p.state <= ST.COWER;
+    if (holds && p.molWind > 0) armR = -2.8; // замах: рука с бутылкой над головой
     const isStanding = p.state <= ST.COWER;
     _e.set(isStanding ? lean : p.tumX, 0, isStanding ? 0 : p.tumZ);
     _root.makeRotationFromEuler(_e);
@@ -1266,5 +1371,9 @@ export class Pedestrians {
     this.mLeg.setMatrixAt(i * 2, _out);
     _out.multiplyMatrices(_root, local(-0.12, 0.85, 0, legR, -spreadL, 0, -0.42, 0));
     this.mLeg.setMatrixAt(i * 2 + 1, _out);
+    if (holds) {
+      _out.multiplyMatrices(_root, local(-0.34, 1.42, 0, armR, -spreadA, 0, -0.66, 0.06));
+      this.mBottle.setMatrixAt(i, _out);
+    } else this.mBottle.setMatrixAt(i, _zero);
   }
 }

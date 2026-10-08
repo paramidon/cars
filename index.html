@@ -27,7 +27,7 @@
           <div class="bar"><div id="health-fill"></div></div>
         </div>
         <div id="gun" class="gun ready">
-          <span class="lbl">ПУШКА</span>
+          <span id="gun-name" class="lbl">ПУШКА</span>
           <div class="bar"><div class="fill"></div></div>
         </div>
         <div id="combo"></div>
@@ -68,6 +68,7 @@
       </div>
       <button id="btn-brake" class="tbtn">ДРИФТ</button>
       <button id="btn-fire" class="tbtn fire ready">ПУШКА</button>
+      <button id="btn-weapon" class="tbtn" aria-label="Сменить оружие">ОРУЖИЕ</button>
     </div>
 
     <div id="menu" class="screen">
@@ -77,7 +78,8 @@
         <div class="controls desk">
           <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / стрелки<span>руль, газ, тормоз/назад</span></div>
           <div><kbd>Пробел</kbd><span>ручник, занос</span></div>
-          <div><kbd>ЛКМ</kbd> / <kbd>F</kbd><span>пушка — бьёт строго по курсу, перезарядка ~1 с</span></div>
+          <div><kbd>ЛКМ</kbd> / <kbd>F</kbd><span>огонь: пушка бьёт строго по курсу, пулемёт сам доворачивает на цель</span></div>
+          <div><kbd>1</kbd> <kbd>2</kbd><span>оружие: пушка / пулемёт</span></div>
           <div><kbd>C</kbd> <kbd>R</kbd> <kbd>M</kbd> <kbd>Esc</kbd><span>камера, к чекпоинту, звук, пауза</span></div>
           <div><kbd>V</kbd><span>зажать — смотреть назад</span></div>
         </div>

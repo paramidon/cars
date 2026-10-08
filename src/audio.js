@@ -239,10 +239,18 @@ export class AudioFX {
     o.stop(t + dur + 0.05);
   }
 
-  shot() {
-    if (!this.ready) return;
-    this._noise({ dur: 0.09, gain: 0.32, type: 'bandpass', freq: 1800, freqEnd: 500, q: 0.8 });
-    this._tone({ freq: 160, freqEnd: 45, dur: 0.08, gain: 0.35 });
+  /** Разбилась бутылка с коктейлем: звон и вспыхнувшее пламя. */
+  molotov(v = 1) {
+    if (!this.ready || v < 0.03) return;
+    this.glass(v);
+    this._noise({ dur: 0.7, gain: 0.5 * v, type: 'lowpass', freq: 900, freqEnd: 200 });
+  }
+
+  /** Выстрел пулемёта. */
+  shot(v = 1) {
+    if (!this.ready || v < 0.03) return;
+    this._noise({ dur: 0.09, gain: 0.32 * v, type: 'bandpass', freq: 1800, freqEnd: 500, q: 0.8 });
+    this._tone({ freq: 160, freqEnd: 45, dur: 0.08, gain: 0.35 * v });
   }
 
   splat(intensity = 1) {

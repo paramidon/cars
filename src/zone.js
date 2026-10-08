@@ -54,10 +54,43 @@ export function spawnPoints(city, n, rnd = Math.random) {
   return pts;
 }
 
-/** Где сожмётся зона: где угодно в городе, но не у самого забора — не ближе квартала от него (до предпоследней улицы). */
+const CENTER_FREE = 4; // м — вокруг центра зоны ни дома, ни памятника: машина должна туда доехать
+const solidFilter = (c) => c.kind !== 'breakable' && c.kind !== 'tree' && c.kind !== 'pole';
+const wallFilter = (c) => c.kind === 'building' || c.kind === 'wall';
+
+/** Расстояние от точки до коллайдера (0 — внутри). */
+function distTo(c, x, z) {
+  if (c.r != null) return Math.max(0, Math.hypot(x - c.x, z - c.z) - c.r);
+  const dx = Math.max(c.minX - x, 0, x - c.maxX), dz = Math.max(c.minZ - z, 0, z - c.maxZ);
+  return Math.hypot(dx, dz);
+}
+
+/**
+ * До точки можно доехать: рядом нет ничего твёрдого, и хоть в одну из четырёх сторон до улицы
+ * (края квартала) не мешает ни один дом — не двор-колодец и не щель между домами.
+ */
+export function reachable(city, x, z) {
+  for (const c of city.world.queryCircle(x, z, CENTER_FREE)) if (solidFilter(c) && distTo(c, x, z) < CENTER_FREE) return false;
+  const b = city.blocks.find((q) => x > q.x0 && x < q.x1 && z > q.z0 && z < q.z1);
+  if (!b) return true; // на дороге
+  const L = b.lot;
+  if (x < L.x0 || x > L.x1 || z < L.z0 || z > L.z1) return true; // на тротуаре
+  const ways = [[1, 0, b.x1 - x], [-1, 0, x - b.x0], [0, 1, b.z1 - z], [0, -1, z - b.z0]];
+  return ways.some(([dx, dz, d]) => !city.world.raycast(x, z, dx, dz, d, wallFilter));
+}
+
+/**
+ * Где сожмётся зона: где угодно в городе, но не ближе квартала к забору (до предпоследней улицы)
+ * и не в доме — на дороге, тротуаре, площади или во дворе, куда можно доехать.
+ */
 export function zoneCenter(city, rnd = Math.random) {
   const lim = city.roads[city.roads.length - 2];
-  return { cx: (rnd() * 2 - 1) * lim, cz: (rnd() * 2 - 1) * lim };
+  for (let i = 0; i < 200; i++) {
+    const cx = (rnd() * 2 - 1) * lim, cz = (rnd() * 2 - 1) * lim;
+    if (reachable(city, cx, cz)) return { cx, cz };
+  }
+  const p = roadPoint(city, rnd); // не нашлось — на дорогу (почти не бывает)
+  return { cx: Math.max(-lim, Math.min(lim, p.x)), cz: Math.max(-lim, Math.min(lim, p.z)) };
 }
 
 const vert = `

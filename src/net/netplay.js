@@ -270,13 +270,13 @@ export class Netplay {
       const mine = car === g.car;
       const t = mine ? g.race : car.ai.tr;
       const finished = mine ? g.race.place > 0 : t.finished;
-      const flags = (car.wrecked ? 1 : 0) | (car.braking ? 2 : 0) | (car.handbrake ? 4 : 0) | (finished ? 8 : 0);
+      const flags = (car.wrecked ? 1 : 0) | (car.braking ? 2 : 0) | (car.handbrake ? 4 : 0) | (finished ? 8 : 0) | (car.mgFiring || car.mgVisual ? 16 : 0);
       rows.push([car.netId, r2(car.x), r2(car.z), r2(car.yaw), r2(car.vx), r2(car.vz), r2(car.angVel), r2(car.steer), r2(car.health), flags,
         t.lap, t.next, t.passed, car.kills, r2(car.accel || 0), r2(car.turretYaw), mine ? Math.round(g.race.timeLeft * 10) / 10 : 0]);
     }
     const msg = { t: 's', c: rows, p: [g.score, g.kills, this.myTeam] };
     // сижу в пушке чужой машины — её хозяину нужен поворот башни
-    if (g.seat === 'gunner' && g.car.remote) msg.g = [g.car.netId, r2(g.car.turretYaw)];
+    if (g.seat === 'gunner' && g.car.remote) msg.g = [g.car.netId, r2(g.car.turretYaw), g.car.mgFiring ? 1 : 0];
     this.client.send(msg);
   }
 
@@ -286,13 +286,17 @@ export class Netplay {
     if (m.p) this.stats.set(m.from, { score: m.p[0], kills: m.p[1], team: m.p[2] });
     if (m.g) {
       const car = this.byId.get(m.g[0]);
-      if (car && !car.remote && car.crew?.gunner === m.from) car.turretYaw = m.g[1];
+      if (car && !car.remote && car.crew?.gunner === m.from) {
+        car.turretYaw = m.g[1];
+        car.mgVisual = !!m.g[2]; // стрелок строчит из пулемёта — трассеры у меня и в моём снимке для остальных
+      }
     }
     for (const row of m.c) {
       const [id, x, z, yaw, vx, vz, angVel, steer, health, flags, lap, next, passed, kills, accel, turret, timeLeft] = row;
       const car = this.byId.get(id);
       if (!car || !car.remote) continue;
       this.state.set(id, { x, z, yaw, vx, vz, angVel, steer, flags, accel, turret, at: now });
+      car.mgVisual = !!(flags & 16);
       if (!car.wrecked) {
         if (car === g.car && health < car.health - 0.5) g._myDamage(car.health - health); // моя машина (я в пушке) получила удар
         car.health = health;
@@ -314,6 +318,7 @@ export class Netplay {
 
   _event(m) {
     if (m.k === 'prop') return this._props(m.l);
+    if (m.k === 'molo') return this.game.molotovs.throw(...m.v); // пешеход у хоста бросил коктейль
     if (m.k === 'peds') {
       for (const row of m.l || []) this.game.peds.netHit(row, this.byId.get(row[14]) || null);
       return;
@@ -439,7 +444,12 @@ export class Netplay {
     this.client.send({ t: 'e', k: 'fire', id: car.netId, x: r2(shot.x), y: r2(shot.y), z: r2(shot.z), dx: shot.dx, dz: shot.dz, v: r2(shot.v) });
   }
 
-  /** Наша машина протаранила чужую: урон — её владельцу. */
+  /** Хост: пешеход бросил коктейль — пусть бутылка полетит у всех (урон машине посчитает её владелец). */
+  sendMolotov(v) {
+    this.client.send({ t: 'e', k: 'molo', v });
+  }
+
+  /** Наша машина протаранила чужую (или попала в неё из пулемёта): урон — её владельцу. */
   sendHit(victim, by, dmg, px, pz, nx, nz) {
     this.client.send({ t: 'e', k: 'hit', id: victim.netId, by: by.netId, dmg: r2(dmg), px: r2(px), pz: r2(pz), nx: r2(nx), nz: r2(nz) });
   }
