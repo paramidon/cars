@@ -59,3 +59,4 @@ URL parameters: `?mute` (use it for automated runs), `?debug` (FPS counter), `?q
 - **Keep the README in sync.** It documents gameplay rules and exact numbers (damage, speeds, timings). When you change behavior or a constant it describes, update the README in the same commit.
 - **`plan.md` is the user's to-do list** (in Russian). Remove an item once it's done; don't rewrite the file otherwise.
 - **Branches:** don't commit directly to `master` or `claude/carmageddon-game-prototype-m0zs5f`. Work on a `claude/*` branch.
+- Write everything you add to the repo — code, docs, commit messages — in English, even when the conversation is in Russian.
