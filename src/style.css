@@ -751,9 +751,9 @@ body.touch .health .bar {
 }
 
 .logo {
-  width: min(220px, 60%);
+  width: min(440px, 100%);
   aspect-ratio: 3 / 2;
-  margin: -8px auto -6px;
+  margin: -20px auto -16px;
   background: url("./logo.png") center / contain no-repeat;
 }
 
