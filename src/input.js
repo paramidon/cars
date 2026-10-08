@@ -1,4 +1,4 @@
-import { clamp, moveToward } from './utils.js';
+import { clamp } from './utils.js';
 
 const FIRE_KEYS = ['KeyF', 'KeyJ', 'KeyK', 'ControlLeft', 'ControlRight', 'ShiftRight'];
 const BLOCK_DEFAULT = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space']);
@@ -19,7 +19,6 @@ export class Input {
     this.mouse = { x: 0, y: 0, down: false, lastMove: -1e9, over: false };
     this.touch = { joyId: null, jx: 0, jy: 0, fire: false, brake: false };
     this.usingTouch = false;
-    this.steerSmooth = 0;
     this.onAction = null; // (name) => void
     this.onTouchDetected = null;
     this._padPrev = [];
@@ -160,16 +159,15 @@ export class Input {
     hold(brake, 'brake');
   }
 
-  update(dt) {
+  update() {
     const k = this.keys;
     let thr = k.has('KeyW') || k.has('ArrowUp') ? 1 : 0;
     let brk = k.has('KeyS') || k.has('ArrowDown') ? 1 : 0;
+    // руль с клавиш — сразу; плавность (на скорости руль туже) даёт сама машина, второе сглаживание тут
+    // только добавляло задержку
     const right = k.has('KeyD') || k.has('ArrowRight') ? 1 : 0;
     const left = k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0;
-    const target = right - left;
-    const rate = target === 0 ? 7 : Math.sign(target) !== Math.sign(this.steerSmooth) && this.steerSmooth !== 0 ? 10 : 4.5;
-    this.steerSmooth = moveToward(this.steerSmooth, target, rate * dt);
-    let steer = this.steerSmooth;
+    let steer = right - left;
     let hb = k.has('Space');
     let fire = this.mouse.down || FIRE_KEYS.some((c) => k.has(c)) || (this.gunner && k.has('Space'));
     const turnKeys = (k.has('KeyD') || k.has('ArrowRight') || k.has('KeyE') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') || k.has('KeyQ') ? 1 : 0);
