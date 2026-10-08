@@ -1141,7 +1141,7 @@ class Game {
 
   /** Один шаг симуляции (публичный — удобно для автотестов). */
   step(dt) {
-    const input = this.input.update(dt);
+    const input = this.input.update();
     const { car, cam } = this;
     this.audio.setEngineOn(this.state === 'play');
 
