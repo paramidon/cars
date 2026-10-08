@@ -22,7 +22,7 @@ import { Netplay } from './net/netplay.js';
 import { Lobby } from './net/lobby.js';
 import { CrashReporter } from './crash.js';
 import { Xray } from './xray.js';
-import { phrase } from './words.js';
+import { phrase, seriesPhrase } from './words.js';
 import { version } from '../package.json';
 
 const $ = (id) => document.getElementById(id);
@@ -32,7 +32,7 @@ const STOP_INPUT = { throttle: 0, brake: 0, steer: 0, handbrake: true, fire: fal
 const HEAL = { car: 6, gib: 8, crush: 8, explosion: 2 };
 const WRECK_HEAL = 15; // разбил машину тараном или из пушки — подлатался
 const WRECK_CREDIT_MS = 4000; // чей последний удар был за столько мс до взрыва, тот и разбил
-const COMBO_TIME = 5; // убийства не дальше стольких с друг от друга копят комбо
+const COMBO_TIME = 4; // убийства не дальше стольких с друг от друга копят комбо
 const GORE_WARN = [20, 30, 35]; // на скольких пешеходах предупредить, что соперник близок к победе
 const BEST_KEY = 'cars-and-guts:best';
 const WIN_BONUS = 3000;
@@ -188,7 +188,6 @@ class Game {
     this.combo = 0;
     this.comboTimer = 0;
     this.bestCombo = 0;
-    this.multi = 0;
     this.lastKill = -10;
     this.playTime = 0;
     this.maxSpeed = 0;
@@ -480,7 +479,6 @@ class Game {
     this.kills++;
     const t = this.time;
     this.combo = t - this.lastKill < COMBO_TIME ? this.combo + 1 : 1;
-    this.multi = t - this.lastKill < 0.7 ? this.multi + 1 : 1;
     this.lastKill = t;
     this.comboTimer = COMBO_TIME;
     this.bestCombo = Math.max(this.bestCombo, this.combo);
@@ -489,10 +487,7 @@ class Game {
     const pts = base * this.combo;
     this.score += pts;
     this.hud.popup(`${phrase(cause)} +${pts}`, cls);
-    if (this.multi === 2) this.hud.popup('ДУПЛЕТ!', 'gold');
-    else if (this.multi === 3) this.hud.popup('ТРИПЛЕТ!', 'gold');
-    else if (this.multi === 4) this.hud.popup('МЯСОРУБКА!', 'gold big');
-    else if (this.multi >= 5) this.hud.popup('МЯСОКОМБИНАТ!', 'gold big');
+    if (this.combo >= 2) this.hud.popup(seriesPhrase(this.combo), this.combo >= 4 ? 'gold big' : 'gold');
     if ((cause === 'car' || cause === 'gib') && speed > 13 && this.cam.mode !== 2) this.hud.splatter(Math.min(1.5, speed / 22));
     if (cause === 'car' || cause === 'gib' || cause === 'crush') this.cam.shake(0.12 + speed * 0.006);
     const added = this.state === 'play' ? this.race.addTime(RACE.killTime[cause] || 0) : 0;
@@ -956,7 +951,7 @@ class Game {
     if (this.state !== 'play') return;
     if (shooter === player && local && victim !== player && dmg >= 3) {
       this.score += Math.round(dmg) * 10;
-      this.hud.popup(`${direct ? 'ЕСТЬ ПРОБИТИЕ!' : 'ЗАДЕЛ!'} −${Math.round(dmg)}`, 'gold');
+      this.hud.popup(`${phrase(direct ? 'shell' : 'splash')} −${Math.round(dmg)}`, 'gold');
     }
     if (victim === player) this.cam.shake(direct ? 0.7 : 0.35);
   }

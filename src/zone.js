@@ -54,10 +54,10 @@ export function spawnPoints(city, n, rnd = Math.random) {
   return pts;
 }
 
-/** Где сожмётся зона: ближе к середине города, чтобы все успели доехать. */
+/** Где сожмётся зона: где угодно в городе, но не у самого забора — не ближе квартала от него (до предпоследней улицы). */
 export function zoneCenter(city, rnd = Math.random) {
-  const half = (city.roads[city.roads.length - 1] - city.roads[0]) / 2;
-  return { cx: (rnd() * 2 - 1) * half * 0.5, cz: (rnd() * 2 - 1) * half * 0.5 };
+  const lim = city.roads[city.roads.length - 2];
+  return { cx: (rnd() * 2 - 1) * lim, cz: (rnd() * 2 - 1) * lim };
 }
 
 const vert = `
