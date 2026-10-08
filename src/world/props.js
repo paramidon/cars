@@ -98,12 +98,14 @@ export class Breakables {
     this.meshes = {};
     this.geoms = {};
     this.water = [];
+    this.onBreak = null; // (предмет, vx, vz): сломан здесь — по сети сообщить остальным
     this.material = new THREE.MeshLambertMaterial({ vertexColors: true });
 
     const byType = {};
     for (const p of placements) {
       const def = PROP_TYPES[p.type];
-      const item = { ...p, def, alive: true, y: groundHeight(p.x, p.z), index: 0 };
+      // id — номер в общем списке: город строится из одного зерна, у всех игроков номера совпадают
+      const item = { ...p, def, alive: true, y: groundHeight(p.x, p.z), index: 0, id: this.items.length };
       item.collider = world.addCircle(p.x, p.z, def.radius, { kind: 'breakable', prop: item, h: 3 });
       (byType[p.type] ||= []).push(item);
       this.items.push(item);
@@ -142,14 +144,23 @@ export class Breakables {
     this.water.length = 0;
   }
 
-  /** Машина врезалась в предмет. Возвращает true — предмет сломан и не мешает. */
-  hit(it, car) {
-    if (!it.alive) return true;
-    const speed = Math.hypot(car.vx, car.vz);
+  /** Убрать предмет со своего места (без обломков). */
+  _remove(it) {
     it.alive = false;
     it.collider.active = false;
     it.mesh.setMatrixAt(it.index, _zero);
     it.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  /**
+   * Машина врезалась в предмет. Возвращает true — предмет сломан и не мешает.
+   * local = false — сломан у другого игрока (пришло по сети): onBreak не зовём.
+   */
+  hit(it, car, local = true) {
+    if (!it.alive) return true;
+    const speed = Math.hypot(car.vx, car.vz);
+    if (local && this.onBreak) this.onBreak(it, car.vx, car.vz);
+    this._remove(it);
 
     const obj = new THREE.Mesh(this.geoms[it.type], this.material);
     obj.castShadow = true;
@@ -184,6 +195,20 @@ export class Breakables {
     this.audio.metal(Math.min(1, speed / 20) * (car.vol ? car.vol() : 1));
     if (def.water) this.water.push({ x: it.x, y: it.y + 0.5, z: it.z, t: 14 });
     return true;
+  }
+
+  /** Сломан у другого игрока: та же картина — обломки летят по его скорости удара. */
+  breakNet(id, vx, vz, vol) {
+    const it = this.items[id];
+    if (it && it.alive) this.hit(it, { vx, vz, vol: () => vol }, false);
+  }
+
+  /** Вернулся в идущий заезд: сломанное до тебя просто убрать, без обломков и звука. */
+  removeIds(ids) {
+    for (const id of ids) {
+      const it = this.items[id];
+      if (it && it.alive) this._remove(it);
+    }
   }
 
   /** Взрыв: всё ломаемое рядом летит в стороны. */

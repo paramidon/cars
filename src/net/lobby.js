@@ -209,7 +209,11 @@ export class Lobby {
     this.room = rj.room;
     this._remember();
     if (rj.room.state === 'race') {
-      if (this.game.net) return; // та же страница — игра так и шла, просто связь вернулась
+      if (this.game.net) {
+        // та же страница — игра так и шла, просто связь вернулась; сломанное за время обрыва — убрать
+        this.game.net.syncProps(rj.props);
+        return;
+      }
       this._hide();
       this.game.startNet(this.client, rj.room, rj.slots, rj, rj.zone);
     } else {

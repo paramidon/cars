@@ -68,8 +68,9 @@ const server = http.createServer(async (req, res) => {
 // ------------------------------------------------------------------ лобби и комнаты
 // id → { id, ws, token, name, version, room, team, car, seat, away, awayTimer }; у выпавшего ws = null, away = true
 const clients = new Map();
-// id → { id, name, version, hostId, players: Set<id>, settings, state, result, finished, slots, rows, stats }
-// rows — последний снимок каждой машины, stats — очки игроков: чтобы вернувшийся продолжил с того же места
+// id → { id, name, version, hostId, players: Set<id>, settings, state, result, finished, slots, rows, stats, broken }
+// rows — последний снимок каждой машины, stats — очки игроков, broken — номера сломанной уличной мелочи:
+// чтобы вернувшийся продолжил с того же места
 const rooms = new Map();
 const MODES = ['classic', 'crew'];
 const GAMES = ['race', 'royale'];
@@ -217,8 +218,11 @@ function onMessage(c, msg) {
       if (msg.p) room.stats.set(c.id, msg.p);
       toRoom(room, { ...msg, from: c.id }, c.id);
       return;
-    case 'e': // событие (выстрел, удар, взрыв машины)
-      if (room && room.state === 'race') toRoom(room, { ...msg, from: c.id }, c.id);
+    case 'e': // событие (выстрел, удар, взрыв машины, сломанная уличная мелочь)
+      if (!room || room.state !== 'race') return;
+      // номера сломанной мелочи запоминаем — вернувшемуся посреди заезда
+      if (msg.k === 'prop' && Array.isArray(msg.l)) for (const row of msg.l) if (Number.isInteger(row?.[0]) && row[0] >= 0 && row[0] < 100000) room.broken.add(row[0]);
+      toRoom(room, { ...msg, from: c.id }, c.id);
       return;
     case 'hello': {
       c.name = String(msg.name || 'Игрок').slice(0, 16);
@@ -299,6 +303,7 @@ function onMessage(c, msg) {
       room.startedAt = Date.now();
       room.rows = new Map();
       room.stats = new Map();
+      room.broken = new Set();
       toRoom(room, { t: 'start', slots: msg.slots, zone: room.zone, room: roomInfo(room) });
       pushRooms();
       log(`«${room.name}»: старт (${room.players.size} чел.)`);
@@ -354,6 +359,7 @@ wss.on('connection', (ws) => {
           elapsed: room.startedAt ? (Date.now() - room.startedAt) / 1000 - 3 : 0, // минус отсчёт перед стартом
           rows: room.state === 'race' ? [...room.rows.values()] : [],
           stats: room.stats?.get(old.id) || null,
+          props: room.state === 'race' && room.broken ? [...room.broken] : [],
           result: room.result,
         };
         send(c, { t: 'welcome', id: c.id, token: c.token, server: PKG.version, game: DIST_BUILD, rejoin });

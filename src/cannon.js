@@ -177,7 +177,8 @@ export class Artillery {
       this.peds.explosion(x, z, R, local ? shooter : REMOTE_SHOT);
       this.peds.alert(x, z, 30);
     }
-    if (this.breakables) this.breakables.blast(x, z, R * 0.8);
+    // уличную мелочь ломает только снаряд стрелявшего: остальным она придёт по сети, у всех одна и та же
+    if (this.breakables && local) this.breakables.blast(x, z, R * 0.8);
     if (this.onBlast) this.onBlast(x, z, shooter);
   }
 }

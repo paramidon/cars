@@ -10,7 +10,9 @@ import { dampAngle } from '../utils.js';
  * считает хост. Чужие машины — «призраки» (car.remote): их положение приходит снимками 20 раз в секунду и сглаживается.
  * Урон от тарана считает таранящий (у него своя машина точная) и шлёт владельцу жертвы; снаряды рассылаются событиями
  * и летят у всех, урон от них владелец машины считает у себя. Стрелок в чужой машине крутит башню у себя и шлёт
- * её поворот хозяину. Пешеходы у каждого свои. Кто первый финишировал / разбил всех / набил пешеходов — решает сервер.
+ * её поворот хозяину. Уличную мелочь ломает тот, чья машина или снаряд в неё попали, и рассылает номера сломанного
+ * (сервер их запоминает для вернувшихся). Пешеходы у каждого свои. Кто первый финишировал / разбил всех / набил
+ * пешеходов — решает сервер.
  */
 const SNAP_HZ = 20;
 const EXTRAP_MAX = 0.25; // дольше снимок вперёд не угадываем, с
@@ -21,6 +23,7 @@ export const NET_COLORS = ['#d4161c', '#13a3c8', '#f08a12', '#e14fa8'];
 export const TEAMS = { 1: { name: 'КРАСНЫЕ', color: '#e5262b' }, 2: { name: 'СИНИЕ', color: '#2f7cf0' } };
 
 const r2 = (v) => Math.round(v * 100) / 100;
+const r1 = (v) => Math.round(v * 10) / 10;
 
 /** Раздать места на решётке: машинам людей и ботам вперемешку. Возвращает { id: номер места в GRID }. */
 export function makeSlots(ids) {
@@ -93,6 +96,8 @@ export class Netplay {
     this.sendAcc = 0;
     this.byId = new Map();
     this.crews = crewsOf(room);
+    this.broken = []; // сломанная здесь уличная мелочь, ещё не разосланная: [номер, vx, vz]
+    game.breakables.onBreak = (it, vx, vz) => this.broken.push([it.id, r1(vx), r1(vz)]);
 
     const g = game;
     const me = this.myId;
@@ -162,6 +167,7 @@ export class Netplay {
   dispose() {
     for (const off of this.off) off();
     const g = this.game;
+    g.breakables.onBreak = null;
     for (const rc of g.remotes) {
       rc.car.root.visible = false;
       rc.tag.sprite.visible = false;
@@ -228,6 +234,12 @@ export class Netplay {
       this.client.send({ t: 'e', k: 'wreck', id: car.netId, by });
     }
 
+    // сломанное — сразу, не дожидаясь снимка: пусть у всех падает почти одновременно
+    if (this.broken.length) {
+      this.client.send({ t: 'e', k: 'prop', l: this.broken });
+      this.broken = [];
+    }
+
     this.sendAcc += dt;
     if (this.sendAcc < 1 / SNAP_HZ) return;
     this.sendAcc = 0;
@@ -279,6 +291,7 @@ export class Netplay {
   }
 
   _event(m) {
+    if (m.k === 'prop') return this._props(m.l);
     const car = this.byId.get(m.id);
     if (!car) return;
     if (m.k === 'fire') {
@@ -294,6 +307,22 @@ export class Netplay {
       car.health = 0;
       car.explode();
     }
+  }
+
+  /** Другой игрок сломал уличную мелочь: ломаем то же, громкость — по расстоянию до меня. */
+  _props(list) {
+    const g = this.game;
+    for (const [id, vx, vz] of list || []) {
+      const it = g.breakables.items[id];
+      if (!it) continue;
+      const k = Math.max(0, 1 - Math.hypot(it.x - g.car.x, it.z - g.car.z) / 90);
+      g.breakables.breakNet(id, vx, vz, k * k);
+    }
+  }
+
+  /** Связь вернулась (или вернулся после перезагрузки): убрать всё, что сломали без меня. */
+  syncProps(ids) {
+    if (ids) this.game.breakables.removeIds(ids);
   }
 
   _place(m) {
@@ -325,7 +354,7 @@ export class Netplay {
    * Вернулся в идущий заезд (после обрыва и перезагрузки страницы): без отсчёта, свои машины — с последнего
    * снимка, который запомнил сервер (место, корпус, круг, время), чужие — как обычные снимки.
    */
-  resume({ rows, stats, result, elapsed }) {
+  resume({ rows, stats, result, elapsed, props }) {
     const g = this.game;
     g.countdown = 0;
     g.race.start();
@@ -354,6 +383,7 @@ export class Netplay {
       else if (car.ai) Object.assign(car.ai.tr, { lap, next, passed, finished: !!(flags & 8) });
       if ((flags & 1) && !car.wrecked) car.explode();
     }
+    this.syncProps(props);
     g.aimYaw = g.car.yaw + g.car.turretYaw;
     g.cam.snap(g.car);
     if (result) this._result(result);
