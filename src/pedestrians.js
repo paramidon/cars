@@ -629,7 +629,7 @@ export class Pedestrians {
     this.audio.splat(0.6 * vol);
   }
 
-  /** Пуля пулемёта (считает стрелявший). Стоящего валит MG.pedShots-я пуля, лежачего — первая. */
+  /** Пуля пулемёта (считает стрелявший). Стоящего валит MG.pedShots-я пуля, лежачего — MG.downShots-я. */
   shoot(p, dx, dz, car) {
     const g = this.city.groundHeight(p.x, p.z);
     const lying = this.isLying(p);
@@ -639,13 +639,14 @@ export class Pedestrians {
       return;
     }
     p.killer = car;
+    p.shots++;
     if (lying) {
+      if (p.shots < MG.downShots) return;
       this._send('shotdown', p, car, 3, dx, dz);
       this.fx.bloodPool(p.x, p.z, rand(1.5, 2.2), 1.5);
       this._finish(p, 'gun', 0);
       return;
     }
-    p.shots++;
     if (p.shots < MG.pedShots) {
       this._panic(p, p.x - dx, p.z - dz, 0, 0, false);
       return;
