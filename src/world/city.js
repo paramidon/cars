@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CITY } from '../config.js';
+import { CITY, PHYS_RAPIER } from '../config.js';
 import { mulberry32, clamp } from '../utils.js';
 import { GeoBuilder, addBox, addCyl, addBlob } from './geom.js';
 import { CollisionWorld } from '../physics/collision.js';
@@ -23,6 +23,28 @@ const HOUSE_COLORS = ['#f5e6c8', '#e8c9a0', '#cfe3f0', '#f0d5d5', '#dde8c8', '#f
 const ROOF_COLORS = ['#8b3a2b', '#6b4a3a', '#4a5560', '#9c4f30', '#5a3a2a', '#3f4a3a'];
 const AWNING_COLORS = ['#c0392b', '#1f618d', '#239b56', '#b9770e', '#7d3c98', '#d35400'];
 const LEAF_COLORS = ['#3f7a2e', '#4c8a34', '#5a9a3a', '#356b28', '#6aa443'];
+
+// Test ground with ?phys=rapier: the underground tube along Z — an open trench down, a covered section, an open trench up.
+const TUBE = { x0: -134, x1: -126, floor: -5.5, ceil: -0.6, z: [-70, -30, 50, 90] };
+const DECK = { x0: 100, z0: 80, x1: 130, z1: 110, h: 6 }; // raised deck reached by a long ramp
+const SLAB = 8; // m — thickness of the ground's rigid-body slabs (the tube is dug into them)
+
+/** Horizontal rectangle with rectangular holes ([x0, z0, x1, z1]) cut out — split into strips. */
+function holedFlat(b, x0, z0, x1, z1, y, color, uv, holes) {
+  const xs = [...new Set([x0, x1, ...holes.flatMap((h) => [h[0], h[2]])])].filter((x) => x >= x0 && x <= x1).sort((a, c) => a - c);
+  for (let i = 0; i + 1 < xs.length; i++) {
+    const xa = xs[i], xb = xs[i + 1], xm = (xa + xb) / 2;
+    const cuts = holes.filter((h) => h[0] < xm && h[2] > xm).sort((a, c) => a[1] - c[1]);
+    let z = z0;
+    for (const h of cuts) {
+      if (h[1] > z) b.flat(xa, z, xb, h[1], y, color, uv);
+      z = Math.max(z, h[3]);
+    }
+    if (z < z1) b.flat(xa, z, xb, z1, y, color, uv);
+  }
+}
+
+const inRect = (r, x, z) => x >= r[0] && x <= r[2] && z >= r[1] && z <= r[3];
 
 /** test — тестовый полигон: те же размеры и стена, но вместо кварталов ровный асфальт и пара домов. */
 export function buildCity(scene, quality, test = false) {
@@ -53,6 +75,7 @@ export function buildCity(scene, quality, test = false) {
     props: new GeoBuilder(),
     foliage: new GeoBuilder(),
     marks: new GeoBuilder(),
+    lamps: new GeoBuilder(), // unlit (glowing) bits: tube lights
   };
   const WHITE = col('#ffffff');
   const buildings = [];
@@ -63,10 +86,22 @@ export function buildCity(scene, quality, test = false) {
   const pads = []; // полигон: площадки с бордюром под домами
   const gridN = test ? 0 : N; // на полигоне кварталов и разметки улиц нет
   let pedLayout = null;
+  // test ground on the rigid-body physics: ramps, the tube (no ground over its open trenches), the deck, pads
+  const vert = test && PHYS_RAPIER;
+  const holes = vert ? [[TUBE.x0, TUBE.z[0], TUBE.x1, TUBE.z[1]], [TUBE.x0, TUBE.z[2], TUBE.x1, TUBE.z[3]]] : [];
+  const surfaces = []; // extra ground: { x0, z0, x1, z1, at(x, z), ramp }
+  const triggers = []; // pads: { type: 'boost' | 'launch', x0, z0, x1, z1, y }
+  // static colliders for the rigid-body physics (src/physics/rapier.js) as plain data:
+  // { kind, box: [cx, cy, cz, hx, hy, hz] } or { kind, hull: [x, y, z, x, y, z, …] }
+  const solids = [];
+  const solidBox = (x0, y0, z0, x1, y1, z1, kind) => {
+    solids.push({ kind, box: [(x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2, (x1 - x0) / 2, (y1 - y0) / 2, (z1 - z0) / 2] });
+  };
 
   // ---------------------------------------------------------------- земля и границы
-  g.asphalt.flat(-outer - 4, -outer - 4, outer + 4, outer + 4, 0, WHITE, 8);
-  g.props.flat(-1400, -1400, 1400, 1400, -0.05, col('#76805f'), 1);
+  holedFlat(g.asphalt, -outer - 4, -outer - 4, outer + 4, outer + 4, 0, WHITE, 8, holes);
+  holedFlat(g.props, -1400, -1400, 1400, 1400, -0.05, col('#76805f'), 1, holes);
+  if (!vert) solidBox(-outer - 4, -SLAB, -outer - 4, outer + 4, 0, outer + 4, 'ground');
 
   const curbCol = col('#a9a59d');
   const curbFace = (ax, az, bx, bz, out) => {
@@ -95,6 +130,10 @@ export function buildCity(scene, quality, test = false) {
   world.addAABB(-outer - WT, outer, outer + WT, outer + WT, { kind: 'wall', h: WALL_H });
   world.addAABB(-outer - WT, -outer, -outer, outer, { kind: 'wall', h: WALL_H });
   world.addAABB(outer, -outer, outer + WT, outer, { kind: 'wall', h: WALL_H });
+  solidBox(-outer - WT, 0, -outer - WT, outer + WT, WALL_H, -outer, 'wall');
+  solidBox(-outer - WT, 0, outer, outer + WT, WALL_H, outer + WT, 'wall');
+  solidBox(-outer - WT, 0, -outer, -outer, WALL_H, outer, 'wall');
+  solidBox(outer, 0, -outer, outer + WT, WALL_H, outer, 'wall');
   const pierCol = col('#7a766f');
   const stripeA = col('#d9b21f'), stripeB = col('#222222');
   for (let p = -outer + 6; p < outer; p += 15) {
@@ -162,6 +201,7 @@ export function buildCity(scene, quality, test = false) {
       addBox(g.props, x1 + e / 2, CURB + 0.4, (z0 + z1) / 2, e, 0.8, z1 - z0, pc);
     }
     world.addAABB(x0, z0, x1, z1, { kind: 'building', h: y1 });
+    solidBox(x0, 0, z0, x1, y1, z1, 'building');
     const rec = { x0, z0, x1, z1, h: y1, style };
     buildings.push(rec);
     return rec;
@@ -536,7 +576,7 @@ export function buildCity(scene, quality, test = false) {
   // ---------------------------------------------------------------- разметка
   const markCol = col('#f2f2ee');
   const MY = 0.015;
-  const markRect = (x0, z0, x1, z1) => g.marks.quad([x0, MY, z0], [x0, MY, z1], [x1, MY, z1], [x1, MY, z0], null, markCol, [0, 1, 0]);
+  const markRect = (x0, z0, x1, z1, y = MY, c = markCol) => g.marks.quad([x0, y, z0], [x0, y, z1], [x1, y, z1], [x1, y, z0], null, c, [0, 1, 0]);
   for (let r = 0; r <= gridN; r++) {
     for (let s = 0; s < gridN; s++) {
       const a = roads[s] + RD / 2 + 5, b2 = roads[s + 1] - RD / 2 - 5;
@@ -606,10 +646,18 @@ export function buildCity(scene, quality, test = false) {
     const lim = edge - 2;
     for (let p = -160; p <= 160; p += 20) {
       markRect(p - 0.08, -lim, p + 0.08, lim);
-      markRect(-lim, p - 0.08, lim, p + 0.08);
+      // lines across the tube's open trenches stop at their edges
+      let x = -lim;
+      for (const h of holes) {
+        if (p <= h[1] || p >= h[3]) continue;
+        markRect(x, p - 0.08, h[0], p + 0.08);
+        x = h[2];
+      }
+      markRect(x, p - 0.08, lim, p + 0.08);
     }
     const pad = (x0, z0, x1, z1) => {
       g.walk.flat(x0, z0, x1, z1, CURB, WHITE, 4);
+      solidBox(x0, 0, z0, x1, CURB, z1, 'curb');
       curbFace(x0, z0, x1, z0, [0, 0, -1]);
       curbFace(x0, z1, x1, z1, [0, 0, 1]);
       curbFace(x0, z0, x0, z1, [-1, 0, 0]);
@@ -638,7 +686,150 @@ export function buildCity(scene, quality, test = false) {
       layout.push({ x, z, yaw: face(x, z) + (prng() - 0.5) * 1.5 });
     }
     for (let k = 0; k < 50; k++) layout.push({ x: -49 + k * 2, z: 0, yaw: Math.PI });
+    if (vert) {
+      for (let k = 0; k < 8; k++) {
+        // on the raised deck — knock them off the edge
+        const x = 104 + (k % 4) * 6 + prng() * 2, z = 90 + Math.floor(k / 4) * 10 + prng() * 2;
+        layout.push({ x, z, yaw: prng() * Math.PI * 2 });
+      }
+      verticals();
+    }
     return layout;
+  }
+
+  /**
+   * Test ground on the rigid-body physics: ramps, the underground tube, the raised deck, boost and catapult pads.
+   * Meshes plus static colliders (solids); the ground is a set of slabs with the tube dug into them.
+   */
+  function verticals() {
+    const concrete = col('#a39d92'), concreteSide = col('#7f7a71'), yellow = col('#e2b512'), black = col('#222222');
+    const wallCol = col('#8d8a84');
+    const P = (at, x, z, dy = 0) => [x, at(x, z) + dy, z];
+    const wuv = (pts) => pts.map(([x, , z]) => [x / 8, z / 8]);
+    const T = TUBE, [za, zb, zc, zd] = T.z;
+    const L = outer + 4;
+
+    // ---- ground slabs (top at 0) around the tube, the tunnel's roof, the trenches' slopes and the floor
+    solidBox(-L, -SLAB, -L, T.x0, 0, L, 'ground');
+    solidBox(T.x1, -SLAB, -L, L, 0, L, 'ground');
+    solidBox(T.x0, -SLAB, -L, T.x1, 0, za, 'ground');
+    solidBox(T.x0, -SLAB, zd, T.x1, 0, L, 'ground');
+    solidBox(T.x0, T.ceil, zb, T.x1, 0, zc, 'ground');
+    solidBox(T.x0, -SLAB, za, T.x1, T.floor, zd, 'ground');
+    solids.push({ kind: 'ground', hull: [T.x0, 0, za, T.x1, 0, za, T.x0, T.floor, zb, T.x1, T.floor, zb, T.x0, T.floor, za, T.x1, T.floor, za] });
+    solids.push({ kind: 'ground', hull: [T.x0, 0, zd, T.x1, 0, zd, T.x0, T.floor, zc, T.x1, T.floor, zc, T.x0, T.floor, zd, T.x1, T.floor, zd] });
+
+    /** Ramp rising from h0 to h1 along dir ('+z', '-z', '+x', '-x'): a surface, a convex collider, a mesh. */
+    function ramp(x0, z0, x1, z1, dir, h0, h1) {
+      const alongX = dir[1] === 'x', sgn = dir[0] === '+' ? 1 : -1;
+      const at = (x, z) => {
+        let t = alongX ? (x - x0) / (x1 - x0) : (z - z0) / (z1 - z0);
+        if (sgn < 0) t = 1 - t;
+        return h0 + (h1 - h0) * clamp(t, 0, 1);
+      };
+      surfaces.push({ x0, z0, x1, z1, at, ramp: true });
+      // the bottom goes a little under the ground, so the low edge is never a sliver
+      const hull = [];
+      for (const [x, z] of [[x0, z0], [x0, z1], [x1, z1], [x1, z0]]) hull.push(x, at(x, z), z, x, -0.5, z);
+      solids.push({ kind: 'ramp', hull });
+      g.props.quad(P(at, x0, z0), P(at, x0, z1), P(at, x1, z1), P(at, x1, z0), null, concrete, [0, 1, 0]);
+      const side = (ax, az, bx, bz, out) => g.props.quad([ax, 0, az], [bx, 0, bz], P(at, bx, bz), P(at, ax, az), null, concreteSide, out);
+      side(x0, z0, x1, z0, [0, 0, -1]);
+      side(x0, z1, x1, z1, [0, 0, 1]);
+      side(x0, z0, x0, z1, [-1, 0, 0]);
+      side(x1, z0, x1, z1, [1, 0, 0]);
+      // yellow bands across the top, the last one at the lip
+      const len = alongX ? x1 - x0 : z1 - z0;
+      for (let d = 1.5; d < len - 0.2; d += 3) {
+        const a = sgn > 0 ? d : len - d - 0.6, b = a + 0.6;
+        const q = alongX
+          ? [P(at, x0 + a, z0, 0.02), P(at, x0 + a, z1, 0.02), P(at, x0 + b, z1, 0.02), P(at, x0 + b, z0, 0.02)]
+          : [P(at, x0, z0 + a, 0.02), P(at, x0, z0 + b, 0.02), P(at, x1, z0 + b, 0.02), P(at, x1, z0 + a, 0.02)];
+        g.marks.quad(...q, null, yellow, [0, 1, 0]);
+      }
+    }
+
+    // ---- ramps
+    ramp(-21, -45, -9, -30, '+z', 0, 3.5); // the big one: at ~100 km/h lands in the line of 50
+    for (const z of [-110, -85, -60]) ramp(70, z, 78, z + 6, '+z', 0, 1.2); // three kickers in a row
+    ramp(-152, 64, -140, 74, '+x', 0, 2.5); // over the tube's exit trench
+
+    // ---- the underground tube
+    const down = (x, z) => T.floor * clamp((z - za) / (zb - za), 0, 1);
+    const flatF = () => T.floor;
+    const up = (x, z) => T.floor * clamp((zd - z) / (zd - zc), 0, 1);
+    for (const [z0, z1, at] of [[za, zb, down], [zb, zc, flatF], [zc, zd, up]]) {
+      surfaces.push({ x0: T.x0, z0, x1: T.x1, z1, at });
+      const q = [P(at, T.x0, z0), P(at, T.x0, z1), P(at, T.x1, z1), P(at, T.x1, z0)];
+      g.asphalt.quad(...q, wuv(q), WHITE, [0, 1, 0]);
+    }
+    const cx = (T.x0 + T.x1) / 2;
+    for (let z = za + 2; z < zd - 3; z += 6) {
+      const at = z < zb ? down : z < zc ? flatF : up;
+      g.marks.quad(P(at, cx - 0.1, z, 0.03), P(at, cx - 0.1, z + 3, 0.03), P(at, cx + 0.1, z + 3, 0.03), P(at, cx + 0.1, z, 0.03), null, yellow, [0, 1, 0]);
+    }
+    for (const [x, out] of [[T.x0, [1, 0, 0]], [T.x1, [-1, 0, 0]]]) {
+      g.props.tri([x, 0, za], [x, 0, zb], [x, T.floor, zb], [0, 0], [0, 0], [0, 0], wallCol, out);
+      g.props.quad([x, T.floor, zb], [x, T.floor, zc], [x, T.ceil, zc], [x, T.ceil, zb], null, wallCol, out);
+      g.props.tri([x, 0, zc], [x, 0, zd], [x, T.floor, zc], [0, 0], [0, 0], [0, 0], wallCol, out);
+      // low rails along the open trenches: on the ground they stop a car, from a jump it flies over them
+      const rx = x + (x === T.x0 ? -0.3 : 0.3);
+      for (const [z0, z1] of [[za, zb], [zc, zd]]) {
+        solidBox(rx - 0.2, 0, z0, rx + 0.2, 0.9, z1, 'rail');
+        addBox(g.props, rx, 0.75, (z0 + z1) / 2, 0.15, 0.3, z1 - z0, yellow);
+        for (let z = z0; z <= z1; z += 2.5) addBox(g.props, rx, 0.45, z, 0.18, 0.9, 0.18, black);
+      }
+    }
+    g.props.quad([T.x0, T.ceil, zb], [T.x1, T.ceil, zb], [T.x1, T.ceil, zc], [T.x0, T.ceil, zc], null, col('#5d5a55'), [0, -1, 0]);
+    for (const [z, out] of [[zb, [0, 0, -1]], [zc, [0, 0, 1]]]) {
+      // portals: a striped lintel above the opening
+      for (let x = T.x0; x < T.x1; x += 1) {
+        g.props.quad([x, T.ceil, z], [x + 1, T.ceil, z], [x + 1, 0, z], [x, 0, z], null, Math.round(x - T.x0) % 2 ? yellow : black, out);
+      }
+    }
+    for (let z = zb + 4; z < zc; z += 8) addBox(g.lamps, cx, T.ceil - 0.06, z, 1.4, 0.1, 0.5, col('#fff1b8'));
+
+    // ---- the raised deck and its ramp, a boost pad in front
+    const D = DECK;
+    surfaces.push({ x0: D.x0, z0: D.z0, x1: D.x1, z1: D.z1, at: () => D.h });
+    solidBox(D.x0, 0, D.z0, D.x1, D.h, D.z1, 'deck');
+    g.asphalt.flat(D.x0, D.z0, D.x1, D.z1, D.h, col('#cfcfcf'), 8);
+    const deckSide = (ax, az, bx, bz, out) => g.props.quad([ax, 0, az], [bx, 0, bz], [bx, D.h, bz], [ax, D.h, az], null, concreteSide, out);
+    deckSide(D.x0, D.z0, D.x1, D.z0, [0, 0, -1]);
+    deckSide(D.x0, D.z1, D.x1, D.z1, [0, 0, 1]);
+    deckSide(D.x0, D.z0, D.x0, D.z1, [-1, 0, 0]);
+    deckSide(D.x1, D.z0, D.x1, D.z1, [1, 0, 0]);
+    for (let x = D.x0; x < D.x1; x += 2) {
+      for (const z of [D.z0 + 0.3, D.z1 - 0.3]) markRect(x, z - 0.3, x + 1, z + 0.3, D.h + 0.015, yellow);
+    }
+    for (let z = D.z0; z < D.z1; z += 2) {
+      for (const x of [D.x0 + 0.3, D.x1 - 0.3]) markRect(x - 0.3, z, x + 0.3, z + 1, D.h + 0.015, yellow);
+    }
+    ramp(108, 40, 122, 80, '+z', 0, D.h);
+
+    // ---- pads: boosts in front of the kickers and the deck ramp, a catapult before a wall
+    const pad = (type, x0, z0, x1, z1) => {
+      triggers.push({ type, x0, z0, x1, z1, y: 0 });
+      markRect(x0, z0, x1, z1, 0.015, col(type === 'boost' ? '#ff7a00' : '#c0262b'));
+      if (type === 'boost') {
+        // white chevrons pointing +z
+        const mx = (x0 + x1) / 2, hw = (x1 - x0) / 2 - 0.6;
+        for (let z = z0 + 1; z < z1 - 1.5; z += 2.4) {
+          g.marks.quad([mx - hw, 0.025, z], [mx - hw, 0.025, z + 0.5], [mx, 0.025, z + 1.3], [mx, 0.025, z + 0.8], null, WHITE, [0, 1, 0]);
+          g.marks.quad([mx, 0.025, z + 0.8], [mx, 0.025, z + 1.3], [mx + hw, 0.025, z + 0.5], [mx + hw, 0.025, z], null, WHITE, [0, 1, 0]);
+        }
+      } else {
+        markRect(x0 + 1, z0 + 1, x1 - 1, z1 - 1, 0.025, yellow);
+        markRect(x0 + 2, z0 + 2, x1 - 2, z1 - 2, 0.03, col('#c0262b'));
+      }
+    };
+    pad('boost', 70, -140, 78, -126);
+    pad('boost', 110, 22, 120, 34);
+    pad('launch', 143, -36, 149, -30);
+    world.addAABB(135, -12, 157, -11, { kind: 'wall', h: 4.5 });
+    solidBox(135, 0, -12, 157, 4.5, -11, 'wall');
+    addBox(g.props, 146, 2.25, -11.5, 22, 4.5, 1, wallCol);
+    for (let x = 135; x < 157; x += 1) addBox(g.props, x + 0.5, 4.3, -11.5, 1, 0.4, 1.05, x % 2 ? yellow : black);
   }
 
   // ---------------------------------------------------------------- меши
@@ -656,6 +847,7 @@ export function buildCity(scene, quality, test = false) {
   for (const k of Object.keys(maps)) mats[k] = new THREE.MeshLambertMaterial({ map: maps[k], vertexColors: true });
   mats.props = new THREE.MeshLambertMaterial({ vertexColors: true });
   mats.foliage = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  mats.lamps = new THREE.MeshBasicMaterial({ vertexColors: true });
   mats.marks = new THREE.MeshLambertMaterial({ vertexColors: true, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
   const casters = new Set(['apartment', 'office', 'shop', 'house', 'roof', 'props', 'foliage']);
   for (const [key, b] of Object.entries(g)) {
@@ -696,15 +888,36 @@ export function buildCity(scene, quality, test = false) {
     }
   }
   for (const p of pads) rect(p.x0, p.z0, p.x1, p.z1, '#8f8b82');
+  if (vert) {
+    rect(TUBE.x0, TUBE.z[0], TUBE.x1, TUBE.z[3], '#26272b');
+    rect(TUBE.x0, TUBE.z[1], TUBE.x1, TUBE.z[2], '#4a4b50');
+    rect(DECK.x0, DECK.z0, DECK.x1, DECK.z1, '#b5b2aa');
+    for (const s of surfaces) if (s.ramp) rect(s.x0, s.z0, s.x1, s.z1, '#d9b21f');
+    for (const t of triggers) rect(t.x0, t.z0, t.x1, t.z1, t.type === 'boost' ? '#ff7a00' : '#c0262b');
+  }
   for (const b of buildings) {
     const v =Math.round(clamp(150 + b.h * 2.2, 150, 235));
     rect(b.x0, b.z0, b.x1, b.z1, `rgb(${v},${v - 6},${v - 16})`);
   }
 
   // ---------------------------------------------------------------- запросы
-  function groundHeight(x, z) {
+  /** Height of the ground at (x, z); below — the highest surface not above this (the tube has two levels). */
+  function groundHeight(x, z, below = Infinity) {
     if (x < -edge || x > edge || z < -edge || z > edge) return CURB;
-    if (test) return pads.some((p) => x >= p.x0 && x <= p.x1 && z >= p.z0 && z <= p.z1) ? CURB : 0;
+    if (test) {
+      let best = -Infinity, low = Infinity;
+      if (!holes.some((r) => inRect(r, x, z))) {
+        low = pads.some((p) => x >= p.x0 && x <= p.x1 && z >= p.z0 && z <= p.z1) ? CURB : 0;
+        if (low <= below) best = low;
+      }
+      for (const s of surfaces) {
+        if (x < s.x0 || x > s.x1 || z < s.z0 || z > s.z1) continue;
+        const h = s.at(x, z);
+        if (h <= below && h > best) best = h;
+        if (h < low) low = h;
+      }
+      return best > -Infinity ? best : low < Infinity ? low : 0;
+    }
     const u = (((x + half) % cell) + cell) % cell;
     const v = (((z + half) % cell) + cell) % cell;
     if (u < RD / 2 || u > cell - RD / 2 || v < RD / 2 || v > cell - RD / 2) return 0;
@@ -738,6 +951,11 @@ export function buildCity(scene, quality, test = false) {
     findRoadSpawn,
     test,
     pedLayout,
+    solids,
+    /** Pad (boost / launch) under a car at (x, z) standing at height y, or null. */
+    padAt: (x, z, y) => triggers.find((t) => x >= t.x0 && x <= t.x1 && z >= t.z0 && z <= t.z1 && Math.abs(y - t.y) < 0.5) || null,
+    /** Under the tube's ceiling (or by its portals) at height y: the tube (for the camera), else null. */
+    roofOver: (x, z, y) => (vert && x > TUBE.x0 && x < TUBE.x1 && z > TUBE.z[1] - 6 && z < TUBE.z[2] + 6 && y < TUBE.ceil - 0.5 ? TUBE : null),
     spawn: { x: roads[3] - 3.5, z: roads[1] + RD / 2 + 12, yaw: 0 },
     minimap: { canvas: mm, ext, k },
   };

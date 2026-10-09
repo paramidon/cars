@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import './style.css';
-import { QUALITY, IS_TOUCH, DEBUG, MUTE, TEST_MAP } from './config.js';
+import { QUALITY, IS_TOUCH, DEBUG, MUTE, TEST_MAP, PHYS_RAPIER } from './config.js';
+import { Physics, initRapier, rapierStats } from './physics/rapier.js';
+import { Vehicle } from './physics/vehicle.js';
 import { buildCity } from './world/city.js';
 import { Breakables } from './world/props.js';
 import { FX } from './effects/fx.js';
@@ -100,7 +102,13 @@ class Game {
     this.debris = new Debris(scene, this.city.groundHeight, this.city.world);
     this.audio = new AudioFX({ forceMute: MUTE });
     this.breakables = new Breakables(scene, this.city.world, this.city.props, this.city.groundHeight, this.debris, this.fx, this.audio, QUALITY);
+    // ?phys=rapier on the test ground: my car is a rigid body in a Rapier world (PHYSICS_PLAN.md)
+    this.phys = PHYS_RAPIER ? new Physics(this.city.solids) : null;
     this.mainCar = new Car(scene, this.city, this.fx, this.audio, this.debris, QUALITY);
+    if (this.phys) {
+      this.mainCar.rb = new Vehicle(this.phys, this.mainCar);
+      this.mainCar.reset(this.city.spawn);
+    }
     this.car = this.mainCar; // машина, в которой я сижу (по сети может быть чужая — если я в её пушке)
     this.carTag = new CarTag(scene, this.car);
     this.peds = new Pedestrians(scene, this.city, this.fx, this.audio, QUALITY);
@@ -123,6 +131,7 @@ class Game {
     this.net = null; // сетевой заезд (Netplay) или null
     this.netPool = new Map(); // машины людей по сети — живут между заездами
     this.remotes = []; // { car, tag } людей в текущем сетевом заезде
+    this.dummies = []; // extra Rapier cars driving in circles — addPhysDummies(), for measuring the physics cost
     this.setCars([this.car, ...this.rivals.map((r) => r.car)]);
     this.artillery.peds = this.peds;
     this.artillery.breakables = this.breakables;
@@ -370,6 +379,9 @@ class Game {
       if (car === this.car) this._myDamage(dmg);
     };
     car.onWrecked = () => (car === this.car ? this._myWreck() : this._carWrecked(car));
+    car.onRight = () => {
+      if (car === this.car && this.state === 'play') this.hud.popup('НА КОЛЁСА!', 'info');
+    };
   }
 
   _myDamage(dmg) {
@@ -777,6 +789,11 @@ class Game {
   _unstuck() {
     const car = this.car;
     if (car.wrecked || car.remote) return; // за рулём не я — переставлять машину не мне
+    if (car.rb?.tipped) {
+      // on its side or roof: back onto the wheels where it lies
+      car.rb.right();
+      return;
+    }
     // в заезде — к последнему пройденному чекпоинту, лицом по маршруту; в битве — на дорогу внутри зоны
     const z = this.zone;
     const sp = this.royale ? roadPointNear(this.city, z.cx, z.cz, Math.max(12, z.radius * 0.6)) : this.race.respawnPoint(undefined, this.startPoint);
@@ -784,6 +801,7 @@ class Game {
     car.z = sp.z;
     car.yaw = sp.yaw;
     car.vx = car.vz = car.angVel = 0;
+    if (car.rb) car.rb.place(sp.x, this.city.groundHeight(sp.x, sp.z), sp.z, sp.yaw);
     this.cam.snap(car);
     this.hud.popup(this.royale ? 'В ЗОНУ' : this.test ? 'НА СТАРТ' : 'К ЧЕКПОИНТУ', 'info');
   }
@@ -1083,16 +1101,35 @@ class Game {
   /** Синхронная физика всех машин: подшаги, столкновения между машинами, потом визуал. */
   _physics(dt, playerInp) {
     const cars = this.cars;
-    const n = Math.max(1, Math.ceil(dt / (1 / 120)));
-    const h = dt / n;
-    for (let i = 0; i < n; i++) {
+    const sub = (h) => {
       if (!cars[0].remote) cars[0].physicsStep(h, playerInp); // в пушке чужой машины — её ведёт хозяин
       for (const r of this.rivals) if (!r.car.remote) r.car.physicsStep(h, r.inp);
+      for (const c of this.dummies) c.physicsStep(h, c.dummyInp);
       collideCars(cars, this._onCarHit);
+    };
+    if (this.phys) this.phys.step(dt, sub); // Rapier: fixed steps, the pose is interpolated in postUpdate
+    else {
+      const n = Math.max(1, Math.ceil(dt / (1 / 120)));
+      for (let i = 0; i < n; i++) sub(dt / n);
     }
+    for (const c of this.dummies) c.postUpdate(dt, c.dummyInp);
     cars[0].postUpdate(dt, playerInp);
     for (const r of this.rivals) r.car.postUpdate(dt, r.inp);
     for (const rc of this.remotes) if (rc.car !== cars[0]) rc.car.postUpdate(dt, NO_INPUT);
+  }
+
+  /** Debug (?phys=rapier): n more cars on Rapier driving in circles on the test ground's open asphalt. */
+  addPhysDummies(n) {
+    if (!this.phys) return 0;
+    for (let i = 0; i < n; i++) {
+      const k = this.dummies.length;
+      const c = new Car(this.scene, this.city, this.fx, this.audio, this.debris, QUALITY, { isPlayer: false, wing: true, color: '#3a7bd5', number: k + 2 });
+      c.rb = new Vehicle(this.phys, c);
+      c.reset({ x: -90 + (k % 5) * 30, z: 100 + Math.floor(k / 5) * 22, yaw: (k * 1.3) % (Math.PI * 2) });
+      c.dummyInp = { throttle: 0.7, brake: 0, steer: k % 2 ? 0.5 : -0.5, handbrake: false };
+      this.dummies.push(c);
+    }
+    return this.dummies.length;
   }
 
   /** Снимок состояния для журнала ошибок. */
@@ -1122,6 +1159,13 @@ class Game {
       quality: { low: QUALITY.low, shadows: QUALITY.shadows, peds: QUALITY.pedCount },
       touch: this.input.usingTouch,
       map: this.test ? 'test' : 'city',
+      phys: this.phys
+        ? {
+          y: r1(car.y), up: Math.round(car.upY * 100) / 100, vy: r1(car.vy || 0), wheels: car.rb?.contacts,
+          righting: !!car.rb?.righting, stepMs: Math.round(this.phys.stepMs * 1000) / 1000, steps: this.phys.steps,
+          bodies: this.phys.vehicles.length, initMs: Math.round(rapierStats.initMs),
+        }
+        : null,
     };
   }
 
@@ -1362,7 +1406,19 @@ class Game {
 
 const crash = new CrashReporter(version);
 window.crash = crash;
-try {
+boot();
+
+async function boot() {
+  try {
+    // the rigid-body engine's WASM has to be up before the world is built
+    if (PHYS_RAPIER) await initRapier();
+    start();
+  } catch (err) {
+    crash.report(err, 'запуск игры');
+  }
+}
+
+function start() {
   const game = new Game();
   window.game = game;
   crash.getContext = () => game.debugState();
@@ -1379,6 +1435,4 @@ try {
   if (crash.previous?.entries?.some((e) => e.kind !== 'note' && e.kind !== 'console.error')) {
     document.getElementById('btn-prev-crash').classList.remove('hidden');
   }
-} catch (err) {
-  crash.report(err, 'запуск игры');
 }

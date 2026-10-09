@@ -23,7 +23,7 @@ given below. Run them in order. At the end of every session, tick its checkbox i
 
 ## Status
 
-- [ ] Session 1: spike on the test ground (go/no-go)
+- [x] Session 1: spike on the test ground (go/no-go) — **GO**
 - [ ] Session 2: whole world and all cars on Rapier, handling tuned
 - [ ] Session 3: damage, rams, props, pedestrians, weapons in 3D
 - [ ] Session 4: networking
@@ -328,3 +328,96 @@ wants it (ask first):
 ## Session notes
 
 _Each session appends its notes here: decisions, measurements, problems left for later._
+
+### Session 1 (2026-10-09): spike on the test ground — GO
+
+**Recommendation: go.** Jumps, nose-first landings, rollovers and resting on the side or roof come out of the
+physics with no special cases. The handling numbers are unchanged, because both paths run the same code. The physics
+costs 0.27 ms per frame for 20 cars on desktop. The price is +2.2 MB of bundle (+0.85 MB gzip) and 20–50 ms more at
+boot.
+
+**Decisions**
+
+- **Package:** `@dimforge/rapier3d-compat` pinned at **0.19.3**, not the newest 0.21.0. The 0.21 module is 4.3 MB
+  (WASM 3.0 MB), 0.19.3 is 2.2 MB (WASM 1.57 MB), and everything used here is the same in both.
+- **Flag:** `PHYS_RAPIER` in `config.js` is `?map=test&phys=rapier`. Rapier is always in the bundle (static import),
+  but `RAPIER.init()` and the world only run with the flag. The boot is async (`boot()` in `main.js`); an init failure
+  goes to the crash reporter like any boot error. The vertical structures exist only with the flag.
+- **World** (`physics/rapier.js`, `PHYS`):
+  - gravity 20 m/s², the old arcade value: the test ground is laid out for it (at 9.81 the big ramp's jump would be
+    46 m instead of 27 m);
+  - fixed step 1/120 s with an accumulator, at most 8 steps per frame; the rendered pose is interpolated between
+    the last two steps;
+  - static colliders come from `city.solids`: plain data (boxes, convex hulls) built by `buildCity`, so `city.js`
+    doesn't import Rapier. The city's wall, buildings and ground slab are already collected (unused until Session 2).
+    The tube is dug into 8 m ground slabs; ramps are convex hulls whose bottom goes 0.5 m under the ground.
+- **Car** (`physics/vehicle.js`, `VEH`):
+  - body origin = the model's origin (the wheels' contact level), so the mesh sync is a plain copy;
+  - 1200 kg, centre of mass 0.55 m up, inertia 2050 / 2250 / 600 kg·m² (pitch / yaw / roll);
+  - chassis: a lower box 2.2 × 0.76 × 4.5 m (as wide as the tyres) plus a cabin box;
+  - `DynamicRayCastVehicleController`: rest 0.3 m, travel 0.2 m, stiffness 50, damping 3 / 3.5. Rapier multiplies
+    stiffness and damping by the mass, so the sag is g / 4k = 0.1 m (measured: suspension length 0.2 at rest).
+    Tyre friction in Rapier is off (`frictionSlip` 0, side stiffness 0);
+  - `recomputeMassPropertiesFromColliders()` right after creating the body. Rapier computes the mass only at the next
+    step, and a body rotated before that gets NaNs. This blew up the whole world when the 20 dummies were added.
+- **Arcade layer:** `Car._step` is split; the handling itself is now `Car._drive(h, inp, vF, vR)`. The old path
+  integrates its result as before. The Rapier path reads vF, vR and the yaw rate from the body in the car's frame,
+  runs `_drive`, and applies the difference × k, where k = (wheels on the ground / 4) × a fade from up·Y 0.6 to 0.35.
+  Only the yaw part of the angular velocity is touched, so pitch and roll are free physics. Cornering acts at the
+  centre of mass, so the body doesn't lean in turns (the old cosmetic body-roll spring is kept).
+- **Flip rule:** up·Y < 0.5 and speed and spin below 1.5 for 1.5 s start the righting. The first version (a kinematic
+  body, scripted slerp) swept the chassis up to 0.7 m into the deck when the car lay next to it. It was replaced by
+  a dynamic righting: angular velocity towards upright (up to 6 rad/s, about the centre of mass, heading kept) and a
+  vertical velocity that holds the centre of mass up to 0.9 m higher; walls push the body away. `R` on a tipped car
+  rights it in place («НА КОЛЁСА!»); on an upright car `R` teleports as before.
+- **Kept 2D for now:** street props break on contact on the Rapier path (the old circle test, above 2.5 m/s, not while
+  in the air) and don't stop the car. Pedestrians, shells, bullets and camera occlusion are unchanged.
+- **Not ported:** the flight bonus, pad popups and the 100 m grid (Session 7).
+- **Debug:** `game.addPhysDummies(n)` adds n Rapier cars driving in circles (used for the 20-car numbers).
+
+**Measurements** (this PC, Chromium in the app's browser pane)
+
+| What | Old physics | Rapier |
+| --- | --- | --- |
+| JS bundle (gzip) | 985 KB (241 KB) | 3238 KB (1089 KB) |
+| `dist/cars-and-guts.html` | 1890 KB | 4090 KB (WASM inlined, no extra files) |
+| `RAPIER.init()` | — | 13 ms warm, 61 ms cold |
+| Game ready, prod single file | 111 ms warm | 128–147 ms warm, 272 ms cold |
+| Physics step, 1 car (world.step) | — | 0.029 ms (0.016), 0.06 ms per frame |
+| Physics step, 20 cars (world.step) | — | 0.136–0.153 ms (0.047), 0.27 ms per frame |
+| Frame cost `?q=low`, 375×812, 1 car | — | 1.1 ms (p99 2.6) |
+| Frame cost `?q=low`, 375×812, 20 cars | — | 1.98 ms (p99 3.1) |
+
+"Frame cost" is step + render + `gl.finish()` per frame, measured by hand. Real FPS couldn't be measured: the browser
+pane was hidden (requestAnimationFrame paused), and this is desktop hardware anyway. Measure on a phone in Session 6.
+
+Handling is unchanged: 0 → 1 / 2 / 3 / 9 s gives 42.9 / 76.9 / 99.2 / 125.5 km/h on both paths. Yaw rate at
+40 / 60 / 100 / 125 km/h: Rapier 119 / 106 / 69 / 58 °/s, old 121 / 108 / 70 / 60. Body lean on full lock: 0.1°.
+
+**Acceptance**
+
+- **Big ramp, straight:** lip at 108 km/h, pitch +10.7° at the lip → −18.4° at touchdown, front wheels first, lands at
+  z = −0.7 (in the line of 50). At 83 km/h: −26.7°, front first. The car settles level.
+- **Two wheels up the big ramp** (10 runs, both sides, 40–100 km/h, offsets ±0.6 m): rolls smoothly and tips past
+  ~59° (static tipping angle between 58° and 60°), lies on its side (64–90°) or roof; at 70–100 km/h it
+  barrel-rolls. Largest sideways move 0.04 m per frame at 40 km/h (0.076 at 100 km/h, the roll's own speed), no pops.
+  Every run rights itself 1.5 s after stopping.
+- **Deck edge,** 156 runs: 60 up the deck ramp near its sides steering off, 36 off the deck's edges in all directions at
+  8 and 20 km/h, 60 sliding sideways off the ramp next to the deck's front face. No chassis corner got more than
+  0.123 m inside a ramp, the deck or the ground (contact slop). Given time, all of them end upright.
+- **Walls:** the deck's side at 60 km/h, a kicker's back face at 50 km/h and a rail at 40 km/h all stop the car at
+  the face. Tube at 60 km/h: drives through, floor at −5.59 m, camera never above −1.1 m (ceiling −0.6 m).
+  Catapult at 60 km/h: lowest chassis corner 6.57 m over the 4.5 m wall, lands upright. The exit-trench jump clears
+  the trench from 79 km/h. Kickers after the boost pad: 130 km/h, 0.4–0.6 s flights, front-first landings.
+- `crash.entries` stayed empty in every run. Rapier's init prints one `console.warn` ("using deprecated parameters
+  for the initialization function"); it comes from the package itself.
+
+**Open problems**
+
+- No damage, sparks or sound from walls and landings on the Rapier path (Session 3, contact-force events).
+- Pedestrians are still hit in 2D: flying over the line of 50 still kills them (Session 3).
+- The nose dive off a lip is strong (about 50°/s at g = 20, touchdown at −18…−27°). Fine for now; Session 2 may
+  want more pitch inertia or a little air stabilisation.
+- Tyre marks and bloody tracks are skipped where a wheel's contact isn't at `city.groundHeight` (ramp slopes, the
+  tunnel floor), because fx draws them flat on the ground.
+- Car-vs-car contact exists only between Rapier bodies (the dummies); `collideCars` still runs for the old cars.

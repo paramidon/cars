@@ -57,8 +57,13 @@ export class ChaseCamera {
     }
 
     // направление: по курсу машины, при быстром заносе — немного по вектору скорости
-    let dirYaw = (aimYaw ?? car.yaw) + (back ? Math.PI : 0);
-    if (aimYaw == null && !back && speed > 6 && car.vF > 0) {
+    let heading = aimYaw ?? car.yaw;
+    // a car on its side or roof: follow where it is going, or hold the view while it lies still
+    const flipped = aimYaw == null && car.upY < 0.5;
+    if (flipped) heading = speed > 3 ? Math.atan2(car.vx, car.vz) : this.heading ?? heading;
+    this.heading = heading;
+    let dirYaw = heading + (back ? Math.PI : 0);
+    if (aimYaw == null && !flipped && !back && speed > 6 && car.vF > 0) {
       const velYaw = Math.atan2(car.vx, car.vz);
       dirYaw = car.yaw + Math.atan2(Math.sin(velYaw - car.yaw), Math.cos(velYaw - car.yaw)) * 0.35;
     }
@@ -83,7 +88,13 @@ export class ChaseCamera {
       if (this.distMul < 0.8) height += (1 - this.distMul) * 4;
     }
 
-    const tx = car.x - fx * dist, tz = car.z - fz * dist, ty = car.y + height;
+    let tx = car.x - fx * dist, tz = car.z - fz * dist, ty = car.y + height;
+    // in the test ground's tube: stay under the ceiling and between the walls
+    const roof = this.city.roofOver?.(car.x, car.z, car.y) || this.city.roofOver?.(tx, tz, car.y);
+    if (roof) {
+      ty = Math.min(ty, roof.ceil - 0.5);
+      tx = clamp(tx, roof.x0 + 0.8, roof.x1 - 0.8);
+    }
     const lookAhead = aimYaw != null ? m.look + 14 : m.look + Math.min(speed * 0.2, 6);
     const lx = car.x + fx * lookAhead, lz = car.z + fz * lookAhead, ly = car.y + 1.2;
 
@@ -96,6 +107,10 @@ export class ChaseCamera {
     this.pos.x = damp(this.pos.x, tx, k, dt);
     this.pos.y = damp(this.pos.y, ty, k * 0.7, dt);
     this.pos.z = damp(this.pos.z, tz, k, dt);
+    if (roof) {
+      this.pos.y = Math.min(this.pos.y, roof.ceil - 0.5);
+      this.pos.x = clamp(this.pos.x, roof.x0 + 0.8, roof.x1 - 0.8);
+    }
     this.look.x = damp(this.look.x, lx, 12, dt);
     this.look.y = damp(this.look.y, ly, 12, dt);
     this.look.z = damp(this.look.z, lz, 12, dt);

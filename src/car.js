@@ -265,6 +265,7 @@ export class Car {
     blob.position.y = 0.03;
     blob.renderOrder = 1;
     root.add(blob);
+    this.blob = blob;
 
     root.traverse((o) => {
       if (o.isMesh && o !== blob && (!this.flash || o.parent !== this.flash)) {
@@ -396,6 +397,8 @@ export class Car {
     this.pitchVel = 0;
     this.hop = 0;
     this.hopVel = 0;
+    this.upY = 1; // height of the body's up vector: 1 upright, 0 on its side, −1 on its roof (moves only on Rapier)
+    this.vy = 0;
     this.throttle = 0;
     this.braking = false;
     this.slip = 0;
@@ -427,6 +430,7 @@ export class Car {
     this.cabinMat.color.copy(this.paintColor);
     this.headMat.color.set(0xfff6d8);
     this.tailMat.color.set(0x7a0b0b);
+    if (this.rb) this.rb.place(this.x, this.y, this.z, this.yaw);
     this._syncMesh(0);
   }
 
@@ -478,6 +482,11 @@ export class Car {
 
   /** Один подшаг физики: движение и столкновения со статикой. */
   physicsStep(h, input) {
+    if (this.rb) {
+      // on Rapier: controls only, the step itself is the world's (Physics.step)
+      this.rb.preStep(h, input);
+      return;
+    }
     this._step(h, input);
     this._collide();
   }
@@ -490,8 +499,20 @@ export class Car {
   _step(h, inp) {
     const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
     const fx = s, fz = c, rx = -c, rz = s;
-    let vF = this.vx * fx + this.vz * fz;
-    let vR = this.vx * rx + this.vz * rz;
+    this._drive(h, inp, this.vx * fx + this.vz * fz, this.vx * rx + this.vz * rz);
+    // скорость собирается по старым осям — при повороте часть уходит в боковую и гасится сцеплением (занос)
+    this.vx = fx * this.vF + rx * this.vR;
+    this.vz = fz * this.vF + rz * this.vR;
+    this.yaw += this.angVel * h;
+    this.x += this.vx * h;
+    this.z += this.vz * h;
+  }
+
+  /**
+   * The handling, shared by both physics paths: from the input and the current forward and lateral speeds (vF, vR)
+   * and yaw rate (this.angVel) — the new vF, vR and angVel after one step h, plus steer, accel and the brake state.
+   */
+  _drive(h, inp, vF, vR) {
     let thr = inp.throttle, brk = inp.brake, st = inp.steer, hb = inp.handbrake;
     if (this.wrecked) {
       thr = 0;
@@ -554,13 +575,6 @@ export class Car {
     const unwind = this.angVel * target < 0 || Math.abs(target) < Math.abs(this.angVel);
     const resp = unwind ? P.yawUnwind : lerp(P.yawResp[0], P.yawResp[1], hard);
     this.angVel += (target - this.angVel) * Math.min(1, resp * h);
-
-    // скорость собирается по старым осям — при повороте часть уходит в боковую и гасится сцеплением (занос)
-    this.vx = fx * vF + rx * vR;
-    this.vz = fz * vF + rz * vR;
-    this.yaw += this.angVel * h;
-    this.x += this.vx * h;
-    this.z += this.vz * h;
     this.vF = vF;
     this.vR = vR;
     this.accel = a;
@@ -705,7 +719,8 @@ export class Car {
     this.fx.explosion(this.x, this.y + 0.8, this.z);
     this.fx.glass(this.x, this.y + 1.4, this.z, 40);
     this.audio.explosion(Math.max(0.15, this.vol()));
-    this.hopVel = 6;
+    if (this.rb) this.rb.kick(0, 6, 0, rand(-1.5, 1.5), 0, rand(-1.5, 1.5));
+    else this.hopVel = 6;
     const byKind = (k) => this.parts.filter((p) => p.kind === k);
     for (const top of [...byKind('cannon'), ...byKind('wing')]) this._detach(top, this.vx * 0.4 + rand(-3, 3), 11, this.vz * 0.4 + rand(-3, 3));
     for (const p of [...byKind('front'), ...byKind('rear')]) this._detach(p, this.vx * 0.4 + rand(-5, 5), rand(5, 9), this.vz * 0.4 + rand(-5, 5));
@@ -736,17 +751,24 @@ export class Car {
   }
 
   _afterPhysics(dt, input) {
+    if (this.rb) {
+      this.rb.update(dt);
+      this.rb.sync();
+      this._breakProps();
+    }
     const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
     const speed = this.speed;
 
-    // высота над землёй (бордюр) и подскоки
-    const gy = this.city.groundHeight(this.x, this.z);
-    const dy = gy - this.y;
-    if (Math.abs(dy) > 0.05) this.pitchVel += -dy * 6 * Math.sign(this.vF || 1);
-    this.y += dy * Math.min(1, dt * 20);
-    this.hopVel -= 20 * dt;
-    this.hop = Math.max(0, this.hop + this.hopVel * dt);
-    if (this.hop === 0) this.hopVel = 0;
+    if (!this.rb) {
+      // высота над землёй (бордюр) и подскоки
+      const gy = this.city.groundHeight(this.x, this.z);
+      const dy = gy - this.y;
+      if (Math.abs(dy) > 0.05) this.pitchVel += -dy * 6 * Math.sign(this.vF || 1);
+      this.y += dy * Math.min(1, dt * 20);
+      this.hopVel -= 20 * dt;
+      this.hop = Math.max(0, this.hop + this.hopVel * dt);
+      if (this.hop === 0) this.hopVel = 0;
+    }
 
     // крен и тангаж на пружинах
     const lat = this.vF * this.angVel;
@@ -768,6 +790,12 @@ export class Car {
     for (let i = 0; i < 4; i++) {
       const w = WHEELS[i], tr = this.trails[i];
       const wx = this.x + w.x * c + w.z * s, wz = this.z - w.x * s + w.z * c;
+      if (this.rb && !this.rb.wheelOnGround(i, wx, wz)) {
+        // a wheel in the air (or on a slope, on the tunnel's floor) leaves no marks
+        tr.skid = false;
+        tr.blood = 0;
+        continue;
+      }
 
       // юз: чёрные полосы от задних колёс
       if (skidding && i >= 2) {
@@ -814,14 +842,34 @@ export class Car {
     if (this.isPlayer) this.audio.engine(speed, this.wrecked ? 0 : input.throttle, !this.wrecked);
   }
 
+  /** On Rapier: street props the car runs into break (they don't stop it); not while it flies over them. */
+  _breakProps() {
+    if (!this.onBreakable || this.speed <= 2.5 || this.y - this.city.groundHeight(this.x, this.z) > 0.8) return;
+    const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
+    for (const oz of HIT_Z) {
+      const cx = this.x + s * oz, cz = this.z + c * oz;
+      for (const col of this.world.queryCircle(cx, cz, HIT_R)) {
+        if (col.kind === 'breakable' && circleVsCollider(cx, cz, HIT_R, col, PEN)) this.onBreakable(col, this);
+      }
+    }
+  }
+
   _syncMesh(dt) {
     const r = this.root;
-    r.position.set(this.x, this.y + this.hop, this.z);
-    r.rotation.y = this.yaw;
+    if (this.rb) {
+      r.position.set(this.x, this.y, this.z);
+      r.quaternion.copy(this.rb.quat);
+      this.blob.visible = this.rb.contacts >= 2 && this.upY > 0.7;
+    } else {
+      r.position.set(this.x, this.y + this.hop, this.z);
+      r.rotation.y = this.yaw;
+    }
     this.body.rotation.set(this.pitch, 0, this.roll);
     const spinD = (this.vF * dt) / 0.42;
-    for (const w of this.wheels) {
+    for (let i = 0; i < this.wheels.length; i++) {
+      const w = this.wheels[i];
       if (w.part.detached) continue;
+      if (this.rb) w.pivot.position.y = this.rb.wheelY(i);
       w.spin.rotation.x += spinD;
       // steer > 0 — поворот вправо, а вправо у машины — локальная −X
       if (w.front) w.pivot.rotation.y = -this.steer;
