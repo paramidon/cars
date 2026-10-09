@@ -566,11 +566,7 @@ export class Rival {
   respawn() {
     const car = this.car;
     const z = this.zone;
-    const sp = z ? roadPointNear(this.city, z.cx, z.cz, Math.max(12, z.radius * 0.6)) : this.race.respawnPoint(this.tr.lastCp, this.startPoint());
-    car.x = sp.x;
-    car.z = sp.z;
-    car.yaw = sp.yaw;
-    car.vx = car.vz = car.angVel = 0;
+    car.teleport(z ? roadPointNear(this.city, z.cx, z.cz, Math.max(12, z.radius * 0.6)) : this.race.respawnPoint(this.tr.lastCp, this.startPoint()));
     this.stuckT = 0;
     this.reverseT = 0;
     this.mode = 'race';

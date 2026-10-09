@@ -73,10 +73,7 @@ export class Artillery {
     mesh.visible = true;
     mesh.position.set(m.x, m.y, m.z);
     this.shells.push({ x: m.x, y: m.y, z: m.z, dx: m.dx, dz: m.dz, v: m.v, dist: 0, owner: car, mesh, trail: 0, local: !shot });
-    if (!car.remote) {
-      car.vx -= m.dx * CANNON.recoil;
-      car.vz -= m.dz * CANNON.recoil;
-    }
+    if (!car.remote) car.nudge(-m.dx * CANNON.recoil, -m.dz * CANNON.recoil);
     car.kick();
     for (let i = 0; i < 6; i++) this.fx.muzzleSmoke(m.x + m.dx * rand(0, 1), m.y, m.z + m.dz * rand(0, 1));
     this.fx.sparks(m.x, m.y, m.z, m.dx, m.dz, 6);
@@ -164,9 +161,8 @@ export class Artillery {
       }
       const l = Math.hypot(dx, dz) || 1;
       const nx = dx / l, nz = dz / l;
-      car.vx += nx * CANNON.push * Math.max(k, direct ? 0.6 : 0);
-      car.vz += nz * CANNON.push * Math.max(k, direct ? 0.6 : 0);
-      car.angVel += rand(-1.5, 1.5) * k;
+      const push = CANNON.push * Math.max(k, direct ? 0.6 : 0);
+      car.nudge(nx * push, nz * push, rand(-1.5, 1.5) * k);
       if (car === shooter) continue; // свой снаряд только толкает
       car.lastAttacker = shooter;
       car.lastAttackAt = now;

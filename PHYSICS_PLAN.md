@@ -24,7 +24,7 @@ given below. Run them in order. At the end of every session, tick its checkbox i
 ## Status
 
 - [x] Session 1: spike on the test ground (go/no-go) — **GO**
-- [ ] Session 2: whole world and all cars on Rapier, handling tuned
+- [x] Session 2: whole world and all cars on Rapier, handling tuned
 - [ ] Session 3: damage, rams, props, pedestrians, weapons in 3D
 - [ ] Session 4: networking
 - [ ] Session 5: bots on the new physics
@@ -421,3 +421,113 @@ Handling is unchanged: 0 → 1 / 2 / 3 / 9 s gives 42.9 / 76.9 / 99.2 / 125.5 km
 - Tyre marks and bloody tracks are skipped where a wheel's contact isn't at `city.groundHeight` (ramp slopes, the
   tunnel floor), because fx draws them flat on the ground.
 - Car-vs-car contact exists only between Rapier bodies (the dummies); `collideCars` still runs for the old cars.
+
+### Session 2 (2026-10-09): whole world and all cars on Rapier
+
+**Result:** with `?phys=rapier` every car (mine and the bots, solo) is a Rapier body, in the city and on the test
+ground. The handling numbers are identical to the old physics, bots keep their pace, driving never tips a car, and a
+hard side hit can.
+
+**Decisions**
+
+- **Flag:** `PHYS_RAPIER` is now `?phys=rapier` alone (city or test ground). The vertical structures still exist only on
+  the test ground. Network play isn't on Rapier yet (session 4), so with the flag the «СЕТЕВАЯ ИГРА» button is hidden.
+- **City colliders** (`city.solids`):
+  - every block (sidewalk and lot) and the outer sidewalk ring are curb-high steps, built as convex hulls with their
+    edges bevelled over 0.3 m (`curbSolid`, `CURB_BEVEL`). Plain boxes didn't work: a wheel's ray that grazes the
+    curb's vertical face gets that face's sideways normal, and Rapier pushes the suspension force (51 kN) along it, so
+    a car crawling at 3 km/h stopped dead with its rear wheels on the curb line;
+  - poles, trees, pillars, the fountain, the statue, the planters and the pumps come from the 2D colliders in one pass
+    at the end of `buildCity`: a circle becomes an upright cylinder (`{ cyl }`, new in `Physics.addSolid`), a box a
+    cuboid, from the ground up to the collider's `h`. Breakable props stay non-solid (2D smash, as in session 1).
+- **All cars:** `Game._addBody()` gives the main car and all 19 rivals a `Vehicle`. Rivals not in the lineup are taken
+  out of the world (`Vehicle.setActive` → `body.setEnabled(false)`). On Rapier the city's menu starts from the solo
+  lineup (`_resetWorld()` at boot); otherwise all 19 rivals' bodies would start piled on 8 grid slots.
+- **Moving cars:** `Car.teleport(sp)` (respawn, unstuck, `Rival.respawn`) and `Car.nudge(dvx, dvz, dw)` (shell recoil
+  and blast shove, pedestrian hits) work on both paths; on Rapier writing `car.x` or `car.vx` does nothing.
+- **Car vs car:** `collideCars` is off on Rapier; the chassis collide as bodies. Car colliders have
+  `COLLISION_EVENTS`; `Physics._carContacts()` turns a started contact between two cars into the old
+  `onCarHit(a, b, impact, px, pz, nx, nz)`: the normal and point come from the contact manifold, and `impact` is the
+  closing speed along the normal at that point, from the velocities *before* the step (`Vehicle.pointVelPrev`). So
+  ram damage, sparks, sounds, the ram popup and the bots' back-up keep working. Ram damage measured on a parked car
+  (side hit): 40 / 60 / 80 / 100 / 125 km/h → −19 / −36 / −48 / −54 / −61 (README: −20, −36, −48, −55).
+- **Chassis shape and friction:** with session 1's box chassis the bots got stuck about four times as often and drove
+  13% slower: a square corner snags on a pole, a tree or a building's corner where the old round-ended car (circles of
+  1 m) glanced off. The lower body is now a box with its vertical edges rounded, radius 0.9 m (`VEH.lower.corner`,
+  `roundedBox`), which leaves a 0.4 m flat at the nose and the tail. Body friction is 0.3 with the `Min` combine rule
+  (the old wall friction was 0.3; before, it was 0.4 against 0.5, averaged).
+- **Yaw rate:** the body's angular damping (0.3/s) took ~1.5% off the yaw rate. The arcade layer now pre-compensates
+  it, and the yaw rates match the old physics to 0.1°/s.
+- **Tripping** (new rule, `VEH.tripAccel` / `trip` / `tripTime`): grip still acts at the centre of mass (no lean in
+  turns). But for 0.4 s after a hit (a car contact or `kick()`), grip deceleration above 40 m/s² (the hardest turn
+  needs ~35) acts ×2 at the wheels' contact, below the centre of mass, and rolls the car towards where it was sliding.
+  Without it a 125 km/h T-bone leaned the victim 4°. Only the sideways speed the hit itself gave the car can trip it
+  (`tripV`, from the velocity change over the hit's step). With a plain time window, a car already spinning out at
+  100 km/h rolled over after a light tap.
+- **Not done here:** damage from walls, landings and props (session 3), pedestrians against the oriented box
+  (session 3), network (session 4), bots handling flips (session 5).
+- **Tests:** `tests/physics.js` is an ES module loaded into a dev-server page (`await import('/tests/physics.js')`) with
+  `handling(game)`, `leanRace(game)`, `botLaps(game)` and `sideHit(game)`. They stop the animation loop, step the game
+  by hand and replace `Math.random` with a seeded one. In races my car runs on an autopilot (an `AUTOPILOT`-like
+  `Rival`) and can't be wrecked; otherwise the race would end ('over') and stop every bot. After an edit, Vite serves
+  a module as `…?t=…`, so `import('/src/…')` from the console may get a second copy of it: tune constants through the
+  game's own objects.
+
+**Handling: README vs measured** (`handling()`, test ground, lane x = 170; the old physics gives the same numbers in
+every row)
+
+| What | README / target | Rapier | Old |
+| --- | --- | --- | --- |
+| Top speed | 126–130 km/h | 126.0 | 126.0 |
+| 0 → 1 / 2 / 3 / 5 / 9 s | (old physics) | 42.9 / 76.9 / 99.2 / 118.9 / 125.5 km/h | same |
+| Yaw rate at 40 km/h | ~120°/s | 120.6 (at 40.6) | 120.6 |
+| Yaw rate at 60 km/h | ~107°/s | 107.4 (at 60.5) | 107.4 |
+| Yaw rate at 100 km/h | ~69°/s | 69.9 (at 100.1) | 69.9 |
+| Yaw rate at 125 km/h | ~56°/s | 58.3 (at 120.7: full lock costs speed; `yawCap` there is 58.2) | 58.3 |
+| Handbrake: 80 km/h, 0.6 s on full lock, then released | keeps sliding for ~1 s | turns 83°, peak 13.1 m/s sideways; below 1 m/s 0.6 s after release, full grip at 1.4 s (`slideRecover`) | same |
+| Reverse | 11 m/s (`maxReverse`) = 39.6 km/h | 39.8 | 39.8 |
+| Speedometer vs distance (200 m between grid lines, top speed) | ratio 1 | 126.0 shown, 126.0 real: 1.000 | 1.000 |
+| Lean in all of the above, plus 1.5 s of handbrake on full lock at top speed | — | 0.1° | — |
+
+**Bots** (`botLaps()`, city, 7 bots plus my car on autopilot, 25 s from the green light, seeded, 12 runs each; average
+of all bots' path length over time)
+
+| | Avg speed | Gates per run (7 bots) | Back-ups when stuck, per run | Wrecked per run |
+| --- | --- | --- | --- | --- |
+| Old physics | 59.6 km/h | 15.5 | 2.0 | 1.4 |
+| Rapier, session 1's box chassis | 51.9 km/h | 13.3 | 8.8 | 1.4 |
+| Rapier, final | 61.3 km/h (an earlier run: 60.0) | 16.2 | 4.0 | 1.3 |
+
+Runs of the same configuration spread by about ±3 km/h. Bots still back up from poles, trees and walls about twice as
+often as on the old physics, though they lose little time doing it; session 5 can look at it.
+
+**Lean in races** (`leanRace()`, city, 8 cars, 75 s, 15 seeds): the largest lean per race was 7–38° (median 13°),
+always in pile-ups. One car rolled over in 15 races: it was sliding sideways after a 73 km/h side crash, and a shell
+blast hit it 0.03 s later. No other car passed 60°.
+
+**Side hits** (`sideHit()`, test ground, my car into the side of a parked car)
+
+| Closing speed | 40 | 60 | 80 | 100 | 124 km/h |
+| --- | --- | --- | --- | --- | --- |
+| Victim's largest lean | 1° | 6° | 13° | 27° | 94° (tipped) |
+| Victim thrown at | 24 | 33 | 44 | 60 | 68 km/h |
+
+**Curbs** (a block's edge at x = 7, both ways, 2–100 km/h): every run gets over; at 2 km/h it takes a while but never
+stops. Pitch at most 3.8° (0.15 m over a 2.8 m wheelbase is 3.1°), vertical speed at most 1 m/s.
+
+**Cost** (battle royale, 20 cars, 60 s, no rendering): one world step 0.143 ms (two per frame); `game.step` 0.68 ms per
+frame, the same as on the old physics (0.68 ms). `crash.entries` stayed empty in every run.
+
+**Session 1 re-checked** after the chassis change: off the big ramp (88 km/h at the lip) the car lands front wheels
+first at −25.5° and settles upright; with two wheels up the big ramp at 70 km/h it barrel-rolls and ends on its
+wheels; the tube at 60 km/h works (floor −5.54 m, camera never above −1.1 m). A correction to session 1's notes: the
+catapult clears the 4.5 m wall from ~65 km/h. At 60 km/h the rear wheels clip the top and the car lands on its roof.
+Session 1's own code does the same (checked), so its "6.57 m at 60 km/h" was probably measured at a higher speed.
+
+**Open problems**
+
+- No damage from walls, landings and props on Rapier yet (session 3), so there are fewer wrecks than on the old physics.
+- Bots back up from obstacles about twice as often as before (see above).
+- Pedestrians are still hit in 2D (session 3).
+- Tripping is a game rule on top of the physics. Session 3's shell blasts should go through `Vehicle.kick()` (already
+  the case for `Car.nudge()`), so that a close blast can tip a car.

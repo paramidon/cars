@@ -113,20 +113,29 @@ lose by wrecking your own car or running out of time.
   stands up again in their spot after 5 s if no car is within 8 m. No rivals, no track, no timer and no win condition — only
   your own car; if it gets wrecked — «ЕЩЁ ЗАЕЗД». Single player only. New mechanics should be added here too.
   Layout — `testGround()` in `src/world/city.js`.
-- **Rigid-body physics (work in progress)** — `?map=test&phys=rapier` puts your car on the 3D physics engine Rapier
-  (`PHYSICS_PLAN.md`; the city, rivals and the network still use the old physics). The test ground then also has
+- **Rigid-body physics (work in progress)** — `?phys=rapier` puts every car (yours and the bots, in the city and on the
+  test ground) on the 3D physics engine Rapier (`PHYSICS_PLAN.md`). Single player only for now: the «СЕТЕВАЯ ИГРА»
+  button is hidden. Each car is a 1200 kg body (centre of mass 0.55 m up) on four ray-cast springs; its lower body is
+  rounded at the corners (radius 0.9 m seen from above), so a glancing hit on a pole, a tree or a building's corner
+  slides off as before. The same handling numbers as the old physics are applied as velocity changes while wheels
+  touch the ground, so top speed, acceleration, steering, the handbrake slide and reverse are unchanged (measured to
+  within 0.1%), but it jumps, lands nose first off a lip, and with one side up a ramp rolls over (it tips past ~59°).
+  The city is solid in 3D: buildings, the wall, poles, trees, columns, the fountain, the statue and the pumps; a curb
+  is a 0.15 m step bevelled over 0.3 m that cars bump over (~3.5° of pitch). Cars push each other as rigid bodies: a hit
+  can shove, spin and roll the other car. A car knocked sideways by a hit (another car, a shell's blast) can trip
+  over its own tyres: a parked car rammed in the side at 60 km/h leans ~6°, at 80 — ~13°, at 100 — ~27° (up on two
+  wheels), at 125 it goes over. Driving itself never tips a car (full lock, the handbrake at top speed, curbs: under 1° of
+  lean); in 8-car races cars lean 10–40° in pile-ups, and about one race in fifteen sees a car rolled over by a hard
+  side crash. On its side or roof and nearly still for 1.5 s a car rolls back onto its wheels («НА КОЛЁСА!»); `R`
+  does that at once. Gravity is 20 m/s². Ram damage is the same as on the old physics (closing speed at the contact
+  point); walls, landings and props don't damage a car on this path yet. On the test ground the flag also adds
   vertical play (`verticals()` in `src/world/city.js`): a big 3.5 m ramp in front of the line of 50 (at ~108 km/h you
   land right in it), three 1.2 m kickers with a boost pad before them, a ramp over the tube's exit trench, the
   underground tube on the west side (an open trench down 5.5 m, an 80 m covered tunnel with lights, a trench back
   up; the trenches are fenced with 0.9 m rails, the camera stays under the tunnel's ceiling), a 6 m deck reached by
   a 40 m ramp with eight pedestrians on it, orange boost pads (130 km/h along the heading) and a red catapult
-  (18 m/s straight up) right before a 4.5 m wall. The car is a 1200 kg body (centre of mass 0.55 m up) on four
-  ray-cast springs; the same handling numbers as the old physics are applied as velocity changes while wheels touch
-  the ground, so speed and steering are unchanged, but it jumps, lands nose first off a lip, and with one side up a
-  ramp rolls over (it tips past ~59°). Walls, ramp sides and the deck stop it in 3D. On its side or roof and nearly
-  still for 1.5 s it rolls back onto its wheels («НА КОЛЁСА!»); `R` does that at once. Gravity is 20 m/s².
-  No damage from walls or landings on this path yet. Settings — `PHYS` in `src/physics/rapier.js`, `VEH` in
-  `src/physics/vehicle.js`.
+  (18 m/s straight up) right before a 4.5 m wall (it clears the wall from ~65 km/h). Settings — `PHYS` in
+  `src/physics/rapier.js`, `VEH` in `src/physics/vehicle.js`. Measurements — `tests/physics.js`, run in the browser.
 - **Back to menu** in single player is available from pause and from the results screen (online, the same place has «ВЫЙТИ ИЗ КОМНАТЫ»): the race is reset and cars return to the start.
 
 ## Multiplayer
@@ -219,7 +228,7 @@ URL parameters:
   (default: phone — low, desktop — high);
 - `?peds=100` — how many live pedestrians to keep in the city (default 84 on desktop, 54 on a phone);
 - `?map=test` — the test ground instead of the city;
-- `?phys=rapier` — with `?map=test` only: your car on the Rapier rigid-body physics, plus ramps, the tube and the deck (work in progress);
+- `?phys=rapier` — every car on the Rapier rigid-body physics, in the city and on the test ground (which then also gets ramps, the tube and the deck); single player only, work in progress;
 - `?debug` — FPS counter;
 - `?mute` — start muted without touching saved settings (automated tests run this way, together with Chromium's `--mute-audio`).
 
@@ -249,8 +258,10 @@ src/
   hud.js              HUD, popup captions, blood on screen, minimap
   audio.js            synthesized sound: engine and effects buses, volume settings
   physics/collision.js  2D collisions: AABBs + circles, spatial grid, DDA raycast
-  physics/rapier.js   ?phys=rapier: the Rapier world, static colliders from the city, fixed 1/120 s steps
-  physics/vehicle.js  ?phys=rapier: a car as a rigid body — chassis, ray-cast suspension, arcade layer, self-righting
+  physics/rapier.js   ?phys=rapier: the Rapier world, static colliders from the city, fixed 1/120 s steps, car-vs-car hits
+  physics/vehicle.js  ?phys=rapier: a car as a rigid body — chassis, ray-cast suspension, arcade layer, tripping,
+                      self-righting
+tests/physics.js      in-browser measurements of the physics: handling numbers, lean in a race, bots' pace, side hits
   world/city.js       city generation (and the test ground), pedestrian graph, minimap
   race.js             track, checkpoint gates, laps, timer (settings — RACE at the top of the file)
   racers.js           rivals: personalities (RIVALS), AI — track, hunting cars and pedestrians, car hits (CAR_HIT)
@@ -269,11 +280,12 @@ src/
 server/server.js      server: serves dist/, lobby and rooms, relaying, who was first
 ```
 
-There is no physics engine: collisions are computed in the XZ plane (a car is three circles, buildings are AABBs, poles are circles),
-which is enough for an arcade game and cheap on phones. Pedestrians (all body parts) are drawn in ~6 draw calls via
+There is no physics engine by default: collisions are computed in the XZ plane (a car is three circles, buildings are AABBs, poles are circles),
+which is enough for an arcade game and cheap on phones. `?phys=rapier` replaces that for cars with the Rapier engine
+(see above); pedestrians, shells, bullets and the camera still use the 2D world. Pedestrians (all body parts) are drawn in ~6 draw calls via
 `InstancedMesh`. On a weak device the render resolution drops automatically if the FPS sags.
 
-Main tuning numbers: `PHYS` in `src/physics/rapier.js` and `VEH` in `src/physics/vehicle.js` (`?phys=rapier` only: gravity, step, mass, centre of mass, suspension, self-righting, pads), `P` in `src/car.js` (thrust, grip, steering at speed — the `yawCap` table and `hardFrom`/`hardTo`/`steerTime`/`yawResp`, steering return — `steerReturn`/`yawUnwind`, damage threshold and multiplier),
+Main tuning numbers: `PHYS` in `src/physics/rapier.js` and `VEH` in `src/physics/vehicle.js` (`?phys=rapier` only: gravity, step, mass, centre of mass, chassis shape and friction, suspension, tripping — `tripAccel`/`trip`/`tripTime`, self-righting, pads), `P` in `src/car.js` (thrust, grip, steering at speed — the `yawCap` table and `hardFrom`/`hardTo`/`steerTime`/`yawResp`, steering return — `steerReturn`/`yawUnwind`, damage threshold and multiplier),
 `HEAL` in `src/main.js` (repair for kills), `RACE` in `src/race.js` (laps, pace, time bonuses),
 `CANNON` in `src/cannon.js` (reload, damage, blast radius), `MG` in `src/mg.js` (machine gun), `MOLOTOV` in `src/molotov.js` (cocktails), `RIVALS` (personality `aggr`/`gore`, speed; battle bots beyond seven reuse the same personalities under names from `EXTRA`), `MAX_CARS`/`MAX_CARS_ROYALE` (cars in a race / in battle),
 `HUNT`/`GORE`/`PREY_WEIGHT`/`HUNT_DELAY` and `CAR_HIT` in `src/racers.js` (how personality scales turn into behavior,

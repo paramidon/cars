@@ -487,8 +487,7 @@ export class Pedestrians {
     p.cy = Math.max(p.cy, g + 1.1);
     this._fly(p, false, s, car.vx / s, car.vz / s, car.vol());
     this._send('kill', p, car, s, car.vx / s, car.vz / s);
-    car.vx *= 0.97;
-    car.vz *= 0.97;
+    car.nudge(-car.vx * 0.03, -car.vz * 0.03);
     if (this.onKill) this.onKill(p, 'car', s);
   }
 
@@ -508,8 +507,7 @@ export class Pedestrians {
     const dx = car.vx / (s || 1), dz = car.vz / (s || 1);
     this._fly(p, true, s, dx, dz, car.vol());
     this._send('knock', p, car, s, dx, dz, p.downDur);
-    car.vx *= 0.985;
-    car.vz *= 0.985;
+    car.nudge(-car.vx * 0.015, -car.vz * 0.015);
     if (this.onEvent) this.onEvent('knock', p);
   }
 

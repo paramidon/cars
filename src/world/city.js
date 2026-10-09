@@ -27,6 +27,7 @@ const LEAF_COLORS = ['#3f7a2e', '#4c8a34', '#5a9a3a', '#356b28', '#6aa443'];
 // Test ground with ?phys=rapier: the underground tube along Z — an open trench down, a covered section, an open trench up.
 const TUBE = { x0: -134, x1: -126, floor: -5.5, ceil: -0.6, z: [-70, -30, 50, 90] };
 const DECK = { x0: 100, z0: 80, x1: 130, z1: 110, h: 6 }; // raised deck reached by a long ramp
+const CURB_BEVEL = 0.3; // m — the rigid-body curbs rise over this much (see curbSolid)
 const SLAB = 8; // m — thickness of the ground's rigid-body slabs (the tube is dug into them)
 
 /** Horizontal rectangle with rectangular holes ([x0, z0, x1, z1]) cut out — split into strips. */
@@ -92,10 +93,20 @@ export function buildCity(scene, quality, test = false) {
   const surfaces = []; // extra ground: { x0, z0, x1, z1, at(x, z), ramp }
   const triggers = []; // pads: { type: 'boost' | 'launch', x0, z0, x1, z1, y }
   // static colliders for the rigid-body physics (src/physics/rapier.js) as plain data:
-  // { kind, box: [cx, cy, cz, hx, hy, hz] } or { kind, hull: [x, y, z, x, y, z, …] }
+  // { kind, box: [cx, cy, cz, hx, hy, hz] }, { kind, cyl: [cx, cy, cz, halfHeight, r] } (upright)
+  // or { kind, hull: [x, y, z, x, y, z, …] }
   const solids = [];
   const solidBox = (x0, y0, z0, x1, y1, z1, kind) => {
     solids.push({ kind, box: [(x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2, (x1 - x0) / 2, (y1 - y0) / 2, (z1 - z0) / 2] });
+  };
+  // a curb-high step with its edges bevelled over CURB_BEVEL m: a wheel's ray rolls up the slope instead of grazing a
+  // vertical face (whose sideways normal would shove the car back); the slope starts at the visible curb line
+  const curbSolid = (x0, z0, x1, z1) => {
+    const b = CURB_BEVEL, d = (b * 0.1) / CURB; // the bottom goes 0.1 m under the ground, on the same slope
+    const hull = [];
+    for (const [x, z] of [[x0 - d, z0 - d], [x1 + d, z0 - d], [x1 + d, z1 + d], [x0 - d, z1 + d]]) hull.push(x, -0.1, z);
+    for (const [x, z] of [[x0 + b, z0 + b], [x1 - b, z0 + b], [x1 - b, z1 - b], [x0 + b, z1 - b]]) hull.push(x, CURB, z);
+    solids.push({ kind: 'curb', hull });
   };
 
   // ---------------------------------------------------------------- земля и границы
@@ -134,6 +145,11 @@ export function buildCity(scene, quality, test = false) {
   solidBox(-outer - WT, 0, outer, outer + WT, WALL_H, outer + WT, 'wall');
   solidBox(-outer - WT, 0, -outer, -outer, WALL_H, outer, 'wall');
   solidBox(outer, 0, -outer, outer + WT, WALL_H, outer, 'wall');
+  // the outer sidewalk is a curb-high step: cars bump up onto it
+  curbSolid(-outer, -outer, outer, -edge);
+  curbSolid(-outer, edge, outer, outer);
+  curbSolid(-outer, -edge, -edge, edge);
+  curbSolid(edge, -edge, outer, edge);
   const pierCol = col('#7a766f');
   const stripeA = col('#d9b21f'), stripeB = col('#222222');
   for (let p = -outer + 6; p < outer; p += 15) {
@@ -525,6 +541,7 @@ export function buildCity(scene, quality, test = false) {
       curbFace(x0, z1, x1, z1, [0, 0, 1]);
       curbFace(x0, z0, x0, z1, [-1, 0, 0]);
       curbFace(x1, z0, x1, z1, [1, 0, 0]);
+      curbSolid(x0, z0, x1, z1); // the whole block (sidewalk and lot) is one curb-high step
       const lot = { x0: x0 + S, z0: z0 + S, x1: x1 - S, z1: z1 - S };
       const info = { i, j, type, x0, z0, x1, z1, lot };
       blocks.push(info);
@@ -657,7 +674,7 @@ export function buildCity(scene, quality, test = false) {
     }
     const pad = (x0, z0, x1, z1) => {
       g.walk.flat(x0, z0, x1, z1, CURB, WHITE, 4);
-      solidBox(x0, 0, z0, x1, CURB, z1, 'curb');
+      curbSolid(x0, z0, x1, z1);
       curbFace(x0, z0, x1, z0, [0, 0, -1]);
       curbFace(x0, z1, x1, z1, [0, 0, 1]);
       curbFace(x0, z0, x0, z1, [-1, 0, 0]);
@@ -860,6 +877,16 @@ export function buildCity(scene, quality, test = false) {
     mesh.name = `city-${key}`;
     if (key === 'foliage') mesh.layers.enable(XRAY.mask); // кроны: за ними машины и пешеходы видны рентгеном
     scene.add(mesh);
+  }
+
+  // street furniture that stops cars (poles, trees, pillars, the fountain, the statue, pumps) — rigid-body colliders
+  // from the 2D ones: a circle becomes an upright cylinder, a box a cuboid, from the ground up to its height h.
+  // Buildings and walls already have theirs; breakable props aren't solid (a car smashes through them).
+  for (const c of world.all) {
+    if (c.kind === 'building' || c.kind === 'wall' || c.kind === 'breakable') continue;
+    const top = Math.max(c.h, CURB + 0.3);
+    if (c.r != null) solids.push({ kind: c.kind, cyl: [c.x, top / 2, c.z, top / 2, c.r] });
+    else solidBox(c.minX, 0, c.minZ, c.maxX, top, c.maxZ, c.kind);
   }
 
   // ---------------------------------------------------------------- миникарта

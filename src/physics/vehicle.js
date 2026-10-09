@@ -14,10 +14,14 @@ export const VEH = {
   mass: 1200, // kg
   com: 0.55, // m — centre of mass above the wheels' contact: rolled past ~60° (atan(0.95 / 0.55)) the car falls over
   inertia: [2050, 2250, 600], // kg·m² about the car's x (pitch), y (yaw) and z (roll) axes — a 2 × 1.4 × 4.3 m box
-  // chassis colliders, centre and half sizes: the lower body (as wide as the tyres) and the cabin
-  lower: { at: [0, 0.68, 0], half: [1.1, 0.38, 2.25] },
+  // chassis colliders, centre and half sizes: the lower body (as wide as the tyres) and the cabin. Seen from above the
+  // lower body's corners are rounded with radius `corner` m (only a 0.4 m flat is left at the nose and the tail): an
+  // off-centre hit on a pole, a tree or a building's corner glances off the way the old physics' round-ended car did,
+  // instead of snagging on a square corner
+  lower: { at: [0, 0.68, 0], half: [1.1, 0.38, 2.25], corner: 0.9 },
   cabin: { at: [0, 1.36, -0.3], half: [0.8, 0.3, 1.05] },
-  friction: 0.4, // body against walls and the ground (sliding on the side or the roof)
+  friction: 0.3, // body against walls, cars and the ground (sliding along a wall, on the side or the roof); the lower
+  // of the two surfaces' values is used — the old physics' wall friction was 0.3 too
   restitution: 0.15,
   angularDamping: 0.3, // 1/s — spin slowly fades, in the air too
   // ray-cast suspension; Rapier multiplies stiffness and damping by the car's mass, so they are per kg, per wheel
@@ -40,6 +44,13 @@ export const VEH = {
   rightRate: 6,
   rightLift: 0.9,
   rightTime: 1.5,
+  // tripping (see preStep): for tripTime s after a hit (another car, a blast), sideways deceleration by grip above
+  // tripAccel m/s² (the hardest turn needs ~35) rolls the car, as if that part of the grip acted at the wheels'
+  // contact; trip — how much of it does. Only the sideways speed the hit itself gave the car can trip it: a car that
+  // spins out on its own, or gets a light tap while sliding, doesn't roll over
+  tripAccel: 40,
+  trip: 2,
+  tripTime: 0.4,
   // test-ground pads
   boost: 36, // m/s ≈ 130 km/h along the heading
   launch: 18, // m/s straight up (catapult)
@@ -53,6 +64,20 @@ const _u = new THREE.Vector3();
 const _lv = new THREE.Vector3();
 const _av = new THREE.Vector3();
 const _Y = new THREE.Vector3(0, 1, 0);
+
+/** A box { at, half, corner } with its four vertical edges rounded (radius corner, 4 segments), as a convex hull. */
+function roundedBox({ at, half: [hx, hy, hz], corner: c }) {
+  const pts = [];
+  for (const y of [at[1] - hy, at[1] + hy]) {
+    for (const [sx, sz] of [[1, 1], [-1, 1], [-1, -1], [1, -1]]) {
+      for (let i = 0; i <= 4; i++) {
+        const a = (i / 4) * (Math.PI / 2);
+        pts.push(at[0] + sx * (hx - c + c * Math.cos(a)), y, at[2] + sz * (hz - c + c * Math.sin(a)));
+      }
+    }
+  }
+  return RAPIER.ColliderDesc.convexHull(new Float32Array(pts));
+}
 
 export class Vehicle {
   /** car — the Car this body drives (its wheels give the suspension points, its _drive the handling). */
@@ -68,9 +93,11 @@ export class Vehicle {
         .setCanSleep(false),
     );
     this.body.enableCcd(true);
-    for (const part of [VEH.lower, VEH.cabin]) {
-      const cd = RAPIER.ColliderDesc.cuboid(...part.half).setTranslation(...part.at).setDensity(0);
-      w.createCollider(cd.setFriction(VEH.friction).setRestitution(VEH.restitution), this.body);
+    this.id = phys.vehicles.length + 1;
+    for (const cd of [roundedBox(VEH.lower), RAPIER.ColliderDesc.cuboid(...VEH.cabin.half).setTranslation(...VEH.cabin.at)]) {
+      cd.setDensity(0).setFriction(VEH.friction).setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min);
+      cd.setRestitution(VEH.restitution).setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+      phys.carOf.set(w.createCollider(cd, this.body).handle, this);
     }
     // Rapier would compute the mass only at the next step; a body rotated before that ends up with NaNs
     this.body.recomputeMassPropertiesFromColliders();
@@ -100,6 +127,15 @@ export class Vehicle {
     this.curQ = new THREE.Quaternion();
     this.quat = new THREE.Quaternion();
     this.up = new THREE.Vector3(0, 1, 0);
+    // velocities and centre of mass before the current step (the closing speed of a car-vs-car hit)
+    this.prevV = new THREE.Vector3();
+    this.prevW = new THREE.Vector3();
+    this.prevCom = new THREE.Vector3();
+    this._pv = new THREE.Vector3();
+    this.active = true;
+    this.tripT = 0; // > 0: just hit, grip can trip the car over (VEH.tripTime)…
+    this.tripV = 0; // … stopping at most this much sideways speed more, m/s
+    this.setV = new THREE.Vector3(); // the velocity the controls left the body with before the current step
     this.contacts = 0; // wheels on the ground at the last step
     this.tippedT = 0;
     this.righting = null;
@@ -129,6 +165,23 @@ export class Vehicle {
   savePrev() {
     this.prevP.copy(this.curP);
     this.prevQ.copy(this.curQ);
+    const b = this.body, v = b.linvel(), w = b.angvel(), c = b.worldCom();
+    this.prevV.set(v.x, v.y, v.z);
+    this.prevW.set(w.x, w.y, w.z);
+    this.prevCom.set(c.x, c.y, c.z);
+  }
+
+  /** Velocity of the body's point (x, y, z) before the current step. */
+  pointVelPrev(x, y, z) {
+    _p.set(x, y, z).sub(this.prevCom);
+    return this._pv.crossVectors(this.prevW, _p).add(this.prevV);
+  }
+
+  /** Take the car out of the world (it doesn't race) or put it back. */
+  setActive(on) {
+    if (on === this.active) return;
+    this.active = on;
+    this.body.setEnabled(on);
   }
 
   afterStep() {
@@ -158,13 +211,21 @@ export class Vehicle {
     _lv.set(lv.x, lv.y, lv.z);
     _av.set(av.x, av.y, av.z);
     const vF = _lv.dot(_f), vR = _lv.dot(_r), yawRate = _av.dot(_u);
+    this.tripT -= h;
     car.angVel = yawRate;
     car._drive(h, inp, vF, vR);
     const k = (n / 4) * clamp((_u.y - VEH.upNone) / (VEH.upFull - VEH.upNone), 0, 1);
     let changed = false;
     if (k > 0) {
-      _lv.addScaledVector(_f, (car.vF - vF) * k).addScaledVector(_r, (car.vR - vR) * k);
-      _av.addScaledVector(_u, (car.angVel - yawRate) * k);
+      const dvR = (car.vR - vR) * k;
+      _lv.addScaledVector(_f, (car.vF - vF) * k).addScaledVector(_r, dvR);
+      // the body's angular damping (ω /= 1 + h·d at the step) would shave ~2% off the yaw rate: pre-compensate it
+      _av.addScaledVector(_u, (car.angVel * (1 + h * VEH.angularDamping) - yawRate) * k);
+      // tripping: grip acts at the centre of mass (no lean in turns), but whatever it stops harder than any turn can
+      // ask for (a car knocked sideways) acts at the tyres, below it — the car rolls towards where it was sliding
+      const ex = this.tripT > 0 ? Math.min(Math.abs(dvR) - VEH.tripAccel * h, this.tripV) : 0;
+      if (ex > 0) this.tripV -= ex;
+      if (ex > 0) _av.addScaledVector(_f, (-Math.sign(dvR) * ex * VEH.trip * VEH.mass * VEH.com) / VEH.inertia[2]);
       b.setAngvel(_av, true);
       changed = true;
     }
@@ -183,6 +244,7 @@ export class Vehicle {
     }
     this.padIn = pad;
     if (changed) b.setLinvel(_lv, true);
+    this.setV.copy(_lv);
   }
 
   /** Once a frame: the flip rule — a car on its side or roof that has (nearly) stopped rolls back onto its wheels. */
@@ -239,9 +301,26 @@ export class Vehicle {
     b.setAngvel({ x: 0, y: 0, z: 0 }, true);
   }
 
+  /**
+   * Just hit by something: for a moment grip can trip the car over (VEH.trip…). dv — the hit's change of velocity;
+   * without it, what the last step did on top of the controls (another car, right after the world step).
+   */
+  hit(dv = null) {
+    if (!dv) {
+      const v = this.body.linvel();
+      dv = _lv.set(v.x, v.y, v.z).sub(this.setV);
+    }
+    const r = this.body.rotation();
+    _r.set(-1, 0, 0).applyQuaternion(_q.set(r.x, r.y, r.z, r.w));
+    const side = Math.abs(dv.x * _r.x + dv.y * _r.y + dv.z * _r.z);
+    this.tripV = this.tripT > 0 ? Math.max(this.tripV, side) : side;
+    this.tripT = VEH.tripTime;
+  }
+
   /** A sudden change of velocity (an explosion's jolt), m/s and rad/s. */
   kick(vx, vy, vz, wx = 0, wy = 0, wz = 0) {
     if (this.righting) return;
+    this.hit({ x: vx, y: vy, z: vz });
     const b = this.body, lv = b.linvel(), av = b.angvel();
     b.setLinvel({ x: lv.x + vx, y: lv.y + vy, z: lv.z + vz }, true);
     b.setAngvel({ x: av.x + wx, y: av.y + wy, z: av.z + wz }, true);

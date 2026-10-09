@@ -434,6 +434,29 @@ export class Car {
     this._syncMesh(0);
   }
 
+  /** Put the car at sp = { x, z, yaw } on the ground, standing still (respawn, unstuck); damage and parts stay. */
+  teleport(sp) {
+    this.x = sp.x;
+    this.z = sp.z;
+    this.yaw = sp.yaw;
+    this.y = this.city.groundHeight(sp.x, sp.z);
+    this.vx = this.vz = this.angVel = 0;
+    if (this.rb) {
+      this.rb.place(this.x, this.y, this.z, this.yaw);
+      this._syncMesh(0);
+    }
+  }
+
+  /** A sudden change of velocity (a shot's recoil, a blast's shove, a body under the wheels), m/s and rad/s. */
+  nudge(dvx, dvz, dw = 0) {
+    if (this.rb) this.rb.kick(dvx, 0, dvz, 0, dw, 0);
+    else {
+      this.vx += dvx;
+      this.vz += dvz;
+      this.angVel += dw;
+    }
+  }
+
   /** Громкость звуков этой машины для игрока (1 — своя машина). */
   vol() {
     if (this.isPlayer || !this.listener) return 1;

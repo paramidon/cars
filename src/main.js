@@ -102,13 +102,10 @@ class Game {
     this.debris = new Debris(scene, this.city.groundHeight, this.city.world);
     this.audio = new AudioFX({ forceMute: MUTE });
     this.breakables = new Breakables(scene, this.city.world, this.city.props, this.city.groundHeight, this.debris, this.fx, this.audio, QUALITY);
-    // ?phys=rapier on the test ground: my car is a rigid body in a Rapier world (PHYSICS_PLAN.md)
+    // ?phys=rapier: every car is a rigid body in a Rapier world (PHYSICS_PLAN.md)
     this.phys = PHYS_RAPIER ? new Physics(this.city.solids) : null;
     this.mainCar = new Car(scene, this.city, this.fx, this.audio, this.debris, QUALITY);
-    if (this.phys) {
-      this.mainCar.rb = new Vehicle(this.phys, this.mainCar);
-      this.mainCar.reset(this.city.spawn);
-    }
+    this._addBody(this.mainCar);
     this.car = this.mainCar; // машина, в которой я сижу (по сети может быть чужая — если я в её пушке)
     this.carTag = new CarTag(scene, this.car);
     this.peds = new Pedestrians(scene, this.city, this.fx, this.audio, QUALITY);
@@ -119,6 +116,7 @@ class Game {
     this.race = new Race(scene, this.city, this.fx, this.audio);
     this.raceLaps = RACE.laps;
     this.allRivals = RIVALS.map((def, i) => new Rival(scene, this.city, this.fx, this.audio, this.debris, QUALITY, this.race, def, i));
+    for (const r of this.allRivals) this._addBody(r.car);
     this.rivals = [...this.allRivals]; // боты в этом заезде
     this.quality = QUALITY;
     this.mode = 'classic'; // classic — пушка по курсу у водителя; crew — у каждой машины водитель и стрелок
@@ -156,7 +154,9 @@ class Game {
     this.lobby = new Lobby(this);
     this._resetStats();
     this.peds.reset(this.cars);
-    if (this.test) this._resetWorld(); // на полигоне и в меню на фоне — одна моя машина
+    // на полигоне и в меню на фоне — одна моя машина; on Rapier the city's menu also starts from the solo lineup
+    // (the unused rivals' bodies leave the world instead of piling up on the grid)
+    if (this.test || this.phys) this._resetWorld();
 
     this.state = 'menu';
     this.soundOpen = null; // 'menu' | 'pause' — откуда открыли настройки звука
@@ -196,6 +196,13 @@ class Game {
     this.scene.add(this.sky);
   }
 
+  /** On Rapier: give the car a rigid body (standing where the car is). */
+  _addBody(car) {
+    if (!this.phys) return;
+    car.rb = new Vehicle(this.phys, car);
+    car.rb.place(car.x, car.y, car.z, car.yaw);
+  }
+
   /** Все машины заезда: первая — своя. */
   setCars(list) {
     this.cars = list;
@@ -223,6 +230,7 @@ class Game {
     this.race.onEvent = (type, data) => this._raceEvent(type, data);
     for (const r of this.allRivals) this._bindCar(r.car);
     this._onCarHit = (a, b, impact, px, pz, nx, nz) => this._carHit(a, b, impact, px, pz, nx, nz);
+    if (this.phys) this.phys.onCarHit = this._onCarHit; // on Rapier the engine itself pushes cars apart
     peds.onKill = (p, cause, speed) => this._kill(p, cause, speed);
     peds.onEvent = (type, p) => this._pedEvent(type, p);
     this.artillery.onCarHit = (victim, shooter, dmg, direct, local) => this._shellHit(victim, shooter, dmg, direct, local);
@@ -273,6 +281,7 @@ class Game {
     click('btn-resume', () => this._setPaused(false));
     click('btn-restart', () => this._again());
     click('btn-net', () => this.lobby.open());
+    if (this.phys) $('btn-net').classList.add('hidden'); // ?phys=rapier: single player only for now (PHYSICS_PLAN.md, session 4)
     // полигон ⇄ город: другая карта строится при запуске, поэтому — перезагрузка с ?map=test или без
     $('btn-map').textContent = this.test ? 'В ГОРОД' : 'ТЕСТОВЫЙ ПОЛИГОН';
     click('btn-map', () => {
@@ -468,11 +477,13 @@ class Game {
       r.car.root.visible = on;
       if (r.tag) r.tag.sprite.visible = on;
       if (!on) r.car.x = r.car.z = 1e5; // не участвует — подальше от пешеходов и столкновений
+      r.car.rb?.setActive(on);
     }
     this.rivals = rivals;
     const mainUsed = car === this.mainCar || others.includes(this.mainCar);
     this.mainCar.root.visible = mainUsed;
     if (!mainUsed) this.mainCar.x = this.mainCar.z = 1e5;
+    this.mainCar.rb?.setActive(mainUsed);
     this.car = car;
     car.root.visible = true;
     this.carTag.car = car;
@@ -796,12 +807,7 @@ class Game {
     }
     // в заезде — к последнему пройденному чекпоинту, лицом по маршруту; в битве — на дорогу внутри зоны
     const z = this.zone;
-    const sp = this.royale ? roadPointNear(this.city, z.cx, z.cz, Math.max(12, z.radius * 0.6)) : this.race.respawnPoint(undefined, this.startPoint);
-    car.x = sp.x;
-    car.z = sp.z;
-    car.yaw = sp.yaw;
-    car.vx = car.vz = car.angVel = 0;
-    if (car.rb) car.rb.place(sp.x, this.city.groundHeight(sp.x, sp.z), sp.z, sp.yaw);
+    car.teleport(this.royale ? roadPointNear(this.city, z.cx, z.cz, Math.max(12, z.radius * 0.6)) : this.race.respawnPoint(undefined, this.startPoint));
     this.cam.snap(car);
     this.hud.popup(this.royale ? 'В ЗОНУ' : this.test ? 'НА СТАРТ' : 'К ЧЕКПОИНТУ', 'info');
   }
@@ -1105,7 +1111,7 @@ class Game {
       if (!cars[0].remote) cars[0].physicsStep(h, playerInp); // в пушке чужой машины — её ведёт хозяин
       for (const r of this.rivals) if (!r.car.remote) r.car.physicsStep(h, r.inp);
       for (const c of this.dummies) c.physicsStep(h, c.dummyInp);
-      collideCars(cars, this._onCarHit);
+      if (!this.phys) collideCars(cars, this._onCarHit);
     };
     if (this.phys) this.phys.step(dt, sub); // Rapier: fixed steps, the pose is interpolated in postUpdate
     else {
@@ -1118,9 +1124,9 @@ class Game {
     for (const rc of this.remotes) if (rc.car !== cars[0]) rc.car.postUpdate(dt, NO_INPUT);
   }
 
-  /** Debug (?phys=rapier): n more cars on Rapier driving in circles on the test ground's open asphalt. */
+  /** Debug (?phys=rapier&map=test): n more cars on Rapier driving in circles on the test ground's open asphalt. */
   addPhysDummies(n) {
-    if (!this.phys) return 0;
+    if (!this.phys || !this.test) return 0;
     for (let i = 0; i < n; i++) {
       const k = this.dummies.length;
       const c = new Car(this.scene, this.city, this.fx, this.audio, this.debris, QUALITY, { isPlayer: false, wing: true, color: '#3a7bd5', number: k + 2 });
