@@ -70,12 +70,12 @@ function buildBench() {
 }
 
 export const PROP_TYPES = {
-  lamp: { build: buildLamp, radius: 0.22, mode: 'topple', slow: 0.1, size: 0.12 },
-  traffic: { build: buildTraffic, radius: 0.2, mode: 'topple', slow: 0.1, size: 0.15 },
-  sign: { build: buildSign, radius: 0.14, mode: 'topple', slow: 0.04, size: 0.06 },
-  bin: { build: buildBin, radius: 0.36, mode: 'fly', slow: 0.04, size: 0.35 },
-  hydrant: { build: buildHydrant, radius: 0.24, mode: 'fly', slow: 0.07, size: 0.2, water: true },
-  bench: { build: buildBench, radius: 0.85, mode: 'fly', slow: 0.1, size: 0.3 },
+  lamp: { build: buildLamp, radius: 0.22, h: 6.4, mode: 'topple', slow: 0.1, size: 0.12 },
+  traffic: { build: buildTraffic, radius: 0.2, h: 4.4, mode: 'topple', slow: 0.1, size: 0.15 },
+  sign: { build: buildSign, radius: 0.14, h: 2.9, mode: 'topple', slow: 0.04, size: 0.06 },
+  bin: { build: buildBin, radius: 0.36, h: 1, mode: 'fly', slow: 0.04, size: 0.35 },
+  hydrant: { build: buildHydrant, radius: 0.24, h: 0.9, mode: 'fly', slow: 0.07, size: 0.2, water: true },
+  bench: { build: buildBench, radius: 0.85, h: 1, mode: 'fly', slow: 0.1, size: 0.3 },
 };
 
 const _m = new THREE.Matrix4();
@@ -188,8 +188,7 @@ export class Breakables {
         radius: def.size,
       });
     }
-    car.vx *= 1 - def.slow;
-    car.vz *= 1 - def.slow;
+    if (car.nudge) car.nudge(-car.vx * def.slow, -car.vz * def.slow); // a real car (not a break sent over the network)
     this.fx.sparks(it.x, it.y + 0.8, it.z, -dirx, -dirz, 8);
     this.fx.dust(it.x, it.y + 0.3, it.z, 4);
     this.audio.metal(Math.min(1, speed / 20) * (car.vol ? car.vol() : 1));

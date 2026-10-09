@@ -25,7 +25,7 @@ given below. Run them in order. At the end of every session, tick its checkbox i
 
 - [x] Session 1: spike on the test ground (go/no-go) — **GO**
 - [x] Session 2: whole world and all cars on Rapier, handling tuned
-- [ ] Session 3: damage, rams, props, pedestrians, weapons in 3D
+- [x] Session 3: damage, rams, props, pedestrians, weapons in 3D
 - [ ] Session 4: networking
 - [ ] Session 5: bots on the new physics
 - [ ] Session 6: remove the old physics, docs, performance
@@ -547,3 +547,116 @@ Session 1's own code does the same (checked), so its "6.57 m at 60 km/h" was pro
 - Pedestrians are still hit in 2D (session 3).
 - Tripping is a game rule on top of the physics. Session 3's shell blasts should go through `Vehicle.kick()` (already
   the case for `Car.nudge()`), so that a close blast can tip a car.
+
+### Session 3 (2026-10-09): damage, rams, props, pedestrians, weapons in 3D
+
+**Result:** on `?phys=rapier` a car takes damage from walls, landings and rollovers by the old rules, rams use the
+closing speed along the contact normal, props are sensors, and pedestrians, shells, bullets and bottles test the car's
+box turned with its body. The old physics' numbers are unchanged (measured on both paths).
+
+**Decisions**
+
+- **Contact impacts, not contact-force events.** A force has to be mapped back to a speed and depends on the solver,
+  while the rules are written in speeds. `Vehicle.staticHits()` runs after every step for a car whose chassis touches a
+  static collider (kept from collision events in `Vehicle.statics`): for each solver contact point, the closing speed
+  along the normal from the velocities the solver started from. A normal within ~53° of horizontal (`VEH.wallNormal`)
+  is a wall hit and goes to the old `Car._impact` (threshold 8 m/s, ×2.4, poles/trees/columns ×1.15, front armour ×0.75,
+  sparks, sound, camera shake). `HARD` also has `rail`, `deck` and `ramp`, and the tube's trench walls count as `wall`.
+  Curbs never count.
+- **Velocities saved after the controls** (`savePrev` moved after `preStep`) and kept for two steps (`Vehicle.pre`).
+  A contact the solver sees coming (a speculative contact) can lose its speed one step before Rapier reports it as
+  started, so a just-started contact takes the larger closing speed of the two steps (`Vehicle.closing`).
+- **Car vs car: wait for a usable normal.** Two convex hulls meeting exactly nose to nose (two vertical edges) gave a
+  vertical normal and no push on the first step, so the head-on test measured 0 km/h. `Physics._carContacts` now keeps
+  a started pair pending for up to 3 steps (`PAIR_WAIT`) and fires `onCarHit` at the first step that closes along its
+  normal (> 0.5 m/s).
+- **Landings** (`VEH.landAir` 0.12 s, `landSafe` 13 m/s, `landScale` 1.6): the first wheel contact after a flight; the
+  impact is the speed into the surface along the wheels' contact normals, taken before the springs act (in `preStep`).
+  If the body comes down on a floor first (nose first off a ledge), that is the landing, from its contact points.
+- **Roof and side hits** (`roofSafe` 6 m/s, `roofScale` 2.4): a floor contact while the body's up vector is less than
+  0.5 along the contact normal. Sparks above 2.5 m/s, a dent at the contact point.
+- **Dents in 3D:** `applyDamage(dmg, px, pz, nx, nz, py, ny)` takes an optional height and vertical push and works in
+  the body's frame (`Car.toLocal` / `toWorld`: the rigid body's quaternion, or the heading on the old physics), so a
+  roof hit dents the roof and a landing pushes the underbody up.
+- **Props:** a sensor cylinder per breakable prop (`PROP_TYPES[…].h`, `Physics.addProps`), overlaps kept in
+  `Vehicle.props`; `Car._breakProps` breaks them above 2.5 m/s. `Breakables.hit()` is unchanged except that it slows
+  the car through `car.nudge`: writing `car.vx` does nothing on Rapier, so props never slowed a Rapier car before.
+- **Pedestrians:** `_contact` tests the person as a vertical segment (standing, lying or flying) against the car's box
+  (`Car.segHit`: 2.1 × 1.7 × 4.7 m, grown by 0.3 m). The hit speed adds the car's falling speed, so landing on someone
+  hits as hard as the car falls. The old `p.cy < 2.6` checks are gone (the box has the height).
+- **Weapons:** `Car.muzzle()` comes from the body's transform and returns `dy`; the barrel's slope is reduced by 4°
+  (`MUZZLE_LEVEL`) so that a car pitching on its springs still fires level. Shells keep `dy`, fly in 3D and stop at any
+  static collider, the ground included (`Physics.castStatic`, a ray that skips cars and sensors). Car hits are a ray
+  against the car's box up to the cannon (2.2 m), grown by 0.4 m for shells (`CANNON.carHitPad`, was `carHitR`) and not
+  at all for bullets. `dy` is sent with the network `fire` event. Bottles test each step of their flight against the
+  box grown by 0.3 m.
+- **Blasts:** `Vehicle.blast()` gives the push (`CANNON.push` × k, as before) with `VEH.blastLift` 0.1 of it upwards,
+  plus `blastSpin` 1 rad/s of tilt away from the blast per m/s, through `kick()`, so the tripping rule can add to it.
+  The first try, an impulse at the body's point nearest to the blast with 40% lift, flipped a parked car onto its roof
+  from any blast closer than 1 m. The tilt is very sensitive near the tipping angle: `blastSpin` 1.15 already tips a
+  parked car on a direct hit.
+- **Not done here:** molotov bottles still meet walls in 2D; the pedestrians' side of shell and bullet ray casts is 2D,
+  with the shot's length cut by the 3D hit.
+
+**Wall damage** (`wallDamage()`, test ground, nose first into the boundary wall or a pole; hull lost)
+
+| km/h | 25 | 30 | 40 | 60 | 80 | 100 | 125 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Wall, bull bar: Rapier | 0 | 0.6 | 5.6 | 15.7 | 25.8 | 35.3 | 45.9 |
+| Wall, bull bar: old | 0 | 0.6 | 5.6 | 15.6 | 25.6 | 35.5 | 47.5 |
+| Wall, no bull bar: Rapier | 0 | 0.8 | 7.5 | 20.9 | 34.4 | 47.0 | 61.2 |
+| Wall, no bull bar: old | 0 | 0.8 | 7.4 | 20.8 | 34.1 | 47.3 | 63.3 |
+| Pole, bull bar: Rapier / old | 0 / 0 | 0.7 / 0.7 | 6.4 / 6.4 | 18 / 18 | 29.4 / 29.4 | 40.8 / 40.8 | 54.6 / 54.6 |
+
+The README said "nose into a wall at 100 km/h — about 45%". Both paths give 35 with the bull bar and 47 without it
+((27.8 − 8) × 2.4 × 0.75); the README now gives both numbers.
+
+**Landings and roof hits** (`landings()`, dropped level; hull lost)
+
+| Impact, m/s | 8 | 12 | 14 | 16 | 20 | 24 |
+| --- | --- | --- | --- | --- | --- | --- |
+| On the wheels (rule: 1.6 × (v − 13)) | 0 | 0 | 1.6 | 4.8 | 11.2 | 17.6 |
+| On the roof (rule: 2.4 × (v − 6)) | 5.2 | 14.8 | 19.6 | 24.4 | 34 | 43.6 |
+
+On the test ground: the big ramp at top speed lands at 13.0 m/s (no damage), the catapult at 70 km/h at 18 m/s (−8),
+off the deck's far edge at 60 km/h at 15.6 m/s (−4.1), the exit-trench jump at 80 km/h at 10 m/s (none).
+
+**Rams** (`carCrashes()`, `sideHit()`, and the `plan.md` item). The closing speed is the relative velocity of the two
+contact points along the contact normal, so the direction is already in it. Head-on 100 vs 80 km/h: closing 178 km/h,
+−32.4 to each car (both noses, zone 0.3). Catching up at 55 on a car doing 50: 5 km/h, nothing. 60 into a parked car's
+side: 60 km/h, −36.5. A 15° side swipe at 60/60: 16 km/h, nothing. `sideHit()` is unchanged from session 2 (−19 / −36
+/ −48 / −54 / −61 at 40…125 km/h). The `plan.md` item is removed: it describes how the rule already works.
+
+**Blasts** (`blasts()`, a parked car, the blast 1.5 m up by its side)
+
+| Gap to the side | 0 m (and a direct hit) | 1 m | 2 m | 3 m |
+| --- | --- | --- | --- | --- |
+| Largest lean | 40° | 16° | 7° | 3° |
+| Thrown at | 21 km/h | 16 | 11 | 6 |
+
+In races (`rollovers()`, 20 seeded 8-car races of 75 s), 4 cars tipped past 60°: 3 from hard car hits (60–105 km/h
+closing) and 1 from two blasts of 6 m/s each within 1.5 s. Session 2 had 2 in 40, but there blasts did no tilting.
+
+**Pedestrians** (`pedJumps()`): off the big ramp at the line of 50, with the lip taken at 87 / 108 / 116 km/h, the car
+is 0 / 0.1 / 1.4 m over the line and hits one person each time (killed, gibbed, gibbed). With the lip at 123 / 135 km/h
+it is 2.6 / 4.5 m over the line and hits nobody. Through the line on the flat at 60: one killed. Up the deck ramp at
+60: two of the deck's pedestrians hit. Through the tube at 60 under a pedestrian standing on its roof: nobody hit
+(floor −5.5 m); on the roof at 60: hit.
+
+**Props** (`props()`, 40 km/h): a lamp, a bin and a bench break and slow the car by 10 / 4 / 10% on both paths (on
+Rapier before this session: 0%). Over a bin in the air (2.5 m up, 72 km/h): not broken.
+
+**Weapons** (`muzzle()`, and a shot at a parked car 40 m ahead): level, the muzzle is 1.97 m up with slope 0 and a
+direct hit does −20.5; nose up 2°: slope 0; 10°: 6°, and the shell flies over the car; 30°: 26°. The machine gun:
+14 bullets at 30 m do −9.8 (14 × 0.7).
+
+**Bots** (`botLaps()`, 12 runs): 58.1 km/h (session 2: 62.3, old physics: 59.6), 14.5 gates, 1.4 back-ups and 1.6
+wrecked per run (session 2: 0.8, old: 1.4). Walls hurt again. `crash.entries` stayed empty in every run.
+
+**Open problems**
+
+- After the boost pad at 130 km/h the car lands on the second kicker nose down and rolls onto its side. Session 2's
+  code does the same (checked with this session's changes stashed); session 1 noted front-first landings there.
+- A head-on at 100 vs 80 km/h does −32 to each car, less than a T-bone at 60 (−36): with the bull bar the nose takes
+  0.3 of the damage. Whether head-ons should hurt more is a tuning question (`CAR_HIT.zone.front`), not physics.
+- A car on its roof fires into the ground under it (it fires where its barrel points).

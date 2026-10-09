@@ -1,11 +1,13 @@
 /**
- * In-browser physics measurements (PHYSICS_PLAN.md, session 2). Not part of the game build: load it into a running
+ * In-browser physics measurements (PHYSICS_PLAN.md, sessions 2 and 3). Not part of the game build: load it into a running
  * dev server page and call the functions with the game, e.g. in the console of `/?mute&map=test&phys=rapier`:
  *
  *   const t = await import('/tests/physics.js');
  *   await t.handling(game);             // test ground: top speed, acceleration, yaw rates, handbrake, reverse, speedometer
  *   await t.leanRace(game, { secs: 75 }); // city: max lean of every car in an 8-car race
  *   await t.botLaps(game, { runs: 6 });   // city: bots' average speed, 6 seeded runs of 25 s
+ *   await t.wallDamage(game);           // test ground: hull lost nose first into a wall / a pole (both paths)
+ *   // also: landings, carCrashes, blasts, pedJumps, props, muzzle (session 3), sideHit, obstacle, wallScrape, rollovers
  *
  * Run the same calls without `phys=rapier` to get the old physics' numbers. The functions stop the page's own
  * animation loop and step the game by hand (game.step(1/60)), so they run faster than real time; reload afterwards.
@@ -504,6 +506,14 @@ export async function rollovers(game, { races = 20, secs = 75, seed0 = 100 } = {
         shoves.push({ t: game.race.clock, car: c, dv: Math.hypot(a, b) });
         nudge.call(c, a, b, w);
       };
+      if (c.rb) {
+        // on Rapier blasts go through Vehicle.blast, not nudge
+        const blast = Object.getPrototypeOf(c.rb).blast;
+        c.rb.blast = (x, y, z, dv) => {
+          shoves.push({ t: game.race.clock, car: c, dv });
+          blast.call(c.rb, x, y, z, dv);
+        };
+      }
     }
     const onHit = game.phys?.onCarHit;
     if (game.phys) {
@@ -527,9 +537,310 @@ export async function rollovers(game, { races = 20, secs = 75, seed0 = 100 } = {
         was.set(c, tipped);
       }
     });
-    for (const c of game.cars) delete c.nudge;
+    for (const c of game.cars) {
+      delete c.nudge;
+      if (c.rb) delete c.rb.blast;
+    }
     if (game.phys) game.phys.onCarHit = onHit;
   }
   Math.random = random;
   return { phys: game.phys ? 'rapier' : 'old', races, tips: tips.length, perRace: r1(tips.length / races), list: tips };
+}
+
+// ---------------------------------------------------------------- session 3: damage, pedestrians, props, weapons
+
+/** Fresh car at sp: full hull, every part on (the bull bar), standing still. */
+function fresh(car, sp) {
+  car.reset(sp);
+  car.lastAttacker = null;
+}
+
+/** Bring car to v m/s along its heading at once and hold it (inp — its input) while each() returns true. */
+async function drive(game, inp, car, v, secs, each) {
+  car.nudge(Math.sin(car.yaw) * v, Math.cos(car.yaw) * v);
+  Object.assign(inp, idle(), { i: 0 });
+  await run(game, secs, (t) => {
+    hold(inp, car, v);
+    if (v >= 34.9) inp.throttle = 1;
+    return each ? each(t) : true;
+  });
+}
+
+const lost = (car) => r1(100 - car.health);
+
+/**
+ * Test ground: nose first into the east boundary wall (with and without the bull bar) and into a pole, at
+ * 25…125 km/h — the hull lost (README: nothing below ~29 km/h, about 45% at 100 km/h, poles ×1.15, the bull bar's
+ * front armour ×0.75). Both physics paths.
+ */
+export async function wallDamage(game, { speeds = [25, 30, 40, 60, 80, 100, 125] } = {}) {
+  if (!game.test) throw new Error('wallDamage(): open the test ground (?map=test)');
+  const inp = takeOver(game);
+  game.restart();
+  const car = game.car;
+  const wallX = game.city.outer;
+  const pole = { x: 170, z: 100 };
+  if (!game._testPole) {
+    game.city.world.addCircle(pole.x, pole.z, 0.36, { kind: 'pole', h: 7 });
+    game.phys?.addSolid({ kind: 'pole', cyl: [pole.x, 3.5, pole.z, 3.5, 0.36] });
+    game._testPole = true;
+  }
+  const bar = () => car.parts.find((p) => p.kind === 'front');
+  const out = [];
+  for (const kmh of speeds) {
+    const row = { kmh };
+    for (const what of ['wall', 'noBar', 'pole']) {
+      if (what === 'pole') fresh(car, { x: pole.x, z: pole.z - 25, yaw: 0 });
+      else fresh(car, { x: wallX - 25, z: 140, yaw: Math.PI / 2 });
+      if (what === 'noBar') bar().detached = true;
+      await run(game, 0.2);
+      await drive(game, inp, car, kmh / KMH, 3, () => (what === 'pole' ? car.z < pole.z - 2.6 : car.x < wallX - 2.6));
+      Object.assign(inp, idle());
+      await run(game, 0.6);
+      row[what] = lost(car);
+      bar().detached = false;
+    }
+    out.push(row);
+  }
+  fresh(car, game.city.spawn);
+  return { phys: game.phys ? 'rapier' : 'old', crashes: window.crash?.entries?.length ?? 0, out };
+}
+
+/**
+ * Test ground on Rapier: the car dropped level on its wheels, and upside down on its roof, from heights that give
+ * `speeds` m/s at touchdown — the hull lost (wheels: VEH.landScale per m/s above landSafe; roof: roofScale above
+ * roofSafe).
+ */
+export async function landings(game, { speeds = [8, 12, 14, 16, 20, 24] } = {}) {
+  if (!game.test || !game.phys) throw new Error('landings(): open /?map=test&phys=rapier');
+  takeOver(game);
+  game.restart();
+  const car = game.car, g = -game.phys.world.gravity.y;
+  const out = [];
+  for (const v of speeds) {
+    const h = (v * v) / (2 * g);
+    const row = { impact: v, dropM: r1(h) };
+    for (const roof of [false, true]) {
+      fresh(car, { x: 170, z: 0, yaw: 0 });
+      const b = car.rb.body;
+      // the wheels' bottom (or the roof, 1.7 m above the origin when upside down) falls h
+      b.setTranslation({ x: 170, y: roof ? h + 1.72 : h + 0.02, z: 0 }, true);
+      if (roof) b.setRotation({ x: 0, y: 0, z: 1, w: 0 }, true);
+      car.rb.afterStep();
+      car.rb.prevP.copy(car.rb.curP);
+      car.rb.prevQ.copy(car.rb.curQ);
+      car.rb.airT = 1;
+      let maxV = 0;
+      await run(game, 1.6, () => {
+        maxV = Math.max(maxV, -car.vy);
+      });
+      row[roof ? 'roof' : 'wheels'] = lost(car);
+      row[roof ? 'roofV' : 'wheelsV'] = r1(maxV);
+    }
+    out.push(row);
+  }
+  fresh(car, game.city.spawn);
+  return { crashes: window.crash?.entries?.length ?? 0, out };
+}
+
+/**
+ * Test ground on Rapier: my car into another one. Head-on (100 vs 80 km/h), catching up (55 into one doing 50), a
+ * T-bone (60 into a parked car's side), a side swipe (60 and 60, 15° apart). Closing speed and the hull each lost.
+ */
+export async function carCrashes(game) {
+  if (!game.test || !game.phys) throw new Error('carCrashes(): open /?map=test&phys=rapier');
+  const inp = takeOver(game);
+  game.restart();
+  if (!game.dummies.length) game.addPhysDummies(1);
+  const B = game.dummies[0], A = game.car;
+  const hits = [];
+  const onHit = game.phys.onCarHit;
+  game.phys.onCarHit = (...a) => {
+    hits.push(r1(a[2] * KMH));
+    onHit(...a);
+  };
+  const cases = [
+    { name: 'head-on 100 vs 80', a: [170, -60, 0, 100], b: [170, 0, Math.PI, 80] },
+    { name: 'catch-up 55 into 50', a: [170, -67, 0, 55], b: [170, -60, 0, 50] },
+    { name: 'T-bone 60 into parked', a: [170, -60, 0, 60], b: [170, -30, Math.PI / 2, 0] },
+    { name: 'side swipe 60/60 at 15°', a: [168, -60, 0.13, 60], b: [174, -60, -0.13, 60] },
+  ];
+  const out = [];
+  for (const c of cases) {
+    fresh(A, { x: c.a[0], z: c.a[1], yaw: c.a[2] });
+    fresh(B, { x: c.b[0], z: c.b[1], yaw: c.b[2] });
+    B.dummyInp = idle();
+    await run(game, 0.2);
+    hits.length = 0;
+    B.nudge(Math.sin(B.yaw) * (c.b[3] / KMH), Math.cos(B.yaw) * (c.b[3] / KMH));
+    await drive(game, inp, A, c.a[3] / KMH, 6, () => {
+      if (c.b[3]) hold(B.dummyInp, B, c.b[3] / KMH);
+      return !hits.length;
+    });
+    Object.assign(inp, idle());
+    B.dummyInp = idle();
+    await run(game, 1);
+    out.push({ case: c.name, closingKmh: hits[0] ?? 0, mine: lost(A), other: lost(B) });
+  }
+  game.phys.onCarHit = onHit;
+  B.teleport({ x: -150, z: 150, yaw: 0 });
+  return { crashes: window.crash?.entries?.length ?? 0, out };
+}
+
+/**
+ * Test ground on Rapier: a shell's blast by a parked car's left side, 0…3 m from it, y m up (0.9 — the body's middle;
+ * 1.96 — a level shot's height),
+ * and a direct hit there. The car's largest lean, how fast it was thrown, the hull lost, did it tip over.
+ */
+export async function blasts(game, { gaps = [0, 1, 2, 3], y = 0.9 } = {}) {
+  if (!game.test || !game.phys) throw new Error('blasts(): open /?map=test&phys=rapier');
+  takeOver(game);
+  game.restart();
+  if (!game.dummies.length) game.addPhysDummies(1);
+  const B = game.dummies[0];
+  B.dummyInp = idle();
+  const out = [];
+  for (const direct of [false, true]) {
+    for (const gap of direct ? [0] : gaps) {
+      fresh(B, { x: 170, z: 0, yaw: 0 });
+      await run(game, 0.3);
+      const cars = game.artillery.cars;
+      game.artillery.cars = [B]; // the dummies aren't in the race
+      game.artillery.blast(170 + 1.1 + gap, B.y + y, 0, game.car, direct ? B : null);
+      game.artillery.cars = cars;
+      let lean = 0, thrown = 0;
+      await run(game, 3, () => {
+        lean = Math.max(lean, Math.acos(Math.max(-1, Math.min(1, B.upY))) * DEG);
+        thrown = Math.max(thrown, B.speed * KMH);
+      });
+      out.push({ direct, gapM: gap, maxLeanDeg: Math.round(lean), thrownKmh: r1(thrown), hull: lost(B), tipped: lean > 60 });
+    }
+  }
+  B.teleport({ x: -150, z: 150, yaw: 0 });
+  return { crashes: window.crash?.entries?.length ?? 0, out };
+}
+
+/** Count the pedestrians my car hits (kills and knock-downs) while fn runs. */
+async function pedHits(game, fn) {
+  const peds = game.peds, onKill = peds.onKill, onEvent = peds.onEvent;
+  const hit = [];
+  peds.onKill = (p, cause, s) => {
+    hit.push({ x: r1(p.x), z: r1(p.z), cause, kmh: r1(s * KMH) });
+    onKill(p, cause, s);
+  };
+  peds.onEvent = (type, p) => {
+    if (type === 'knock') hit.push({ x: r1(p.x), z: r1(p.z), cause: 'knock' });
+    onEvent(type, p);
+  };
+  try {
+    await fn();
+  } finally {
+    peds.onKill = onKill;
+    peds.onEvent = onEvent;
+  }
+  return hit;
+}
+
+/**
+ * Test ground: pedestrians against the car's box. Off the big ramp straight at the line of 50 (z = 0), starting at
+ * 90…180 km/h (above top speed only to fly far enough): the speed at the lip, the car's height over the line and who
+ * it hits; through the line on the flat; up the deck's ramp onto
+ * the deck (its eight pedestrians); along the tube under a pedestrian standing on its roof.
+ */
+export async function pedJumps(game, { speeds = [90, 120, 140, 160, 180] } = {}) {
+  if (!game.test) throw new Error('pedJumps(): open the test ground (?map=test)');
+  const inp = takeOver(game);
+  const car = game.car;
+  const out = [];
+  const runs = [
+    ...speeds.map((k) => ({ name: `big ramp ${k}`, kmh: k, x: -15, z: -100, to: 25, lineZ: 0 })),
+    { name: 'line on the flat 60', kmh: 60, x: 21, z: -40, to: 10, lineZ: 0 },
+    { name: 'deck ramp 60', kmh: 60, x: 117, z: 10, to: 108 },
+    { name: 'tube 60 (one standing on its roof)', kmh: 60, x: -130, z: -90, to: 60, tube: true },
+    { name: 'on the tube roof 60 (the same one)', kmh: 60, x: -130, z: -25, to: 30, tube: true },
+  ];
+  for (const r of runs) {
+    game.restart();
+    car.applyDamage = () => {};
+    if (r.tube) {
+      // the molotov thrower, moved over the middle of the tunnel
+      const p = game.peds.peds.find((q) => q.molotov) ?? game.peds.peds[0];
+      p.x = -130;
+      p.z = 10;
+    }
+    fresh(car, { x: r.x, z: r.z, yaw: 0 });
+    await run(game, 0.3);
+    let yAt = null, minY = 0, lip = null;
+    const hit = await pedHits(game, () =>
+      drive(game, inp, car, r.kmh / KMH, 8, () => {
+        if (r.lineZ != null && yAt == null && car.z > r.lineZ) yAt = r1(car.y - game.city.groundHeight(car.x, car.z));
+        if (r.lineZ != null && r.x === -15 && car.z > -31) Object.assign(inp, idle()); // let go at the lip
+        if (r.tube) minY = Math.min(minY, car.y);
+        if (lip == null && car.z > -31) lip = r1(car.speed * KMH);
+        return car.z < r.to;
+      }),
+    );
+    delete car.applyDamage;
+    out.push({ run: r.name, lipKmh: r.x === -15 ? lip : undefined, heightOverLine: yAt, lowestY: r.tube ? r1(minY) : undefined, endZ: r1(car.z), hits: hit.length, causes: [...new Set(hit.map((h) => h.cause))].join(','), at: hit.slice(0, 4) });
+  }
+  return { phys: game.phys ? 'rapier' : 'old', crashes: window.crash?.entries?.length ?? 0, out };
+}
+
+/**
+ * Test ground: the row of street props (z = −75, x = 15…59). Into a lamp, a bin, a bench at 40 km/h on the ground;
+ * over a bin in the air (dropped from 2.5 m, 20 m/s). Broken or not, and the speed lost.
+ */
+export async function props(game) {
+  if (!game.test) throw new Error('props(): open the test ground (?map=test)');
+  const inp = takeOver(game);
+  const car = game.car, items = game.breakables.items;
+  const out = [];
+  for (const [name, x, air] of [['lamp', 15, false], ['bin', 19, false], ['bench', 27, false], ['bin in the air', 43, true]]) {
+    if (air && !game.phys) continue;
+    game.restart();
+    const it = items.find((q) => Math.abs(q.x - x) < 0.1 && Math.abs(q.z + 75) < 0.1);
+    fresh(car, { x, z: air ? -78.5 : -90, yaw: 0 });
+    await run(game, 0.2);
+    let v0 = 0, v1 = 0;
+    if (air) {
+      const b = car.rb.body;
+      b.setTranslation({ x, y: 2.5, z: -78.5 }, true);
+      car.rb.afterStep();
+      car.rb.prevP.copy(car.rb.curP);
+      car.nudge(0, 20);
+      v0 = 20;
+      await run(game, 0.4);
+      v1 = car.speed;
+    } else {
+      await drive(game, inp, car, 40 / KMH, 3, () => car.z < -79);
+      v0 = car.speed;
+      Object.assign(inp, idle());
+      await run(game, 0.35);
+      v1 = car.speed;
+    }
+    out.push({ prop: name, type: it?.type, broken: !it?.alive, kmhBefore: r1(v0 * KMH), kmhAfter: r1(v1 * KMH) });
+  }
+  return { phys: game.phys ? 'rapier' : 'old', crashes: window.crash?.entries?.length ?? 0, out };
+}
+
+/**
+ * Test ground on Rapier: where a tilted car fires. The car pitched nose-up 2°, 10°, 30°, rolled 90° (on its side),
+ * upside down: the muzzle's height and the shell's slope; and a level shot from 40 m into a parked car.
+ */
+export async function muzzle(game) {
+  if (!game.test || !game.phys) throw new Error('muzzle(): open /?map=test&phys=rapier');
+  takeOver(game);
+  game.restart();
+  const car = game.car, rb = car.rb;
+  const out = [];
+  const Q = rb.quat.constructor;
+  const ax = (x, y, z, deg) => new Q().setFromAxisAngle({ x, y, z, isVector3: true }, (deg * Math.PI) / 180);
+  for (const [name, q] of [['level', ax(1, 0, 0, 0)], ['nose up 2°', ax(1, 0, 0, -2)], ['nose up 10°', ax(1, 0, 0, -10)], ['nose up 30°', ax(1, 0, 0, -30)], ['on its side', ax(0, 0, 1, 90)], ['upside down', ax(0, 0, 1, 180)]]) {
+    fresh(car, { x: 170, z: 0, yaw: 0 });
+    rb.quat.copy(q);
+    const m = car.muzzle();
+    out.push({ pose: name, y: r1(m.y), slopeDeg: r1(Math.asin(m.dy) * DEG), dx: r1(m.dx), dz: r1(m.dz) });
+  }
+  fresh(car, game.city.spawn);
+  return out;
 }

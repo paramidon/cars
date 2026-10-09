@@ -1,3 +1,2 @@
 
 1. Add a new weapon — a flamethrower. It fires big fireballs with a large area of effect (a couple of meters). Pedestrians catch fire, and so do cars — they gradually lose health. Fire rate is lower than the regular cannon's.
-1. Check how the collision damage system works — it should use the combined closing speed + the direction vectors. In a head-on collision with two cars going 100 and 80 km/h the damage is high, because the vectors are opposed. If one car goes 50 and another catches up at 55, the damage is low, because the vectors match. Work out yourself how side impacts should behave, since the vectors are different there.

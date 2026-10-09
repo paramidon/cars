@@ -104,6 +104,7 @@ class Game {
     this.breakables = new Breakables(scene, this.city.world, this.city.props, this.city.groundHeight, this.debris, this.fx, this.audio, QUALITY);
     // ?phys=rapier: every car is a rigid body in a Rapier world (PHYSICS_PLAN.md)
     this.phys = PHYS_RAPIER ? new Physics(this.city.solids) : null;
+    this.phys?.addProps(this.breakables.items);
     this.mainCar = new Car(scene, this.city, this.fx, this.audio, this.debris, QUALITY);
     this._addBody(this.mainCar);
     this.car = this.mainCar; // машина, в которой я сижу (по сети может быть чужая — если я в её пушке)
@@ -133,6 +134,7 @@ class Game {
     this.setCars([this.car, ...this.rivals.map((r) => r.car)]);
     this.artillery.peds = this.peds;
     this.artillery.breakables = this.breakables;
+    this.artillery.phys = this.mg.phys = this.phys;
     this.artillery.listener = this.car;
     this.mg.peds = this.peds;
     this.molotovs.listener = this.car;

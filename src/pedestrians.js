@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { rand, pick, wrapAngle, dampAngle, mulberry32 } from './utils.js';
 import { pushOutCircle, rayCircle } from './physics/collision.js';
-import { CAR_HALF_W, CAR_HALF_L } from './car.js';
+import { CAR_HALF_W } from './car.js';
 import { XRAY } from './xray.js';
 import { MG } from './mg.js';
 import { MOLOTOV } from './molotov.js';
@@ -459,9 +459,9 @@ export class Pedestrians {
   }
 
   // ------------------------------------------------------------------ удары
-  _hitByCar(p, car, lx) {
+  /** s — how hard the car hit (its speed, a landing's included); by default its speed over the ground. */
+  _hitByCar(p, car, lx, s = car.speed) {
     p.killer = car;
-    const s = car.speed;
     const ax = car.axes();
     const side = lx >= 0 ? 1 : -1;
     const g = this.city.groundHeight(p.x, p.z);
@@ -1248,19 +1248,24 @@ export class Pedestrians {
     this.onThrow(r2(hx), r2(hy), r2(hz), r2((tx - hx) / t), r2(vy), r2((tz - hz) / t));
   }
 
-  /** Пешеход и машина: сбить, оттолкнуть, раздавить, переехать. */
+  /**
+   * Пешеход и машина: сбить, оттолкнуть, раздавить, переехать. In 3D: the person (a vertical segment — standing,
+   * lying or flying) against the car's box turned with its body, grown by 0.3 m — a car flying over heads or driving
+   * through the tube under them misses them, one landing or rolling over them hits them.
+   */
   _contact(p, car) {
     const dx = p.x - car.x, dz = p.z - car.z;
-    if (dx * dx + dz * dz >= 10) return;
+    if (dx * dx + dz * dz >= 16) return;
+    const [y0, y1] = p.state === ST.FLYING ? [p.cy - 0.8, p.cy + 0.8] : this.isLying(p) ? [p.cy - 0.2, p.cy + 0.3] : [p.cy - 1, p.cy + 0.85];
+    if (car.segHit(p.x, y0, p.z, p.x, y1, p.z, 0.3) < 0) return;
     const ax = car.axes();
-    const lz = dx * ax.fx + dz * ax.fz;
-    const lx = dx * ax.rx + dz * ax.rz;
-    if (Math.abs(lx) >= CAR_HALF_W + 0.3 || Math.abs(lz) >= CAR_HALF_L + 0.3) return;
-    const cs = car.speed;
+    const lx = -car.toLocal(p.x, (y0 + y1) / 2, p.z).x; // to the car's right
+    // a car coming down onto someone hits as hard as it falls, too
+    const cs = Math.hypot(car.speed, Math.min(0, car.vy || 0));
     // чужая машина по сети только расталкивает: сбила ли она кого — решает её хозяин и присылает событием
     if (car.remote && (cs > KNOCK_SPEED || !this.isAlive(p))) return;
     if (this.isAlive(p)) {
-      if (cs > KNOCK_SPEED) this._hitByCar(p, car, lx);
+      if (cs > KNOCK_SPEED) this._hitByCar(p, car, lx, cs);
       else {
         const tgt = (lx >= 0 ? 1 : -1) * (CAR_HALF_W + 0.32);
         p.x += ax.rx * (tgt - lx);
@@ -1269,9 +1274,9 @@ export class Pedestrians {
       }
     } else if ((p.state === ST.DOWN || p.state === ST.GETUP) && p.runCD <= 0 && cs > 1.2) {
       this._crush(p, car);
-    } else if (p.state === ST.FLYING && p.knocked && p.hitCD <= 0 && cs > KNOCK_SPEED && p.cy < 2.6) {
-      this._hitByCar(p, car, lx);
-    } else if (p.state === ST.FLYING && !p.knocked && p.hitCD <= 0 && cs > 6 && p.cy < 2.6) {
+    } else if (p.state === ST.FLYING && p.knocked && p.hitCD <= 0 && cs > KNOCK_SPEED) {
+      this._hitByCar(p, car, lx, cs);
+    } else if (p.state === ST.FLYING && !p.knocked && p.hitCD <= 0 && cs > 6) {
       p.hitCD = 0.35;
       p.killer = car;
       p.vx = car.vx * rand(1, 1.2);

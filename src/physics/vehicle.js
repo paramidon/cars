@@ -7,7 +7,7 @@
  * purely physical. The body frame is the car model's frame: x to the left, y up from the wheels' contact, z forward.
  */
 import * as THREE from 'three';
-import { RAPIER, PHYS } from './rapier.js';
+import { RAPIER, PHYS, OBSTACLES } from './rapier.js';
 import { clamp } from '../utils.js';
 
 export const VEH = {
@@ -53,6 +53,21 @@ export const VEH = {
   tripTime: 0.4,
   // how much of the sideways grip is left while the body leans on a wall, a pole, a tree… (see preStep)
   leanGrip: 0.25,
+  // hits on static colliders, game rules on top of the physics (see staticHits). A contact whose normal is within
+  // ~53° of horizontal (y < wallNormal) is a wall hit (Car._impact: P.damageThreshold, P.damageScale, front armour…).
+  // Touching down on the wheels after more than landAir s in the air, an impact (speed into the surface) above
+  // landSafe m/s costs landScale hull per m/s more; the body hitting a floor on its side or roof — above roofSafe m/s,
+  // roofScale per m/s
+  wallNormal: 0.6,
+  landAir: 0.12,
+  landSafe: 13,
+  landScale: 1.6,
+  roofSafe: 6,
+  roofScale: 2.4,
+  // a shell's blast (Vehicle.blast): the speed it gives the car, blastLift of it upwards (the sine of its angle), and
+  // blastSpin rad/s of tilt away from the blast per m/s of it — a close one shoves the car and tilts it
+  blastLift: 0.1,
+  blastSpin: 1,
   // test-ground pads
   boost: 36, // m/s ≈ 130 km/h along the heading
   launch: 18, // m/s straight up (catapult)
@@ -66,6 +81,7 @@ const _u = new THREE.Vector3();
 const _lv = new THREE.Vector3();
 const _av = new THREE.Vector3();
 const _Y = new THREE.Vector3(0, 1, 0);
+const _nn = new THREE.Vector3();
 
 /** A box { at, half, corner } with its four vertical edges rounded (radius corner, 6 segments), as a convex hull. */
 function roundedBox({ at, half: [hx, hy, hz], corner: c }) {
@@ -129,15 +145,17 @@ export class Vehicle {
     this.curQ = new THREE.Quaternion();
     this.quat = new THREE.Quaternion();
     this.up = new THREE.Vector3(0, 1, 0);
-    // velocities and centre of mass before the current step (the closing speed of a car-vs-car hit)
-    this.prevV = new THREE.Vector3();
-    this.prevW = new THREE.Vector3();
-    this.prevCom = new THREE.Vector3();
+    // velocities and centre of mass before the current step and before the one before it (the closing speed of a
+    // hit: a contact the solver saw coming takes the speed off a step before Rapier reports it as started)
+    this.pre = [0, 1].map(() => ({ v: new THREE.Vector3(), w: new THREE.Vector3(), com: new THREE.Vector3() }));
     this._pv = new THREE.Vector3();
     this.active = true;
     this.tripT = 0; // > 0: just hit, grip can trip the car over (VEH.tripTime)…
     this.tripV = 0; // … stopping at most this much sideways speed more, m/s
-    this.leans = new Set(); // contacts "chassis collider:obstacle" between the body and walls, poles, trees…
+    this.statics = new Map(); // "chassis collider:static collider" → [own, other, kind]: what the body touches
+    this.leans = new Set(); // … of them, the walls, poles, trees… (Physics OBSTACLES) it leans on
+    this.props = new Set(); // breakable props whose sensors the body overlaps
+    this.airT = 0; // s with no wheel and no part of the body on anything
     this.setV = new THREE.Vector3(); // the velocity the controls left the body with before the current step
     this.contacts = 0; // wheels on the ground at the last step
     this.tippedT = 0;
@@ -162,6 +180,7 @@ export class Vehicle {
     this.tippedT = 0;
     this.padIn = null;
     this.contacts = 4;
+    this.airT = 0;
     this.sync();
   }
 
@@ -169,15 +188,31 @@ export class Vehicle {
     this.prevP.copy(this.curP);
     this.prevQ.copy(this.curQ);
     const b = this.body, v = b.linvel(), w = b.angvel(), c = b.worldCom();
-    this.prevV.set(v.x, v.y, v.z);
-    this.prevW.set(w.x, w.y, w.z);
-    this.prevCom.set(c.x, c.y, c.z);
+    const [now, before] = this.pre;
+    this.pre = [before, now];
+    before.v.set(v.x, v.y, v.z);
+    before.w.set(w.x, w.y, w.z);
+    before.com.set(c.x, c.y, c.z);
   }
 
-  /** Velocity of the body's point (x, y, z) before the current step. */
-  pointVelPrev(x, y, z) {
-    _p.set(x, y, z).sub(this.prevCom);
-    return this._pv.crossVectors(this.prevW, _p).add(this.prevV);
+  /** Velocity of the body's point (x, y, z) before the current step (k = 0) or the one before it (k = 1). */
+  pointVelPrev(x, y, z, k = 0) {
+    const s = this.pre[k];
+    _p.set(x, y, z).sub(s.com);
+    return this._pv.crossVectors(s.w, _p).add(s.v);
+  }
+
+  /**
+   * How fast the body's point p closed in along the unit normal n (pointing into the body) before this step — and,
+   * for a contact that just started, before the step before it too: the larger. Positive — moving into it.
+   */
+  closing(p, n, fresh) {
+    let c = 0;
+    for (let k = 0; k < (fresh ? 2 : 1); k++) {
+      const v = this.pointVelPrev(p.x, p.y, p.z, k);
+      c = Math.max(c, -(v.x * n.x + v.y * n.y + v.z * n.z));
+    }
+    return c;
   }
 
   /** Take the car out of the world (it doesn't race) or put it back. */
@@ -185,7 +220,9 @@ export class Vehicle {
     if (on === this.active) return;
     this.active = on;
     this.body.setEnabled(on);
+    this.statics.clear();
     this.leans.clear();
+    this.props.clear();
   }
 
   afterStep() {
@@ -193,6 +230,7 @@ export class Vehicle {
     this.curP.set(t.x, t.y, t.z);
     this.curQ.set(r.x, r.y, r.z, r.w);
     if (this.righting?.done) this._endRighting();
+    else if (!this.righting && this.statics.size) this.staticHits();
   }
 
   /** Before a physics step: suspension, the arcade layer (input → velocity), pads. */
@@ -202,10 +240,24 @@ export class Vehicle {
       this._rightStep(h);
       return;
     }
+    const lv0 = b.linvel();
     ctrl.updateVehicle(h);
     let n = 0;
     for (let i = 0; i < 4; i++) if (ctrl.wheelIsInContact(i)) n++;
     this.contacts = n;
+    if (n && this.airT > VEH.landAir) {
+      // touched down on the wheels: the impact is the speed into the surface (along the wheels' contact normals)
+      // before the springs took any of it
+      _u.set(0, 0, 0);
+      for (let i = 0; i < 4; i++) {
+        const cn = ctrl.wheelIsInContact(i) && ctrl.wheelContactNormal(i);
+        if (cn) _u.x += cn.x, _u.y += cn.y, _u.z += cn.z;
+      }
+      if (_u.lengthSq() < 1e-6) _u.set(0, 1, 0);
+      _u.normalize();
+      this._land(-(lv0.x * _u.x + lv0.y * _u.y + lv0.z * _u.z));
+    }
+    this.airT = n ? 0 : this.airT + h;
 
     const r = b.rotation(), lv = b.linvel(), av = b.angvel();
     _q.set(r.x, r.y, r.z, r.w);
@@ -307,11 +359,101 @@ export class Vehicle {
     b.setAngvel({ x: 0, y: 0, z: 0 }, true);
   }
 
-  /** A collision event between chassis collider own and an obstacle (see Physics._carContacts). */
-  touch(own, other, started) {
+  /** A collision event between chassis collider own and static collider other of `kind` (Physics._carContacts). */
+  touch(own, other, started, kind) {
     const key = `${own}:${other}`;
-    if (started) this.leans.add(key);
-    else this.leans.delete(key);
+    if (started) {
+      this.statics.set(key, [own, other, kind, true]);
+      if (OBSTACLES.has(kind)) this.leans.add(key);
+    } else {
+      this.statics.delete(key);
+      this.leans.delete(key);
+    }
+  }
+
+  /** The body started or stopped overlapping a breakable prop's sensor. */
+  overlap(prop, started) {
+    if (started) this.props.add(prop);
+    else this.props.delete(prop);
+  }
+
+  /**
+   * After a step: hits on the static colliders the body touches, from each contact point's closing speed (the
+   * velocities the solver started from, along the contact normal). A wall-like contact is a wall hit (Car._impact);
+   * a floor under the body means it isn't in the air (after a flight, it's the landing), and hit on the side or the roof
+   * it is a rollover hit (_roof).
+   */
+  staticHits() {
+    const w = this.phys.world;
+    let wall = 0, wk = null, roof = 0, land = 0, floor = false;
+    const wp = this._wp ?? (this._wp = { x: 0, y: 0, z: 0, nx: 0, nz: 0 });
+    const rp = this._rp ?? (this._rp = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 0 });
+    const up = _u.set(0, 1, 0).applyQuaternion(this.curQ);
+    for (const st of this.statics.values()) {
+      const [own, other, kind, fresh] = st;
+      st[3] = false;
+      w.contactPair(w.getCollider(own), w.getCollider(other), (m, flipped) => {
+        const k = m.numSolverContacts();
+        if (!k) return;
+        // the manifold's normal points from its first collider to its second; flipped — that first one is the static
+        const n = m.normal(), sgn = flipped ? 1 : -1;
+        const nx = n.x * sgn, ny = n.y * sgn, nz = n.z * sgn; // out of the static collider, into the car
+        const nn = _nn.set(nx, ny, nz);
+        const isWall = ny < VEH.wallNormal;
+        const onBack = !isWall && up.x * nx + up.y * ny + up.z * nz < VEH.flipUp;
+        if (!isWall) floor = true;
+        for (let i = 0; i < k; i++) {
+          const p = m.solverContactPoint(i);
+          const into = this.closing(p, nn, fresh);
+          if (isWall && into > wall) {
+            wall = into;
+            wk = kind === 'ground' ? 'wall' : kind; // the tube's trench walls
+            Object.assign(wp, { x: p.x, y: p.y, z: p.z, nx, nz });
+          } else if (onBack && into > roof) {
+            roof = into;
+            Object.assign(rp, { x: p.x, y: p.y, z: p.z, nx, ny, nz });
+          } else if (!isWall && !onBack) land = Math.max(land, into);
+        }
+      });
+    }
+    if (floor) {
+      // came down on the body (the nose first off a ledge) before the wheels: that is the landing
+      if (this.airT > VEH.landAir) this._land(land);
+      this.airT = 0;
+    }
+    if (wall > 0 && wk !== 'curb') {
+      const l = Math.hypot(wp.nx, wp.nz) || 1;
+      this.car._impact(wall, wp.nx / l, wp.nz / l, wp.x, wp.z, wk, wp.y);
+    }
+    if (roof > 0) this._roof(roof, rp);
+  }
+
+  /** Touched down on the wheels after a flight: dust, sound, sparks, and damage above VEH.landSafe. */
+  _land(impact) {
+    const car = this.car, { x, y, z } = this.curP;
+    if (impact > 3) {
+      car.fx.dust(x, y + 0.2, z, Math.min(14, Math.floor(impact)));
+      const v = car.vol();
+      if (impact > 6 && v > 0.03) car.audio.crash(Math.min(1.2, impact / 20) * v);
+    }
+    if (impact > 9) car.fx.sparks(x, y + 0.3, z, 0, 0, Math.min(24, Math.floor(impact)));
+    // the dent: the underbody, pushed up
+    if (impact > VEH.landSafe) car.applyDamage((impact - VEH.landSafe) * VEH.landScale, x, z, 0, 0, y, 1);
+    car.onLand?.(impact);
+  }
+
+  /** The body hit a floor while on its side or roof: sparks, sound, a dent there, damage above VEH.roofSafe. */
+  _roof(impact, p) {
+    const car = this.car;
+    if (impact > 2.5) {
+      car.fx.sparks(p.x, p.y + 0.1, p.z, p.nx, p.nz, Math.min(24, Math.floor(impact * 1.5)));
+      const v = car.vol(), now = performance.now();
+      if (now - car.lastImpact > 120 && v > 0.03) car.audio.crash(Math.min(1.2, impact / 18) * v);
+      car.lastImpact = now;
+    }
+    // the normal points out of the floor, into the car: the dent goes the same way
+    if (impact > VEH.roofSafe) car.applyDamage((impact - VEH.roofSafe) * VEH.roofScale, p.x, p.z, p.nx, p.nz, p.y, p.ny);
+    car.onImpact?.(impact, p.x, p.z);
   }
 
   /**
@@ -337,6 +479,26 @@ export class Vehicle {
     const b = this.body, lv = b.linvel(), av = b.angvel();
     b.setLinvel({ x: lv.x + vx, y: lv.y + vy, z: lv.z + vz }, true);
     b.setAngvel({ x: av.x + wx, y: av.y + wy, z: av.z + wz }, true);
+  }
+
+  /**
+   * A shell's blast at (x, y, z): the car gets dv m/s away from it (VEH.blastLift of that upwards) and tilts away from
+   * it (VEH.blastSpin). Through kick(), so for a moment its own grip can trip it over too: a close blast can tip it.
+   */
+  blast(x, y, z, dv) {
+    if (this.righting || dv <= 0) return;
+    const b = this.body, com = b.worldCom();
+    let dx = com.x - x, dz = com.z - z;
+    const l = Math.hypot(dx, dz);
+    if (l > 1e-3) {
+      dx /= l;
+      dz /= l;
+    } else dx = dz = 0;
+    const up = VEH.blastLift, flat = Math.sqrt(1 - up * up);
+    const J = _lv.set(dx * flat, up, dz * flat).multiplyScalar(dv);
+    // tilting away from the blast: about the level axis across the push
+    const spin = dv * VEH.blastSpin;
+    this.kick(J.x, J.y, J.z, dz * spin, 0, -dx * spin);
   }
 
   /**

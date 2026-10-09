@@ -441,7 +441,7 @@ export class Netplay {
 
   /** Своя машина (или бот у хоста, или машина, где я стрелок) выстрелила — пусть снаряд полетит у всех. */
   sendFire(car, shot) {
-    this.client.send({ t: 'e', k: 'fire', id: car.netId, x: r2(shot.x), y: r2(shot.y), z: r2(shot.z), dx: shot.dx, dz: shot.dz, v: r2(shot.v) });
+    this.client.send({ t: 'e', k: 'fire', id: car.netId, x: r2(shot.x), y: r2(shot.y), z: r2(shot.z), dx: shot.dx, dy: shot.dy, dz: shot.dz, v: r2(shot.v) });
   }
 
   /** Хост: пешеход бросил коктейль — пусть бутылка полетит у всех (урон машине посчитает её владелец). */

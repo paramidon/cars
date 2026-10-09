@@ -1,6 +1,5 @@
 import * as THREE from 'three';
-import { HIT_Z, HIT_R, sameTeam } from './car.js';
-import { rayCircle } from './physics/collision.js';
+import { sameTeam } from './car.js';
 import { rand } from './utils.js';
 
 /** Пушка: одна на каждой машине, бьёт только по курсу. Крутить здесь. */
@@ -15,7 +14,7 @@ export const CANNON = {
   radius: 4.2, // радиус взрыва, м
   push: 7, // толчок машин взрывом, м/с
   recoil: 1.6, // отдача стреляющей машине, м/с
-  carHitR: HIT_R + 0.4, // попасть в машину чуть проще, чем в неё врезаться
+  carHitPad: 0.4, // м: попасть в машину чуть проще, чем в неё врезаться (её коробка шире на столько со всех сторон)
 };
 
 const shellFilter = (c) => c.kind !== 'breakable' && c.h >= 1.2;
@@ -27,6 +26,7 @@ export class Artillery {
   constructor(scene, city, fx, audio) {
     this.scene = scene;
     this.world = city.world;
+    this.phys = null; // Rapier (?phys=rapier): shells fly in 3D against its static colliders
     this.fx = fx;
     this.audio = audio;
     this.cars = [];
@@ -52,7 +52,7 @@ export class Artillery {
   }
 
   /**
-   * Выстрел машины прямо по курсу. Возвращает выстрел { x, y, z, dx, dz, v } или null, если пушка не заряжена.
+   * Выстрел машины прямо по курсу. Возвращает выстрел { x, y, z, dx, dy, dz, v } или null, если пушка не заряжена.
    * shot — готовый выстрел чужой машины по сети: летит отсюда, без перезарядки и отдачи.
    */
   fire(car, shot = null) {
@@ -64,15 +64,17 @@ export class Artillery {
       if (!car.isPlayer) {
         // бот целится хуже человека
         const a = Math.atan2(m.dx, m.dz) + rand(-CANNON.botSpread, CANNON.botSpread);
-        m.dx = Math.sin(a);
-        m.dz = Math.cos(a);
+        const h = Math.hypot(m.dx, m.dz);
+        m.dx = Math.sin(a) * h;
+        m.dz = Math.cos(a) * h;
       }
-      m.v = CANNON.speed + Math.max(0, car.vx * m.dx + car.vz * m.dz);
+      m.v = CANNON.speed + Math.max(0, car.vx * m.dx + (car.vy || 0) * m.dy + car.vz * m.dz);
     }
+    const dy = m.dy || 0;
     const mesh = this.pool.find((x) => !x.visible) || this.shells.shift()?.mesh;
     mesh.visible = true;
     mesh.position.set(m.x, m.y, m.z);
-    this.shells.push({ x: m.x, y: m.y, z: m.z, dx: m.dx, dz: m.dz, v: m.v, dist: 0, owner: car, mesh, trail: 0, local: !shot });
+    this.shells.push({ x: m.x, y: m.y, z: m.z, dx: m.dx, dy, dz: m.dz, v: m.v, dist: 0, owner: car, mesh, trail: 0, local: !shot });
     if (!car.remote) car.nudge(-m.dx * CANNON.recoil, -m.dz * CANNON.recoil);
     car.kick();
     for (let i = 0; i < 6; i++) this.fx.muzzleSmoke(m.x + m.dx * rand(0, 1), m.y, m.z + m.dz * rand(0, 1));
@@ -87,44 +89,44 @@ export class Artillery {
       const s = this.shells[i];
       const step = s.v * dt;
       let t = step, hitCar = null, hitPed = null, hitWall = false;
-      const w = this.world.raycast(s.x, s.z, s.dx, s.dz, step, shellFilter);
-      if (w) {
-        t = w.t;
+      const w = this._wall(s, step);
+      if (w >= 0) {
+        t = w;
         hitWall = true;
       }
       for (const car of this.cars) {
         if (car === s.owner || sameTeam(car, s.owner)) continue; // своих снаряд пролетает насквозь
-        const sn = Math.sin(car.yaw), cs = Math.cos(car.yaw);
-        for (const o of HIT_Z) {
-          const ct = rayCircle(s.x, s.z, s.dx, s.dz, car.x + sn * o, car.z + cs * o, CANNON.carHitR);
-          if (ct >= 0 && ct < t) {
-            t = ct;
-            hitCar = car;
-            hitWall = false;
-          }
+        // the car's box, turned with its body: a shell flies over a car down a slope, into one on its side
+        const ct = car.rayHit(s.x, s.y, s.z, s.dx, s.dy, s.dz, t, CANNON.carHitPad);
+        if (ct >= 0 && ct < t) {
+          t = ct;
+          hitCar = car;
+          hitWall = false;
         }
       }
       if (this.peds) {
-        const ph = this.peds.raycast(s.x, s.z, s.dx, s.dz, t, true);
+        const h = Math.hypot(s.dx, s.dz) || 1;
+        const ph = this.peds.raycast(s.x, s.z, s.dx / h, s.dz / h, t * h, true);
         if (ph) {
-          t = ph.t;
+          t = ph.t / h;
           hitPed = ph.ped;
           hitCar = null;
           hitWall = false;
         }
       }
       if (hitWall || hitCar || hitPed || s.dist + step >= CANNON.range) {
-        const x = s.x + s.dx * t, z = s.z + s.dz * t;
-        if (hitWall || hitCar || hitPed) this.blast(x, s.y, z, s.owner, hitCar, s.local);
+        const x = s.x + s.dx * t, y = s.y + s.dy * t, z = s.z + s.dz * t;
+        if (hitWall || hitCar || hitPed) this.blast(x, y, z, s.owner, hitCar, s.local);
         else {
-          this.fx.smoke(x, s.y, z, 0.6, 0.6);
-          this.fx.smoke(x, s.y, z, 0.6, 0.6);
+          this.fx.smoke(x, y, z, 0.6, 0.6);
+          this.fx.smoke(x, y, z, 0.6, 0.6);
         }
         s.mesh.visible = false;
         this.shells.splice(i, 1);
         continue;
       }
       s.x += s.dx * step;
+      s.y += s.dy * step;
       s.z += s.dz * step;
       s.dist += step;
       s.mesh.position.set(s.x, s.y, s.z);
@@ -138,6 +140,16 @@ export class Artillery {
     }
   }
 
+  /**
+   * How far along its next `step` m the shell hits a wall, a pole, the ground…: −1 if it doesn't. On Rapier — any
+   * static collider in 3D; on the old physics — the 2D colliders at least 1.2 m tall.
+   */
+  _wall(s, step) {
+    if (this.phys) return this.phys.castStatic(s.x, s.y, s.z, s.dx, s.dy, s.dz, step)?.t ?? -1;
+    const w = this.world.raycast(s.x, s.z, s.dx, s.dz, step, shellFilter); // (the old physics' cars fire level)
+    return w ? w.t : -1;
+  }
+
   /** Взрыв снаряда: урон и толчок машинам, пешеходы в клочья или в полёт, уличная мелочь — в стороны. */
   blast(x, y, z, shooter, directCar = null, local = true) {
     const R = CANNON.radius;
@@ -149,7 +161,9 @@ export class Artillery {
     for (const car of this.cars) {
       if (car.wrecked || sameTeam(car, shooter)) continue; // дружественного огня нет
       const dx = car.x - x, dz = car.z - z;
-      const d = Math.max(0, Math.hypot(dx, dz) - 1.1);
+      // from the blast to the car: as on the old physics (its centre less 1.1 m), plus how far above or below its body
+      const l = car.toLocal(x, y, z);
+      const d = Math.hypot(Math.max(0, Math.hypot(dx, dz) - 1.1), car.rb ? Math.max(0, Math.abs(l.y - 0.85) - 0.85) : 0);
       const k = Math.max(0, 1 - d / R);
       const direct = car === directCar;
       if (!direct && k <= 0) continue;
@@ -159,14 +173,15 @@ export class Artillery {
         if (car !== shooter && this.onCarHit) this.onCarHit(car, shooter, dmg, direct, local);
         continue;
       }
-      const l = Math.hypot(dx, dz) || 1;
-      const nx = dx / l, nz = dz / l;
+      const hl = Math.hypot(dx, dz) || 1;
+      const nx = dx / hl, nz = dz / hl;
       const push = CANNON.push * Math.max(k, direct ? 0.6 : 0);
-      car.nudge(nx * push, nz * push, rand(-1.5, 1.5) * k);
+      if (car.rb) car.rb.blast(x, y, z, push); // an impulse at the body's point nearest to the blast: shoves and tilts
+      else car.nudge(nx * push, nz * push, rand(-1.5, 1.5) * k);
       if (car === shooter) continue; // свой снаряд только толкает
       car.lastAttacker = shooter;
       car.lastAttackAt = now;
-      car.applyDamage(dmg, x, z, nx, nz);
+      car.applyDamage(dmg, x, z, nx, nz, car.rb ? y : null);
       if (this.onCarHit) this.onCarHit(car, shooter, dmg, direct, local);
     }
     if (this.peds) {

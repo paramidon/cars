@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { HIT_Z, HIT_R } from './car.js';
 import { rand } from './utils.js';
 
 /** Коктейли Молотова: их кидают некоторые пешеходы. Крутить здесь. */
@@ -74,17 +73,15 @@ export class Molotovs {
       b.vy -= MOLOTOV.gravity * dt;
       const ny = b.y + b.vy * dt;
       let done = false;
-      // о машину: попала в один из кругов корпуса, пока летит ниже крыши
-      if (ny < 2) {
-        for (const car of this.cars) {
-          if (car.wrecked) continue;
-          const s = Math.sin(car.yaw), c = Math.cos(car.yaw);
-          if (!HIT_Z.some((o) => Math.hypot(nx - car.x - s * o, nz - car.z - c * o) < HIT_R + 0.3)) continue;
-          this._shatter(nx, Math.max(ny, 1), nz);
-          if (!car.remote && this.onCarHit) this.onCarHit(car, MOLOTOV.damage, nx, nz, b.vx, b.vz);
-          done = true;
-          break;
-        }
+      // о машину: this step's flight enters the car's box (turned with its body), grown by 0.3 m
+      for (const car of this.cars) {
+        if (car.wrecked) continue;
+        const t = car.segHit(b.x, b.y, b.z, nx, ny, nz, 0.3);
+        if (t < 0) continue;
+        this._shatter(b.x + (nx - b.x) * t, Math.max(b.y + (ny - b.y) * t, car.y + 1), b.z + (nz - b.z) * t);
+        if (!car.remote && this.onCarHit) this.onCarHit(car, MOLOTOV.damage, nx, nz, b.vx, b.vz);
+        done = true;
+        break;
       }
       if (!done) {
         const step = Math.hypot(nx - b.x, nz - b.z);
