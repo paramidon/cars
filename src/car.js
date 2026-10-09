@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { clamp, lerp, moveToward, rand } from './utils.js';
+import { clamp, lerp, moveToward, rand, wrapAngle } from './utils.js';
 import { circleVsCollider } from './physics/collision.js';
 import { flashTexture, blobShadowTexture } from './world/textures.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -63,6 +63,7 @@ const P = {
 export const HIT_Z = [-1.3, 0, 1.3];
 export const HIT_R = 1.0;
 export const CAR_INERTIA = P.inertia;
+export const CAR_GRIP = P.grip;
 // лоб с кенгурятником держит удар: урон по передней части при ударе о столб/стену
 const FRONT_ARMOR_WALL = 0.75;
 export const CAR_HALF_W = 1.05;
@@ -405,6 +406,17 @@ export class Car {
     return this.yaw + this.turretYaw;
   }
 
+  /**
+   * The turret's angle (relative to the body) that points the barrel as close as it can get to the world heading a: on a
+   * tilted or flipped car the turret turns about the body's own up axis, not the world's.
+   */
+  turretToward(a) {
+    if (!this.rb) return wrapAngle(a - this.yaw);
+    const d = _b.set(Math.sin(a), 0, Math.cos(a)).applyQuaternion(_qi.copy(this._rot()).invert());
+    // the heading lies along the body's up axis (the car is on its side, facing up or down): any turret angle will do
+    return Math.hypot(d.x, d.z) < 1e-3 ? this.turretYaw : Math.atan2(d.x, d.z);
+  }
+
   /** Анимация выстрела: отдача ствола и вспышка; power < 1 — короче и меньше (пулемёт). */
   kick(power = 1) {
     this.recoilT = Math.max(this.recoilT, power);
@@ -504,6 +516,7 @@ export class Car {
 
   /** Put the car at sp = { x, z, yaw } on the ground, standing still (respawn, unstuck); damage and parts stay. */
   teleport(sp) {
+    this.warps = (this.warps ?? 0) + 1; // over the network the car's ghosts are put there at once, not slid there
     this.x = sp.x;
     this.z = sp.z;
     this.yaw = sp.yaw;

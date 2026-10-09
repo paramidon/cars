@@ -18,14 +18,14 @@ npm run server   # node server/server.js [port]: serves dist/ + WebSocket lobby 
 npm run serve    # build, then server
 ```
 
-The project has no linter and no test suite. Use `npm run build` to check that everything compiles. `tests/physics.js` is an in-browser measurement module for the physics (handling numbers, lean in a race, bots' pace, side hits, damage, blasts, pedestrians and props against the car's box): `await import('/tests/physics.js')` in a dev-server page, see its header. To verify behavior, run the game in a browser:
+The project has no linter and no test suite. Use `npm run build` to check that everything compiles. `tests/physics.js` is an in-browser measurement module for the physics (handling numbers, lean in a race, bots' pace, side hits, damage, blasts, pedestrians and props against the car's box): `await import('/tests/physics.js')` in a dev-server page, see its header. `tests/net.html` + `tests/net.js` measure the network: two games side by side in one page, joined in a room through `npm run server` (a car vs its ghost, rams, the gunner, reconnecting, bytes per snapshot), see its header. To verify behavior, run the game in a browser:
 
 - `window.game` is the `Game` instance.
 - `game.step(dt)` is public so scripts can step the simulation.
 - `game.debugState()` dumps the current state.
 - `window.crash` is the crash reporter.
 
-URL parameters: `?mute` (use it for automated runs), `?debug` (FPS counter), `?q=low|high` (graphics quality), `?peds=N` (number of live pedestrians), `?map=test` (test ground: flat lot, two buildings, stationary pedestrians, no rivals and no win condition; add new mechanics there too), `?phys=rapier` (every car on Rapier, in the city and on the test ground, which then also gets ramps, the tube and the deck; single player only — work in progress, see `PHYSICS_PLAN.md`).
+URL parameters: `?mute` (use it for automated runs), `?debug` (FPS counter), `?q=low|high` (graphics quality), `?peds=N` (number of live pedestrians), `?map=test` (test ground: flat lot, two buildings, stationary pedestrians, no rivals and no win condition; add new mechanics there too), `?phys=rapier` (every car on Rapier, in the city and on the test ground, which then also gets ramps, the tube and the deck; online too, if every player has it — work in progress, see `PHYSICS_PLAN.md`).
 
 ## Architecture
 
@@ -42,11 +42,11 @@ URL parameters: `?mute` (use it for automated runs), `?debug` (FPS counter), `?q
 - **Ownership:**
   - Each client simulates the car it drives. If a bot drives the car, the client in that car's gun turret simulates it.
   - The host simulates the bots and the pedestrian crowd.
-  - Other players' cars have `car.remote = true`. Skip physics, AI and damage on them; `Netplay.update` interpolates them from snapshots.
+  - Other players' cars have `car.remote = true`. Skip physics, AI and damage on them; `Netplay.update` interpolates them from snapshots. On Rapier such a car is a *ghost* (`Vehicle.setRemote`): a dynamic body without gravity that touches only the cars driven here, pulled towards its snapshot every physics step by a spring (`Vehicle.ghostStep`, `GHOST`). Don't move or kick a ghost: it follows its owner's snapshots.
   - Before changing anything that modifies world state, check `remote`, `game.net` and `peds.netRole`, and decide which client owns the change.
-- **Damage:** whoever causes it computes it and broadcasts it as an `'e'` event. That is the rammer for rams, the hitter for pedestrians and the breaker for props. For shells, the hit car's owner computes damage locally.
-- **Snapshots:** cars are sent as `'s'` messages at 20 Hz, and the host sends the crowd as `'ped'` messages at 10 Hz.
-- **Version gating:** `__BUILD__` is a SHA-1 of `src/`, `index.html` and `package.json` (`scripts/build-id.mjs`, line endings normalized). Any source change produces a new version, and a room only admits clients with the same version, so all players must run the same build.
+- **Damage:** whoever causes it computes it and broadcasts it as an `'e'` event. That is the rammer for rams, the hitter for pedestrians and the breaker for props. For shells, the hit car's owner computes damage locally. On Rapier a ram's event also carries the knock (what the rammer's solver did to the victim's ghost); the owner reconciles it with its own contact (`Vehicle.netKnock`: the larger of the two, not the sum).
+- **Snapshots:** cars are sent as `'s'` messages at 20 Hz, after the frame's physics, and the host sends the crowd as `'ped'` messages at 10 Hz. A car's row (`carRow` in `netplay.js`) has the full pose: position with height, the rotation packed into one number (`packQuat`), velocity and spin on three axes, and flags (wrecked, in the air, teleported…). Snapshots are carried forward by the network's delay (clients ping the server; `l` in the message is the sender's half).
+- **Version gating:** `__BUILD__` is a SHA-1 of `src/`, `index.html` and `package.json` (`scripts/build-id.mjs`, line endings normalized). Any source change produces a new version, and a room only admits clients with the same version, so all players must run the same build. With `?phys=rapier` the version ends in `+rapier` (`GAME_VERSION` in `net/client.js`).
 - **Reconnects:** the server holds a disconnected player's slot for 90 s, along with their last snapshot, stats and broken props, so they can resume.
 
 ### Crash reporting

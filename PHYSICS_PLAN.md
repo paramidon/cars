@@ -26,7 +26,7 @@ given below. Run them in order. At the end of every session, tick its checkbox i
 - [x] Session 1: spike on the test ground (go/no-go) — **GO**
 - [x] Session 2: whole world and all cars on Rapier, handling tuned
 - [x] Session 3: damage, rams, props, pedestrians, weapons in 3D
-- [ ] Session 4: networking
+- [x] Session 4: networking
 - [ ] Session 5: bots on the new physics
 - [ ] Session 6: remove the old physics, docs, performance
 - [ ] Session 7 (optional): carry over the non-physics changes from `claude/test-verticals`
@@ -660,3 +660,155 @@ wrecked per run (session 2: 0.8, old: 1.4). Walls hurt again. `crash.entries` st
 - A head-on at 100 vs 80 km/h does −32 to each car, less than a T-bone at 60 (−36): with the bull bar the nose takes
   0.3 of the damage. Whether head-ons should hurt more is a tuning question (`CAR_HIT.zone.front`), not physics.
 - A car on its roof fires into the ground under it (it fires where its barrel points).
+
+### Session 4 (2026-10-09): networking
+
+**Result:** `?phys=rapier` works online. Other players' cars are bodies that follow their snapshots, so a jump, a rollover
+and self-righting look the same on both screens. A ram knocks and damages the victim on both screens, with single
+player's numbers, also with a 120 ms round trip. A reconnect puts a car back exactly as it lay. The old physics keeps
+working online with the same snapshot format.
+
+**Decisions**
+
+- **Version gating:** with the flag `GAME_VERSION` gets `+rapier` (`net/client.js`). A room on the other physics shows as
+  "другая версия". The server's build check in the lobby compares `BUILD_VERSION`, without the suffix. The «СЕТЕВАЯ ИГРА»
+  button is back on Rapier.
+- **Snapshot row**, the same on both paths (`carRow` / `readRow` in `netplay.js`):
+  `[id, x, y, z, q, vx, vy, vz, wx, wy, wz, steer, health, flags, lap, next, passed, kills, accel, turret, timeLeft]`.
+  - `q` is the rotation packed into one integer below 2³², "smallest three": the index of the largest component, then the
+    other three in 10 bits each, at most ~0.1° off (`packQuat`).
+  - Velocity and spin are rounded to 0.1, `health` to 0.1. The old physics sends `y`, a yaw-only `q` and spin about `y`.
+  - New flags: 32 — in the air, so the ghost is carried forward with gravity; 64 flips at every `Car.teleport`, so a
+    respawn moves the ghosts at once instead of sliding them up to 8 m.
+  - Snapshots are sent after the frame's physics (`Netplay.send`). Before this, each one was a frame old, which added
+    ~30 ms of lag at 100 km/h.
+  - The send accumulators now keep their remainder. Zeroing it gave 15–16 car snapshots and 8.6 crowd snapshots per
+    second at 60 fps; now it is 20 and 10.
+- **Remote cars are dynamic "ghosts", not kinematic bodies (a change from the plan).** A kinematic body has infinite
+  mass: the rammer would stop dead as against a moving wall, and on the victim's screen the rammer's ghost would keep
+  pushing until the snapshots caught up. A ghost (`Vehicle.setRemote`, `GHOST`) is a dynamic body with a car's mass and
+  inertia:
+  - no gravity, no suspension force, no angular damping;
+  - collision groups (`GROUPS` in `rapier.js`) make it touch only the cars driven on this computer: not the world, not
+    other ghosts, not prop sensors;
+  - each physics step a critically damped spring (12 rad/s), with the target's velocity fed forward, pulls it towards its
+    last snapshot carried forward by the snapshot's velocities (at most 0.25 s past the network delay; in the air with
+    gravity). On the way down the target and the body itself stop 0.15 m below the ground, because the first-wheel-touch
+    snapshot still falls at 13 m/s and the ghost sank 0.6 m before this rule;
+  - more than 8 m away from its target it is put there at once;
+  - once a frame its wheels cast their rays (static world only, zero force) for the wheel meshes and the shadow.
+
+  A car driven here that hits a ghost gets an equal-mass response, and the ghost takes its own share.
+- **Network delay:** each client pings the server every 2 s and keeps the smallest of the last 5 round trips. An `'s'`
+  message carries `l`, the sender's half round trip. The receiver counts each snapshot as `l` + its own half older (at
+  most 0.15 s, `LEAD_MAX`), on both physics paths. With 60 ms one way, the bots' ghosts in a race went from 1.5 m to
+  0.42 m behind their cars.
+- **Rams** (`Vehicle.localKnock` / `netKnock` / `ghostHit`, `Game._ramDamage`):
+  - both computers resolve the hit, each for its own car;
+  - the one that drove into the ghost sends the ghost's velocity and spin change (`j`) with the damage, even when the
+    damage is 0;
+  - the owner reconciles it with its own solver's share over 0.4 s: along the knock's direction the car ends up with
+    max(own, event). An event that arrives first is applied in full, and a later local contact takes back the overlap;
+  - in every measured ram the two shares agreed within ~10% (e.g. 9.97 / 10.03 m/s at 60 km/h).
+- **Just-hit ghosts.** After a hit, a ghost's snapshots still show the car before the hit for a round trip or more.
+  - Before the fix the spring drove the rammer's ghost on into the victim, and pulled the victim's ghost back into the
+    rammer for second and third hits: with 120 ms round trips, damage at 100 km/h was 54 + 19 + 3.
+  - Now a just-hit ghost moves on its own share. On its wheels, the sideways part fades with the car's grip (`CAR_GRIP`).
+    This lasts until a snapshot's velocity has changed by half of what the ghost's own has, at most 0.4 s.
+  - Holding for a fixed one or two snapshots was tried: still double hits with a delay.
+- **Ghosts that let go** (`ghostDeep`, `_putOverlaps`, `_setThrough`):
+  - **the problem:** with a car put right onto another car (a respawn), each computer pushed its own car out of the other's
+    ghost the same way, each ghost following the other car's snapshots. Both cars sped up together, to 276 km/h in half a
+    second (measured), and an idle pair crawled 10 m;
+  - **the fix:** a ghost more than 0.3 m inside a car driven here, or more than 2 m from its target, touches no car until
+    nothing overlaps it and it is within 1 m of its target;
+  - a teleport, and a ghost put at its target, check overlaps at once, before the solver acts;
+  - the wheels of cars driven here don't stand on ghosts (`GROUPS.wheels`): a car overlapping a ghost was bounced 1 m up
+    by its own suspension rays.
+
+  Gotcha: changing a collider's groups from inside a Rapier query callback is silently lost. Collect the hits first.
+- **Crew:** a human gunner aims through the body's rotation (`Car.turretToward`). On a tilted or flipped car the turret
+  turns in the body's plane and takes the nearest direction to the requested heading. On resume, `aimYaw` comes from the
+  barrel. `BotGunner` and the classic machine gun's auto-aim still use plain yaw arithmetic (session 5).
+- **Reconnect / resume:** a car driven here gets its full pose from the server's last row (`Vehicle.setPose`), and ghosts
+  are put at theirs.
+- **Tests:** `tests/net.html` + `tests/net.js`.
+  - Two games side by side in iframes, joined in a room through the real server.
+  - The Browser pane is hidden (no animation frames), so the page steps both games from a timer in real time.
+  - `lag` delays every message a client receives.
+  - Gotcha: an earlier setup's pump in the same page stepped the games again at 2× speed; there is now one pump per page.
+  - Gotcha: the frames share the tab's storage, so a game opened in the same tab within 85 s resumes the test's room.
+
+**A car vs its ghost** (the owner's screen vs the other screen, sampled every frame on one clock; lag — one way)
+
+| | Lag 0 | Lag 60 ms |
+| --- | --- | --- |
+| Jump off the big ramp, lip 97 km/h, 0.87 s in the air: pitch real / ghost | −16…23° / −19…25° | −16…23° / −23…26° |
+| … position error mean / p95 / max | 0.11 / 0.19 / 0.33 m | 0.24 / 0.5 / 0.65 m |
+| … rotation error mean / p95 / max | 1.0 / 6.7 / 22° | 2.0 / 14 / 25° |
+| Rollover at 45 km/h, lying on its side, self-righting: past 60° real / ghost | 6.28 / 6.28 s | 6.27 / 6.28 s |
+| … upright again real / ghost | 9.65 / 9.59 s | 9.67 / 9.67 s |
+| … largest tilt real / ghost; position error mean; rotation error mean / p95 | 93 / 100°; 0.05 m; 1.1 / 8° | 93 / 106°; 0.14 m; 2.2 / 14° |
+| Rollover at 70 km/h (barrel-rolls back onto its wheels): past 60° / upright, real / ghost | 4.55 / 5.95 s, 4.58 / 5.98 s | — |
+| Ordinary racing, 6 host bots, 55–70 km/h, 20 s: position / rotation error mean | 0.15 m / 1.35° | 0.42 m / 3.0° |
+| The same on the old physics | 1.4 m / 2.0° | — |
+
+**Rams** (`ram()`: A into the side of B's parked car on the test ground; B's own screen / its ghost on A's; damage as B
+got it, the same number on both screens)
+
+| Closing km/h | 40 | 60 | 80 | 100 | 123 |
+| --- | --- | --- | --- | --- | --- |
+| Single player (session 2): thrown / lean | 24 / 1° | 32 / 3° | 43 / 8° | 59 / 13° | 67 / tipped |
+| Lag 0: thrown own / ghost | 22 / 22 | 36 / 36 | 44 / 45 | 55 / 55 | 60 / 56 |
+| Lag 0: lean own | 1° | 2° | 8° | 12° | 122° (tipped on both) |
+| Lag 60 ms: thrown own / ghost | 17 / 18 | 30 / 30 | 43 / 37 | 50 / 60 | 64 / 68 |
+| Lag 60 ms: lean own | 3° | 6° | 14° | 45° | 103° (tipped on both) |
+| Damage (both lags) | 19.8–19.9 | 36.6 | 47.9 | 53.8 | 60.5 |
+
+Single runs spread by ±5 km/h and some degrees: a lag-60 run before the delay compensation gave 19 / 30 / 43 / 60 / 64 km/h
+and 2 / 6 / 7 / 10° at 40–100. With 60 ms the victim's own contact comes ~35 ms after A's and A's event ~100 ms after,
+and each hit counts once.
+
+**Crew gunner** (`gunner()`: B in A's gun, A's car posed, B asks for headings 0 / 90 / 200°)
+
+| A's car | Barrel on B's screen | B's barrel vs A's real one | A's shell vs A's barrel |
+| --- | --- | --- | --- |
+| Level | 0 / 90 / 200° | ≤ 0.1° | ≤ 0.1°, 3 cm from the muzzle |
+| Across the big ramp (13°) | 0° (9° up) / 90° / 201° (8° down) | ≤ 0.1° | ≤ 0.1° |
+| On its side | 17 / 17 / 197° (the nearest the turret can turn to) | 0° | 0° |
+| On its roof (135–179°) | 0 / 92.5 / 200° | ≤ 1.8° | ≤ 2.6° |
+
+**Reconnect** (`reconnect()`): B's car lying on its roof at (30, 1.66, 120); B's page reloads, and it is back in the race
+0.5 s later at (30, 1.66, 120) on its roof, with 0° of rotation change. A's ghost of it is the same. 1.2–1.3 s later it
+rights itself, upright on both screens. `crash.entries` stayed empty on both.
+
+**Bandwidth** (`bandwidth()`: city, host A with its car and 6 bots, 7 rows per message, 8 s)
+
+| | Bytes per car row | Per message (7 rows) | Per second at 20 Hz |
+| --- | --- | --- | --- |
+| Before (old format, same cars) | 66 | 501 | 10.0 KB |
+| After | 80 | 601 | 12.0 KB |
+
+**Cost** (battle royale, 20 cars, 30 s, both games in one page, no rendering):
+
+| | `game.step` mean / p95 | One physics step |
+| --- | --- | --- |
+| Host (19 bots, B's ghost) | 2.7 / 4.7 ms | 0.30 ms |
+| Guest (19 ghosts) | 2.0 / 3.4 ms | 0.20 ms |
+
+10 cars were wrecked on both screens alike, with no errors. The production build served by `npm run server` passes the
+same checks: jump, rollover, rams at 60 / 100, reconnect. `tests/physics.js` single-player numbers are unchanged:
+handling, and `sideHit()` 24 / 32 / 43 / 59 / 67 km/h.
+
+**Open problems**
+
+- Spin carried forward through an impact overshoots: the ghost of a car falling onto its side rolls ~7–13° too far for a
+  moment, and with the delay compensation rotation p95 is ~14° in rollovers. Fading the tipping part of the spin made
+  the ghost lag ~0.1 s through every roll instead (tried, reverted).
+- On the old physics online, a remote car is immovable. The rammer stops dead against it and the victim's own screen
+  sees a stopped rammer's ghost, so the victim is hardly knocked (it existed before; it goes with the old physics in
+  session 6).
+- Two cars left overlapping at rest pass through each other until one moves off.
+- `BotGunner` and the machine gun's auto-aim on tilted cars: session 5.
+- The delay emulation only delays receiving, and real jitter or packet loss wasn't tested. Online play on the test ground
+  is reachable only from a script (the menu hides the button there).

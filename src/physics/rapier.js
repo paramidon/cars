@@ -19,6 +19,20 @@ export const PHYS = {
 /** Steps a car-vs-car contact may take to show its hit (see _carContacts). */
 const PAIR_WAIT = 3;
 
+// collision groups (membership << 16 | filter): the static world and the prop sensors, cars driven on this computer,
+// and ghosts — the cars other computers drive (network), which touch nothing but the cars driven here
+const G_WORLD = 1, G_CAR = 2, G_GHOST = 4;
+export const GROUPS = {
+  world: (G_WORLD << 16) | 0xffff,
+  car: (G_CAR << 16) | 0xffff,
+  ghost: (G_GHOST << 16) | G_CAR,
+  through: G_GHOST << 16, // a ghost deep inside a car driven here: touches nothing until they are apart (Vehicle.ghostDeep)
+  rays: ((0xffff << 16) | G_WORLD) >>> 0, // a query that sees only the static world
+  cars: ((0xffff << 16) | G_CAR) >>> 0, // … only the cars driven here
+  ghosts: ((0xffff << 16) | G_GHOST) >>> 0, // … only the ghosts
+  wheels: ((0xffff << 16) | G_WORLD | G_CAR) >>> 0, // a wheel of a car driven here stands on anything but a ghost
+};
+
 /** Static colliders a car can lean on and slide around (not the surfaces it drives on). */
 export const OBSTACLES = new Set(['building', 'wall', 'pole', 'tree', 'pillar', 'fountain', 'statue', 'pump', 'rail']);
 
@@ -49,6 +63,7 @@ export class Physics {
     this.kinds = new Map(); // collider handle → kind: 'ground', 'wall', 'building', 'ramp', 'deck', 'rail', 'curb', 'pole', …
     this.stepMs = 0; // average cost of one step (car controls, suspension rays, world step), ms
     this.steps = 0;
+    this.time = 0; // simulated time, s (ghosts carry their snapshots forward on this clock)
     for (const s of solids) this.addSolid(s);
     this._ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
   }
@@ -60,7 +75,7 @@ export class Physics {
         ? RAPIER.ColliderDesc.cylinder(s.cyl[3], s.cyl[4]).setTranslation(s.cyl[0], s.cyl[1], s.cyl[2])
         : RAPIER.ColliderDesc.convexHull(new Float32Array(s.hull));
     if (!desc) throw new Error(`Rapier: degenerate collider (${s.kind})`);
-    desc.setFriction(OBSTACLES.has(s.kind) ? PHYS.wallFriction : PHYS.friction);
+    desc.setFriction(OBSTACLES.has(s.kind) ? PHYS.wallFriction : PHYS.friction).setCollisionGroups(GROUPS.world);
     const c = this.world.createCollider(desc);
     this.kinds.set(c.handle, s.kind);
     return c;
@@ -78,11 +93,14 @@ export class Physics {
     while (this.acc >= PHYS.step * 0.999 && n < PHYS.maxSteps) {
       const t0 = performance.now();
       before(PHYS.step);
+      for (const v of this.vehicles) if (v.ghost && v.active) v.ghostStep(PHYS.step);
       // after the controls: the velocities the solver starts from (the closing speed of a hit)
       for (const v of this.vehicles) v.savePrev();
       this.world.step(this.events);
+      this.time += PHYS.step;
       this._carContacts();
       for (const v of this.vehicles) v.afterStep();
+      for (const v of this.vehicles) if (v.ghost && v.active) v.ghostDeep();
       const ms = performance.now() - t0;
       this.stepMs = this.steps ? this.stepMs + (ms - this.stepMs) * 0.02 : ms;
       this.steps++;
@@ -110,7 +128,14 @@ export class Physics {
         else v.touch(own, other, started, this.kinds.get(other));
         return;
       }
-      if (!started || !A || !B || A === B) return;
+      if (!A || !B || A === B) return;
+      // a car driven here and a ghost: the ghost keeps track of the cars it touches (Vehicle.ghostDeep)
+      if (A.ghost !== B.ghost) {
+        const [g, o] = A.ghost ? [A, B] : [B, A];
+        if (started) g.touching.add(o);
+        else g.touching.delete(o);
+      }
+      if (!started) return;
       const key = A.id < B.id ? A.id * 4096 + B.id : B.id * 4096 + A.id;
       if (!pending.has(key)) pending.set(key, { A, B, h1, h2, steps: 0 });
     });
@@ -123,6 +148,12 @@ export class Physics {
       pending.delete(key);
       c.A.hit();
       c.B.hit();
+      // over the network: a car driven here hit a ghost — keep its own share of the hit for reconciling (Vehicle.netKnock),
+      // and let the ghost move on its own share until its snapshots show the hit (Vehicle.ghostHit)
+      if (c.A.ghost !== c.B.ghost) {
+        (c.A.ghost ? c.B : c.A).localKnock(c.A.ghost ? c.A : c.B);
+        (c.A.ghost ? c.A : c.B).ghostHit();
+      }
       const hl = Math.hypot(hit.nx, hit.nz) || 1;
       this.onCarHit?.(c.A.car, c.B.car, hit.impact, hit.px, hit.pz, hit.nx / hl, hit.nz / hl);
     }
@@ -171,7 +202,7 @@ export class Physics {
   addProps(items) {
     for (const it of items) {
       const h = it.def.h / 2;
-      const desc = RAPIER.ColliderDesc.cylinder(h, it.def.radius).setTranslation(it.x, it.y + h, it.z).setSensor(true);
+      const desc = RAPIER.ColliderDesc.cylinder(h, it.def.radius).setTranslation(it.x, it.y + h, it.z).setSensor(true).setCollisionGroups(GROUPS.world);
       this.propOf.set(this.world.createCollider(desc).handle, it);
     }
   }
@@ -192,12 +223,15 @@ export class Physics {
     return { t: hit.timeOfImpact, nx: n.x, ny: n.y, nz: n.z, kind: this.kinds.get(hit.collider.handle) };
   }
 
-  /** Height of the first surface straight below (x, y, z) within maxDist, ignoring body; null if there is none. */
-  groundBelow(x, y, z, maxDist, body = null) {
+  /**
+   * Height of the first surface straight below (x, y, z) within maxDist, ignoring body (or any car: staticOnly); null if
+   * there is none.
+   */
+  groundBelow(x, y, z, maxDist, body = null, staticOnly = false) {
     const r = this._ray;
     r.origin = { x, y, z };
     const flags = RAPIER.QueryFilterFlags.EXCLUDE_SENSORS;
-    const hit = this.world.castRay(r, maxDist, true, flags, undefined, undefined, body ?? undefined);
+    const hit = this.world.castRay(r, maxDist, true, flags, staticOnly ? GROUPS.rays : undefined, undefined, body ?? undefined);
     return hit ? y - hit.timeOfImpact : null;
   }
 }

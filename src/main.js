@@ -283,7 +283,6 @@ class Game {
     click('btn-resume', () => this._setPaused(false));
     click('btn-restart', () => this._again());
     click('btn-net', () => this.lobby.open());
-    if (this.phys) $('btn-net').classList.add('hidden'); // ?phys=rapier: single player only for now (PHYSICS_PLAN.md, session 4)
     // полигон ⇄ город: другая карта строится при запуске, поэтому — перезагрузка с ?map=test или без
     $('btn-map').textContent = this.test ? 'В ГОРОД' : 'ТЕСТОВЫЙ ПОЛИГОН';
     click('btn-map', () => {
@@ -493,6 +492,9 @@ class Game {
     for (const c of this.cars) {
       c.isPlayer = c === car; // звук мотора, перезарядка как у человека
       c.listener = c === car ? null : car;
+      // on Rapier: a car another computer drives is a ghost following its snapshots
+      c.rb?.setActive(true);
+      c.rb?.setRemote(!!c.remote);
     }
     this.artillery.listener = car;
     this.molotovs.listener = car;
@@ -521,7 +523,7 @@ class Game {
     const car = this.car;
     if (car.wrecked) return;
     this.aimYaw = wrapAngle(this.aimYaw - inp.aimDX * AIM_MOUSE - inp.aim * AIM_KEYS * dt);
-    car.turretYaw = wrapAngle(this.aimYaw - car.yaw);
+    car.turretYaw = car.turretToward(this.aimYaw);
   }
 
   /** Заезд ещё идёт: одному — пока сам в игре; по сети — пока сервер не объявил победителя. */
@@ -1013,13 +1015,18 @@ class Game {
     }
   }
 
-  /** Урон victim от тарана by: своим машинам — сразу, чужой по сети — событием её владельцу. */
+  /**
+   * Урон victim от тарана by: своим машинам — сразу, чужой по сети — событием её владельцу. On Rapier the event also
+   * carries the knock: what this computer's solver did to the victim's ghost (Vehicle.netKnock), even with no damage.
+   */
   _ramDamage(victim, by, dmg, px, pz, nx, nz, now) {
-    if (dmg <= 0 || by.remote) return;
+    if (by.remote) return;
     if (victim.remote) {
-      this.net.sendHit(victim, by, dmg, px, pz, nx, nz);
+      const k = victim.rb && victim.rb.knockV.length() + victim.rb.knockW.length() > 0.3 ? victim.rb : null;
+      if (dmg > 0 || k) this.net.sendHit(victim, by, Math.max(0, dmg), px, pz, nx, nz, k);
       return;
     }
+    if (dmg <= 0) return;
     victim.lastAttacker = by;
     victim.lastAttackAt = now;
     victim.applyDamage(dmg, px, pz, nx, nz);
@@ -1301,6 +1308,7 @@ class Game {
         for (const c of this.cars) if (c.botGunner && c.botGunner.update(dt, gctx)) this._fire(c);
       }
       this._physics(dt, drive);
+      if (this.net) this.net.send(dt);
       this.artillery.update(dt);
       this.mg.tick(dt);
       this.molotovs.update(dt);

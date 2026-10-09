@@ -1,4 +1,4 @@
-import { NetClient, GAME_VERSION, defaultServer, wsUrl } from './client.js';
+import { NetClient, GAME_VERSION, BUILD_VERSION, defaultServer, wsUrl } from './client.js';
 import { makeStart, botCount, TEAMS } from './netplay.js';
 import { MAX_CARS, maxCars } from '../racers.js';
 
@@ -301,8 +301,10 @@ export class Lobby {
     this.name = name;
     try {
       const w = await this.client.connect(url, name);
+      // the server knows the build it serves, not the physics chosen in the address
       const gameVer = w.game?.version;
-      this._status(gameVer && gameVer !== GAME_VERSION ? `Подключено. Внимание: сервер раздаёт игру версии ${gameVer}, у тебя ${GAME_VERSION}` : 'Подключено', !!(gameVer && gameVer !== GAME_VERSION));
+      const other = !!gameVer && gameVer !== BUILD_VERSION;
+      this._status(other ? `Подключено. Внимание: сервер раздаёт игру версии ${gameVer}, у тебя ${BUILD_VERSION}` : 'Подключено', other);
     } catch (e) {
       this._status(`${e.message}. Сервер запущен? (npm run serve)`, true);
     }

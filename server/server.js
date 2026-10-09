@@ -239,6 +239,9 @@ function onMessage(c, msg) {
     case 'rooms':
       send(c, { t: 'rooms', list: roomList() });
       return;
+    case 'ping': // клиент меряет задержку до сервера (снимки машин — продолжать вперёд на столько)
+      send(c, { t: 'pong', at: msg.at });
+      return;
     case 'create': {
       if (!c.version) return;
       leave(c);

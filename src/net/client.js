@@ -1,8 +1,16 @@
 import { version } from '../../package.json';
+import { PHYS_RAPIER } from '../config.js';
 
-/** Версия игры для сетевой комнаты: номер из package.json + отпечаток исходников (scripts/build-id.mjs). */
+/** Версия сборки: номер из package.json + отпечаток исходников (scripts/build-id.mjs). */
 // eslint-disable-next-line no-undef
-export const GAME_VERSION = `${version}+${typeof __BUILD__ === 'string' ? __BUILD__ : 'dev'}`;
+export const BUILD_VERSION = `${version}+${typeof __BUILD__ === 'string' ? __BUILD__ : 'dev'}`;
+/**
+ * Версия игры для сетевой комнаты: the build's, plus "+rapier" with ?phys=rapier — the same build on the other physics
+ * can't share a room with it.
+ */
+export const GAME_VERSION = PHYS_RAPIER ? `${BUILD_VERSION}+rapier` : BUILD_VERSION;
+const PING_MS = 2000; // how often to measure the round trip to the server
+const PINGS = 5; // … over how many of the last ones
 
 /**
  * Соединение с сервером игры (server/server.js) по WebSocket.
@@ -14,6 +22,16 @@ export class NetClient {
     this.id = null;
     this.handlers = new Map();
     this.onClose = null;
+    // round trip to the server, s: the smallest of the last few pings (a snapshot of another player's car is that much
+    // older than it looks — see Netplay._snapshot)
+    this.rtt = 0;
+    this.pings = [];
+    this.pingTimer = null;
+    this.on('pong', (m) => {
+      this.pings.push((performance.now() - m.at) / 1000);
+      if (this.pings.length > PINGS) this.pings.shift();
+      this.rtt = Math.min(...this.pings);
+    });
   }
 
   get connected() {
@@ -55,6 +73,11 @@ export class NetClient {
           clearTimeout(timer);
           this.id = msg.id;
           this.token = msg.token;
+          this.pings = [];
+          clearInterval(this.pingTimer);
+          const ping = () => this.send({ t: 'ping', at: performance.now() });
+          this.pingTimer = setInterval(ping, PING_MS);
+          ping();
           resolve(msg);
         }
         this._dispatch(msg);
@@ -65,6 +88,7 @@ export class NetClient {
         if (was) {
           this.ws = null;
           this.id = null;
+          clearInterval(this.pingTimer);
         }
         if (!opened) reject(new Error('Не удалось подключиться'));
         else if (was && this.onClose) this.onClose();
@@ -73,6 +97,7 @@ export class NetClient {
   }
 
   close() {
+    clearInterval(this.pingTimer);
     if (this.ws) {
       const ws = this.ws;
       this.ws = null;

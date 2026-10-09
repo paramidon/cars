@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import { Car } from '../car.js';
 import { CarTag } from '../tag.js';
 import { GRID, maxCars } from '../racers.js';
@@ -19,6 +20,7 @@ import { dampAngle } from '../utils.js';
 const SNAP_HZ = 20;
 const PED_HZ = 10; // снимков толпы в секунду (их шлёт хост)
 const EXTRAP_MAX = 0.25; // дольше снимок вперёд не угадываем, с
+const LEAD_MAX = 0.15; // s — a snapshot is carried forward by the network's delay at most this much (see _snapshot)
 const SNAP_DIST = 8; // разошлись сильнее — переставить сразу, м
 /** Цвета машин людей по порядку входа в комнату. */
 export const NET_COLORS = ['#d4161c', '#13a3c8', '#f08a12', '#e14fa8'];
@@ -27,6 +29,80 @@ export const TEAMS = { 1: { name: 'КРАСНЫЕ', color: '#e5262b' }, 2: { nam
 
 const r2 = (v) => Math.round(v * 100) / 100;
 const r1 = (v) => Math.round(v * 10) / 10;
+const _Y = new THREE.Vector3(0, 1, 0);
+const _q = new THREE.Quaternion();
+const _v = new THREE.Vector3();
+const _w = new THREE.Vector3();
+
+// a rotation in one number, "smallest three": which component is the largest (2 bits) and the other three, each in
+// [−1/√2, 1/√2], in 10 bits — at most ~0.1° off
+const QBITS = 1024, QK = (QBITS - 1) / Math.SQRT2;
+
+/** A unit quaternion (x, y, z, w) packed into one integer below 2³². */
+export function packQuat(q) {
+  const c = [q.x, q.y, q.z, q.w];
+  let big = 0;
+  for (let i = 1; i < 4; i++) if (Math.abs(c[i]) > Math.abs(c[big])) big = i;
+  const s = c[big] < 0 ? -1 : 1; // q and −q are the same rotation: make the largest one positive
+  let n = big;
+  for (let i = 0; i < 4; i++) if (i !== big) n = n * QBITS + Math.round((c[i] * s + Math.SQRT1_2) * QK);
+  return n;
+}
+
+/** packQuat's number back into the THREE.Quaternion out. */
+export function unpackQuat(n, out) {
+  const c = [0, 0, 0, 0];
+  let sum = 0;
+  for (let k = 2; k >= 0; k--) {
+    const u = n % QBITS;
+    n = (n - u) / QBITS;
+    c[k] = u / QK - Math.SQRT1_2;
+  }
+  const big = n, rest = [0, 1, 2, 3].filter((i) => i !== big);
+  const q = [0, 0, 0, 0];
+  rest.forEach((i, k) => {
+    q[i] = c[k];
+    sum += c[k] * c[k];
+  });
+  q[big] = Math.sqrt(Math.max(0, 1 - sum));
+  return out.set(q[0], q[1], q[2], q[3]).normalize();
+}
+
+/**
+ * A car's snapshot row: [id, x, y, z, q, vx, vy, vz, wx, wy, wz, steer, health, flags, lap, next, passed, kills, accel,
+ * turret, timeLeft]. q — the body's rotation (packQuat); v and w — velocity and spin on the world axes (on the old
+ * physics a car turns only about y). flags: 1 wrecked, 2 braking, 4 handbrake, 8 finished, 16 machine gun firing,
+ * 32 in the air (no wheel and no part of the body on anything), 64 — flips at every teleport (Car.teleport: a respawn):
+ * the ghosts are put there at once.
+ */
+function carRow(car, finished, t, timeLeft) {
+  const rb = car.rb;
+  const air = rb ? rb.airT > 0.05 : false;
+  const flags = (car.wrecked ? 1 : 0) | (car.braking ? 2 : 0) | (car.handbrake ? 4 : 0) | (finished ? 8 : 0) | (car.mgFiring || car.mgVisual ? 16 : 0) | (air ? 32 : 0) | (car.warps & 1 ? 64 : 0);
+  let p, q, v, w;
+  if (rb) {
+    // the body's state at the last physics step (the rendered pose is a little behind it)
+    p = rb.curP;
+    q = rb.curQ;
+    v = rb.body.linvel();
+    w = rb.body.angvel();
+  } else {
+    p = { x: car.x, y: car.y + car.hop, z: car.z };
+    q = _q.setFromAxisAngle(_Y, car.yaw);
+    v = { x: car.vx, y: 0, z: car.vz };
+    w = { x: 0, y: car.angVel, z: 0 };
+  }
+  return [car.netId, r2(p.x), r2(p.y), r2(p.z), packQuat(q), r1(v.x), r1(v.y), r1(v.z), r1(w.x), r1(w.y), r1(w.z), r2(car.steer), r1(car.health), flags,
+    t.lap, t.next, t.passed, car.kills, r1(car.accel || 0), r2(car.turretYaw), timeLeft];
+}
+
+/** carRow back into an object; q — a new THREE.Quaternion, yaw — the heading. */
+function readRow(row) {
+  const [id, x, y, z, qn, vx, vy, vz, wx, wy, wz, steer, health, flags, lap, next, passed, kills, accel, turret, timeLeft] = row;
+  const q = unpackQuat(qn, new THREE.Quaternion());
+  const f = _v.set(0, 0, 1).applyQuaternion(q);
+  return { id, x, y, z, q, yaw: Math.atan2(f.x, f.z), vx, vy, vz, wx, wy, wz, angVel: wy, steer, health, flags, lap, next, passed, kills, accel, turret, timeLeft };
+}
 
 /** Раздать места на решётке: машинам людей и ботам вперемешку. Возвращает { id: номер места в GRID }. */
 export function makeSlots(ids) {
@@ -123,6 +199,7 @@ export class Netplay {
           rc = { car, tag: new CarTag(g.scene, car, cr.names, cr.color) };
           g.netPool.set(cr.id, rc);
           g._bindCar(car);
+          g._addBody(car);
         }
         car = rc.car;
         rc.tag.name = cr.names;
@@ -182,11 +259,13 @@ export class Netplay {
       rc.car.root.visible = false;
       rc.tag.sprite.visible = false;
       rc.car.x = rc.car.z = 1e5; // убрать подальше от столкновений и пешеходов
+      rc.car.rb?.setActive(false);
     }
     g.remotes = [];
     for (const r of g.allRivals) {
       r.car.remote = false;
       r.car.netId = undefined;
+      r.car.rb?.setRemote(false);
     }
     g.mainCar.netId = undefined;
   }
@@ -202,32 +281,38 @@ export class Netplay {
     return sum;
   }
 
-  /** Каждый кадр до физики: сгладить призраков; разослать свои машины. */
+  /**
+   * Каждый кадр до физики: сгладить призраков; разослать события. On Rapier a ghost's pose follows its snapshot in the
+   * physics steps (Vehicle.ghostStep); here only what the snapshot says about its wheels, lights and turret.
+   */
   update(dt) {
     const g = this.game;
     const now = performance.now() / 1000;
     const k = 1 - Math.exp(-12 * dt);
     for (const [id, s] of this.state) {
       const car = this.byId.get(id);
-      if (!car || !car.remote || car.wrecked) continue;
-      const age = Math.min(EXTRAP_MAX, now - s.at);
-      const px = s.x + s.vx * age, pz = s.z + s.vz * age;
-      if (Math.hypot(px - car.x, pz - car.z) > SNAP_DIST) {
-        car.x = px;
-        car.z = pz;
-        car.yaw = s.yaw;
-      } else {
-        car.x += (px - car.x) * k;
-        car.z += (pz - car.z) * k;
-        car.yaw = dampAngle(car.yaw, s.yaw + s.angVel * age, 14, dt);
+      if (!car || !car.remote || (car.wrecked && !car.rb)) continue;
+      if (!car.rb) {
+        const age = Math.min(EXTRAP_MAX, now - s.at);
+        const px = s.x + s.vx * age, pz = s.z + s.vz * age;
+        if (s.jump || Math.hypot(px - car.x, pz - car.z) > SNAP_DIST) {
+          s.jump = false;
+          car.x = px;
+          car.z = pz;
+          car.yaw = s.yaw;
+        } else {
+          car.x += (px - car.x) * k;
+          car.z += (pz - car.z) * k;
+          car.yaw = dampAngle(car.yaw, s.yaw + s.angVel * age, 14, dt);
+        }
+        car.vx = s.vx;
+        car.vz = s.vz;
+        car.angVel = s.angVel;
+        const sn = Math.sin(car.yaw), cs = Math.cos(car.yaw);
+        car.vF = car.vx * sn + car.vz * cs;
+        car.vR = -car.vx * cs + car.vz * sn;
       }
-      car.vx = s.vx;
-      car.vz = s.vz;
-      car.angVel = s.angVel;
       car.steer = s.steer;
-      const sn = Math.sin(car.yaw), cs = Math.cos(car.yaw);
-      car.vF = car.vx * sn + car.vz * cs;
-      car.vR = -car.vx * cs + car.vz * sn;
       car.accel = s.accel;
       car.braking = !!(s.flags & 2);
       car.handbrake = !!(s.flags & 4);
@@ -257,32 +342,44 @@ export class Netplay {
     if (this.isHost) {
       this.pedAcc += dt;
       if (this.pedAcc >= 1 / PED_HZ) {
-        this.pedAcc = 0;
+        // keep the remainder (zeroing it sent 8.6 a second at 60 fps, not 10)
+        this.pedAcc = Math.min(this.pedAcc - 1 / PED_HZ, 1 / PED_HZ);
         this.client.send({ t: 'ped', l: g.peds.netRows() });
       }
     }
+  }
 
+  /** Every frame after the physics (so the snapshot is this frame's): my cars, 20 times a second. */
+  send(dt) {
+    const g = this.game;
     this.sendAcc += dt;
     if (this.sendAcc < 1 / SNAP_HZ) return;
-    this.sendAcc = 0;
+    // keep the remainder: zeroing it sent 15–16 snapshots a second at 60 fps, not 20
+    this.sendAcc = Math.min(this.sendAcc - 1 / SNAP_HZ, 1 / SNAP_HZ);
+    const owned = g.cars.filter((c) => !c.remote);
     const rows = [];
     for (const car of owned) {
       const mine = car === g.car;
       const t = mine ? g.race : car.ai.tr;
       const finished = mine ? g.race.place > 0 : t.finished;
-      const flags = (car.wrecked ? 1 : 0) | (car.braking ? 2 : 0) | (car.handbrake ? 4 : 0) | (finished ? 8 : 0) | (car.mgFiring || car.mgVisual ? 16 : 0);
-      rows.push([car.netId, r2(car.x), r2(car.z), r2(car.yaw), r2(car.vx), r2(car.vz), r2(car.angVel), r2(car.steer), r2(car.health), flags,
-        t.lap, t.next, t.passed, car.kills, r2(car.accel || 0), r2(car.turretYaw), mine ? Math.round(g.race.timeLeft * 10) / 10 : 0]);
+      rows.push(carRow(car, finished, t, mine ? Math.round(g.race.timeLeft * 10) / 10 : 0));
     }
-    const msg = { t: 's', c: rows, p: [g.score, g.kills, this.myTeam] };
+    // l — half my round trip to the server, ms: the receiver adds its own half and carries the snapshot forward by that
+    const msg = { t: 's', c: rows, p: [g.score, g.kills, this.myTeam], l: Math.round(this.client.rtt * 500) };
     // сижу в пушке чужой машины — её хозяину нужен поворот башни
     if (g.seat === 'gunner' && g.car.remote) msg.g = [g.car.netId, r2(g.car.turretYaw), g.car.mgFiring ? 1 : 0];
     this.client.send(msg);
   }
 
-  _snapshot(m) {
+  /**
+   * Snapshots of other computers' cars; snap — put the ghosts there at once (resuming a race). A snapshot is as old as
+   * the way here took — half the sender's round trip to the server and half mine (at most LEAD_MAX): it counts as having
+   * arrived that much earlier, so the ghosts are carried forward to where the cars are now.
+   */
+  _snapshot(m, snap = false) {
     const g = this.game;
-    const now = performance.now() / 1000;
+    const lead = Math.min(LEAD_MAX, (m.l || 0) / 1000 + this.client.rtt / 2);
+    const now = performance.now() / 1000 - lead;
     if (m.p) this.stats.set(m.from, { score: m.p[0], kills: m.p[1], team: m.p[2] });
     if (m.g) {
       const car = this.byId.get(m.g[0]);
@@ -292,10 +389,17 @@ export class Netplay {
       }
     }
     for (const row of m.c) {
-      const [id, x, z, yaw, vx, vz, angVel, steer, health, flags, lap, next, passed, kills, accel, turret, timeLeft] = row;
+      const s = readRow(row);
+      const { id, health, flags, lap, next, passed, kills, timeLeft } = s;
       const car = this.byId.get(id);
       if (!car || !car.remote) continue;
-      this.state.set(id, { x, z, yaw, vx, vz, angVel, steer, flags, accel, turret, at: now });
+      s.at = now;
+      // teleported (a respawn): put there at once
+      const warp = !!(flags & 64);
+      s.jump = car.netWarp != null && warp !== car.netWarp;
+      car.netWarp = warp;
+      this.state.set(id, s);
+      car.rb?.netState(s.x, s.y, s.z, s.q, s.vx, s.vy, s.vz, s.wx, s.wy, s.wz, !!(flags & 32), snap || s.jump, lead);
       car.mgVisual = !!(flags & 16);
       if (!car.wrecked) {
         if (car === g.car && health < car.health - 0.5) g._myDamage(car.health - health); // моя машина (я в пушке) получила удар
@@ -329,9 +433,14 @@ export class Netplay {
       this.game.artillery.fire(car, m);
     } else if (m.k === 'hit' && !car.remote && !car.wrecked) {
       // нашу машину протаранили у себя — урон считал таранящий
-      car.lastAttacker = this.byId.get(m.by) || null;
-      car.lastAttackAt = performance.now();
-      car.applyDamage(m.dmg, m.px, m.pz, m.nx, m.nz);
+      const by = this.byId.get(m.by) || null;
+      if (m.dmg > 0) {
+        car.lastAttacker = by;
+        car.lastAttackAt = performance.now();
+        car.applyDamage(m.dmg, m.px, m.pz, m.nx, m.nz);
+      }
+      // … and the knock: what its solver did to our car's ghost there (Vehicle.netKnock)
+      if (m.j && car.rb && by?.rb) car.rb.netKnock(by.rb, _v.fromArray(m.j), _w.fromArray(m.j, 3));
     } else if (m.k === 'wreck' && !car.wrecked) {
       car.lastAttacker = m.by ? this.byId.get(m.by) || null : null;
       car.lastAttackAt = performance.now();
@@ -394,28 +503,32 @@ export class Netplay {
       g.score = stats[0];
       g.kills = stats[1];
     }
-    const now = performance.now() / 1000;
     for (const row of rows) {
-      const [id, x, z, yaw, vx, vz, angVel, , health, flags, lap, next, passed, kills, , turret, timeLeft] = row;
+      const s = readRow(row);
+      const { id, x, y, z, q, yaw, vx, vy, vz, wx, wy, wz, angVel, health, flags, lap, next, passed, kills, turret, timeLeft } = s;
       const car = this.byId.get(id);
       if (!car) continue;
       if (car.remote) {
-        this._snapshot({ c: [row] });
-        const st = this.state.get(id);
-        if (st) st.at = now;
-        car.x = x;
-        car.z = z;
-        car.yaw = yaw;
+        this._snapshot({ c: [row] }, true);
+        if (!car.rb) {
+          car.x = x;
+          car.z = z;
+          car.yaw = yaw;
+        }
         continue;
       }
-      Object.assign(car, { x, z, yaw, vx, vz, angVel, kills, turretYaw: turret });
+      // the full pose: a car that was lying on its roof is put back on its roof (and rights itself as usual)
+      if (car.rb) car.rb.setPose(x, y, z, q, { x: vx, y: vy, z: vz }, { x: wx, y: wy, z: wz });
+      else Object.assign(car, { x, z, yaw, vx, vz, angVel });
+      Object.assign(car, { kills, turretYaw: turret });
       car.health = health;
       if (car === g.car) g.race.restore({ lap, next, passed, timeLeft });
       else if (car.ai) Object.assign(car.ai.tr, { lap, next, passed, finished: !!(flags & 8) });
       if ((flags & 1) && !car.wrecked) car.explode();
     }
     this.syncProps(props);
-    g.aimYaw = g.car.yaw + g.car.turretYaw;
+    const m = g.car.muzzle();
+    g.aimYaw = Math.atan2(m.dx, m.dz);
     g.cam.snap(g.car);
     if (result) this._result(result);
   }
@@ -449,9 +562,14 @@ export class Netplay {
     this.client.send({ t: 'e', k: 'molo', v });
   }
 
-  /** Наша машина протаранила чужую (или попала в неё из пулемёта): урон — её владельцу. */
-  sendHit(victim, by, dmg, px, pz, nx, nz) {
-    this.client.send({ t: 'e', k: 'hit', id: victim.netId, by: by.netId, dmg: r2(dmg), px: r2(px), pz: r2(pz), nx: r2(nx), nz: r2(nz) });
+  /**
+   * Наша машина протаранила чужую (или попала в неё из пулемёта): урон — её владельцу. rb — the victim's ghost (Vehicle)
+   * after a ram: its knock goes too, as j = [dvx, dvy, dvz, dwx, dwy, dwz].
+   */
+  sendHit(victim, by, dmg, px, pz, nx, nz, rb = null) {
+    const msg = { t: 'e', k: 'hit', id: victim.netId, by: by.netId, dmg: r2(dmg), px: r2(px), pz: r2(pz), nx: r2(nx), nz: r2(nz) };
+    if (rb) msg.j = [...rb.knockV.toArray(), ...rb.knockW.toArray()].map(r2);
+    this.client.send(msg);
   }
 
   /** Заявка на победу (или на место на финише); первую заявку сервер объявит всем. */

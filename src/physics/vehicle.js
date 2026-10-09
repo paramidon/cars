@@ -7,7 +7,8 @@
  * purely physical. The body frame is the car model's frame: x to the left, y up from the wheels' contact, z forward.
  */
 import * as THREE from 'three';
-import { RAPIER, PHYS, OBSTACLES } from './rapier.js';
+import { RAPIER, PHYS, OBSTACLES, GROUPS } from './rapier.js';
+import { CAR_GRIP } from '../car.js';
 import { clamp } from '../utils.js';
 
 export const VEH = {
@@ -73,7 +74,32 @@ export const VEH = {
   launch: 18, // m/s straight up (catapult)
 };
 
+/**
+ * Network ghosts — cars another computer drives (Vehicle.setRemote). A ghost is a dynamic body of a car's mass with no
+ * gravity, no suspension and no tyres, that touches only the cars driven here. Each step a critically damped spring of
+ * `rate` rad/s pulls it towards its last snapshot, carried forward by the snapshot's velocities (at most `ahead` s; in
+ * the air, with gravity too). So a car driven here that hits a ghost gets the response of hitting a car, not a wall, and
+ * the ghost takes its own share of the hit — as it will on its owner's screen — until the snapshots catch up.
+ */
+export const GHOST = {
+  rate: 12, // rad/s
+  ahead: 0.25, // s
+  sink: 0.15, // m — carried forward in the air, it goes at most this far below the ground (springs squashed on landing)
+  snap: 8, // m — farther than this from where it should be (a respawn), it is put there at once
+  deep: 0.3, // m — this far inside a car driven here, it stops touching cars until it overlaps none (ghostDeep)…
+  loose: 2, // m — … and so it does this far from where its snapshot puts it, until it is within half of that
+  // after a car driven here hits it, it moves on its own share of the hit until a snapshot's velocity has changed by
+  // holdShow of what its own has, at most hold s (ghostHit)
+  holdShow: 0.5,
+  hold: 0.4,
+  // a hit between a car driven here and a ghost is resolved on both computers, each for its own car; the one that drove
+  // into it also sends the ghost's share (its knock) to the ghost's owner. Within knockWindow s, along the knock's
+  // direction the car ends up with the larger of the two, not their sum (see netKnock)
+  knockWindow: 0.4,
+};
+
 const _q = new THREE.Quaternion();
+const _q2 = new THREE.Quaternion();
 const _p = new THREE.Vector3();
 const _f = new THREE.Vector3();
 const _r = new THREE.Vector3();
@@ -82,6 +108,7 @@ const _lv = new THREE.Vector3();
 const _av = new THREE.Vector3();
 const _Y = new THREE.Vector3(0, 1, 0);
 const _nn = new THREE.Vector3();
+const _s = new THREE.Vector3();
 
 /** A box { at, half, corner } with its four vertical edges rounded (radius corner, 6 segments), as a convex hull. */
 function roundedBox({ at, half: [hx, hy, hz], corner: c }) {
@@ -112,10 +139,13 @@ export class Vehicle {
     );
     this.body.enableCcd(true);
     this.id = phys.vehicles.length + 1;
+    this.colliders = [];
     for (const cd of [roundedBox(VEH.lower), RAPIER.ColliderDesc.cuboid(...VEH.cabin.half).setTranslation(...VEH.cabin.at)]) {
       cd.setDensity(0).setFriction(VEH.friction).setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min);
-      cd.setRestitution(VEH.restitution).setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
-      phys.carOf.set(w.createCollider(cd, this.body).handle, this);
+      cd.setRestitution(VEH.restitution).setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS).setCollisionGroups(GROUPS.car);
+      const c = w.createCollider(cd, this.body);
+      this.colliders.push(c);
+      phys.carOf.set(c.handle, this);
     }
     // Rapier would compute the mass only at the next step; a body rotated before that ends up with NaNs
     this.body.recomputeMassPropertiesFromColliders();
@@ -157,11 +187,313 @@ export class Vehicle {
     this.props = new Set(); // breakable props whose sensors the body overlaps
     this.airT = 0; // s with no wheel and no part of the body on anything
     this.setV = new THREE.Vector3(); // the velocity the controls left the body with before the current step
+    this.setW = new THREE.Vector3(); // … and the spin
+    this.knockV = new THREE.Vector3(); // what the last hit (another car) did to the velocity, on top of the controls
+    this.knockW = new THREE.Vector3(); // … and to the spin
     this.contacts = 0; // wheels on the ground at the last step
     this.tippedT = 0;
     this.righting = null;
     this.padIn = null;
+    this.ghost = false; // another computer drives this car: the body follows its snapshots (setRemote, GHOST)
+    this.net = null; // the ghost's last snapshot { p, q, v, w, air, at }
+    this.touching = new Set(); // a ghost: the cars driven here it touches
+    this.through = false; // a ghost deep inside a car driven here, touching no car for now (ghostDeep)
+    this.ghostErr = 0; // m — how far the ghost is from where its snapshot puts it
+    this.hold = null; // a ghost just hit: { t, v0, need } — moving on its own until a snapshot shows the hit (ghostHit)
+    this.knocks = new Map(); // other Vehicle → this car's share of a recent hit with it, here and by event (netKnock)
     phys.vehicles.push(this);
+  }
+
+  /** Driven here (a dynamic car) or by another computer (a ghost following its snapshots, see GHOST). */
+  setRemote(on) {
+    if (on === this.ghost) return;
+    this._endRighting();
+    this.ghost = on;
+    this.through = false;
+    this.touching.clear();
+    const b = this.body, ctrl = this.ctrl;
+    b.setGravityScale(on ? 0 : 1, true);
+    b.setAngularDamping(on ? 0 : VEH.angularDamping);
+    for (const c of this.colliders) c.setCollisionGroups(on ? GROUPS.ghost : GROUPS.car);
+    // a ghost's wheels only cast their rays (for the wheel meshes): no spring, no force on the body
+    for (let i = 0; i < ctrl.numWheels(); i++) {
+      ctrl.setWheelSuspensionStiffness(i, on ? 0 : VEH.stiffness);
+      ctrl.setWheelSuspensionCompression(i, on ? 0 : VEH.compression);
+      ctrl.setWheelSuspensionRelaxation(i, on ? 0 : VEH.relaxation);
+      ctrl.setWheelMaxSuspensionForce(i, on ? 0 : 1e6);
+    }
+    this.net = null;
+    this.statics.clear();
+    this.leans.clear();
+    this.props.clear();
+    this.knocks.clear();
+    this.tippedT = 0;
+    this.tripT = 0;
+  }
+
+  /**
+   * A ghost's snapshot: position, rotation q (THREE.Quaternion), velocity, spin (world axes); air — none of its wheels on
+   * the ground (carried forward with gravity). snap — put the ghost there at once (resuming a race).
+   */
+  netState(x, y, z, q, vx, vy, vz, wx, wy, wz, air, snap = false, lead = 0) {
+    const first = !this.net;
+    const n = this.net ?? (this.net = { p: new THREE.Vector3(), q: new THREE.Quaternion(), v: new THREE.Vector3(), w: new THREE.Vector3(), air: false, at: 0, lead: 0 });
+    n.p.set(x, y, z);
+    n.q.copy(q);
+    n.v.set(vx, vy, vz);
+    n.w.set(wx, wy, wz);
+    n.air = air;
+    // lead — how old the snapshot already is (the network's delay, see Netplay._snapshot)
+    n.at = this.phys.time - lead;
+    n.lead = lead;
+    // this snapshot shows the hit (its velocity has changed by holdShow of what the ghost's own has, by now): follow the
+    // snapshots again
+    if (this.hold?.need > 0) {
+      const v = this.body.linvel();
+      if (n.v.distanceTo(this.hold.v0) >= GHOST.holdShow * _f.set(v.x, v.y, v.z).distanceTo(this.hold.v0)) this.hold.need = 0;
+    }
+    if (first || snap) {
+      if (this.hold) this.hold.need = 0;
+      this._ghostTarget(lead, true);
+    }
+  }
+
+  /**
+   * Where the ghost's snapshot puts it `age` s after it was sent: into _p, _q (pose) and _lv, _av (velocities). Carried
+   * forward GHOST.ahead s past the network's delay at most; after that (snapshots stopped coming) it stays there. put —
+   * move the body there at once.
+   */
+  _ghostTarget(age, put = false) {
+    const n = this.net, held = age > GHOST.ahead + n.lead;
+    if (held) age = GHOST.ahead + n.lead;
+    _p.copy(n.p).addScaledVector(n.v, age);
+    _lv.copy(n.v);
+    this.floor = null;
+    if (n.air && age > 0) {
+      _p.y -= 0.5 * PHYS.gravity * age * age;
+      _lv.y -= PHYS.gravity * age;
+    }
+    if ((n.air || n.v.y < -1) && age > 0) {
+      // carried forward through a landing (the snapshot of the first wheel's touch still falls fast) it would sink into
+      // the ground until the next snapshot: not below it (and the body itself stops there, see ghostStep)
+      const gy = this.phys.groundBelow(_p.x, _p.y + 1.5, _p.z, 4, null, true);
+      if (gy != null) this.floor = gy - GHOST.sink;
+      if (gy != null && _p.y < this.floor) {
+        _p.y = this.floor;
+        _lv.y = Math.max(0, _lv.y);
+      }
+    }
+    // (spin carried forward through an impact overshoots: a car falling onto its side is shown rolling ~10° too far for a
+    // moment. Fading the tipping part of it on the ground instead made the ghost lag ~0.1 s through every roll)
+    _q.copy(n.q);
+    const wl = n.w.length();
+    if (wl > 1e-6) _q.premultiply(_q2.setFromAxisAngle(_av.copy(n.w).divideScalar(wl), wl * age));
+    _av.copy(n.w);
+    if (held) {
+      _lv.set(0, 0, 0);
+      _av.set(0, 0, 0);
+    }
+    if (!put) return;
+    const b = this.body;
+    b.setTranslation(_p, true);
+    b.setRotation(_q, true);
+    b.setLinvel(_lv, true);
+    b.setAngvel(_av, true);
+    this.curP.copy(_p);
+    this.prevP.copy(_p);
+    this.curQ.copy(_q);
+    this.prevQ.copy(_q);
+    this.setV.copy(_lv);
+    this.setW.copy(_av);
+    this.ghostErr = 0;
+    this._putOverlaps();
+  }
+
+  /**
+   * A car driven here hit this ghost (knockV — what the solver did to it): its snapshots still show the car before the
+   * hit for a round trip and more, and the spring would drive it on as if nothing happened — the rammer's ghost shoving
+   * on into the victim, the victim's springing back into the rammer and hitting it again. So the ghost moves on its own,
+   * as the solver left it (its share of the hit; on its wheels the sideways part fades with the car's grip), until a
+   * snapshot shows the hit — its velocity has changed by GHOST.holdShow of what the ghost's own has — or GHOST.hold s pass.
+   */
+  ghostHit() {
+    if (!this.net || this.knockV.length() < 0.3) return;
+    const h = this.hold ?? (this.hold = { t: 0, v0: new THREE.Vector3(), need: 0 });
+    h.t = this.phys.time;
+    h.v0.copy(this.net.v);
+    h.need = 1;
+  }
+
+  /** Before a physics step, for a ghost: steer the body towards its snapshot (GHOST). */
+  ghostStep(h) {
+    if (!this.net) return;
+    const b = this.body, age = Math.max(0, this.phys.time - this.net.at);
+    if (this.hold?.need > 0 && this.phys.time - this.hold.t < GHOST.hold) {
+      const v = b.linvel(), w = b.angvel();
+      _f.set(v.x, v.y, v.z);
+      // on its wheels the real car's tyres take the sideways part of the hit away fast (the arcade grip): so does the ghost
+      if (this.contacts >= 2 && this.up.y > VEH.upFull) {
+        _r.set(-1, 0, 0).applyQuaternion(this.curQ);
+        _f.addScaledVector(_r, _f.dot(_r) * (Math.exp(-CAR_GRIP * h) - 1));
+        b.setLinvel(_f, true);
+      }
+      this.setV.copy(_f);
+      this.setW.set(w.x, w.y, w.z);
+      return;
+    }
+    if (this.hold) this.hold.need = 0;
+    this._ghostTarget(age);
+    const t = b.translation();
+    const dx = _p.x - t.x, dy = _p.y - t.y, dz = _p.z - t.z;
+    const e2 = dx * dx + dy * dy + dz * dz;
+    this.ghostErr = Math.sqrt(e2);
+    if (e2 > GHOST.snap * GHOST.snap) {
+      this._ghostTarget(age, true);
+      return;
+    }
+    // far from where it should be (catching up after a lag spike, a short respawn), it isn't where the car is: on its
+    // way there it must not shove a car driven here as hard as the spring pulls
+    if (this.ghostErr > GHOST.loose) this._setThrough(true);
+    // a critically damped spring towards the target pose, with the target's velocity fed forward
+    const om = GHOST.rate, k1 = om * om * h, k2 = 2 * om * h;
+    const v = b.linvel(), w = b.angvel(), r = b.rotation();
+    _f.set(v.x + k1 * dx + k2 * (_lv.x - v.x), v.y + k1 * dy + k2 * (_lv.y - v.y), v.z + k1 * dz + k2 * (_lv.z - v.z));
+    // falling onto the ground: the spring alone would carry it through (the fall's speed against a target that stopped)
+    if (this.floor != null) _f.y = Math.max(_f.y, Math.min(8, (this.floor - t.y) / h));
+    // the rotation still to go, target · current⁻¹, as a rotation vector (the shorter way round)
+    _q2.set(-r.x, -r.y, -r.z, r.w).premultiply(_q);
+    if (_q2.w < 0) _q2.set(-_q2.x, -_q2.y, -_q2.z, -_q2.w);
+    const s = Math.hypot(_q2.x, _q2.y, _q2.z);
+    const e = s > 1e-9 ? (2 * Math.atan2(s, _q2.w)) / s : 2;
+    _r.set(w.x + k1 * _q2.x * e + k2 * (_av.x - w.x), w.y + k1 * _q2.y * e + k2 * (_av.y - w.y), w.z + k1 * _q2.z * e + k2 * (_av.z - w.z));
+    b.setLinvel(_f, true);
+    b.setAngvel(_r, true);
+    this.setV.copy(_f);
+    this.setW.copy(_r);
+  }
+
+  /**
+   * After a step, for a ghost. Deep inside a car driven here (one put onto the other: a respawn, a ghost put back where
+   * its snapshot says after a lag spike) each computer pushes its own car out of the other's ghost — the same way, as
+   * each ghost follows the other car's snapshots — and both cars speed up together (276 km/h in half a second, measured).
+   * So a ghost more than GHOST.deep m inside a car driven here touches no car until it overlaps none.
+   */
+  ghostDeep() {
+    const w = this.phys.world;
+    if (this.through) {
+      if (this.ghostErr > GHOST.loose / 2) return;
+      let still = false;
+      this._overlaps(this.curP, this.curQ, GROUPS.cars, () => (still = true));
+      if (!still) this._setThrough(false);
+      return;
+    }
+    if (!this.touching.size) return;
+    let deep = false;
+    const check = (m) => {
+      for (let i = 0; i < m.numContacts(); i++) if (m.contactDist(i) < -GHOST.deep) deep = true;
+    };
+    for (const o of this.touching) for (const a of this.colliders) for (const b of o.colliders) w.contactPair(a, b, check);
+    if (deep) this._setThrough(true);
+  }
+
+  _setThrough(on) {
+    if (on === this.through) return;
+    this.through = on;
+    this.touching.clear();
+    for (const c of this.colliders) c.setCollisionGroups(on ? GROUPS.through : GROUPS.ghost);
+  }
+
+  /**
+   * Put somewhere at once (a teleport, a ghost put where its snapshot says): ghosts and cars driven here that the body
+   * now overlaps let go of each other before the solver throws them apart (see ghostDeep).
+   */
+  _putOverlaps() {
+    if (this.ghost) {
+      let hit = false;
+      this._overlaps(this.curP, this.curQ, GROUPS.cars, () => (hit = true));
+      if (hit) this._setThrough(true);
+    } else {
+      // (not from inside the query: a collider's groups set while Rapier runs the query are lost)
+      const hit = new Set();
+      this._overlaps(this.curP, this.curQ, GROUPS.ghosts, (c) => hit.add(this.phys.carOf.get(c.handle)));
+      for (const v of hit) v?._setThrough(true);
+    }
+  }
+
+  /** Calls hit(collider) for each collider of `groups` the body's shapes would overlap standing at p turned by q. */
+  _overlaps(p, q, groups, hit) {
+    const w = this.phys.world;
+    this.colliders.forEach((c, i) => {
+      const at = i ? VEH.cabin.at : [0, 0, 0];
+      _s.set(at[0], at[1], at[2]).applyQuaternion(q).add(p);
+      w.intersectionsWithShape(_s, q, c.shape, (o) => {
+        hit(o);
+        return true;
+      }, RAPIER.QueryFilterFlags.EXCLUDE_SENSORS, groups, undefined, this.body);
+    });
+  }
+
+  /** Put a car driven here at (x, y, z) turned by q (a THREE.Quaternion), with velocity v and spin w (resuming a race). */
+  setPose(x, y, z, q, v, w) {
+    this.place(x, y, z, 0);
+    const b = this.body;
+    b.setRotation(q, true);
+    b.setLinvel(v, true);
+    b.setAngvel(w, true);
+    this.curQ.copy(q);
+    this.prevQ.copy(q);
+    this._putOverlaps();
+    this.sync();
+  }
+
+  /**
+   * This car (driven here) took its share of a hit with ghost `other` from its own solver (knockV/W, just measured by
+   * hit()): keep it for reconciling with the knock the other computer sends (netKnock).
+   */
+  localKnock(other) {
+    const r = this._knock(other);
+    r.lv.add(this.knockV);
+    if (r.k > 0) this._knockApply(r);
+  }
+
+  /**
+   * The computer that drives `other` hit this car (driven here) and sends this car's share of the hit: velocity change dv
+   * and spin change dw. Both computers resolve the hit, each for its own car, and either may have missed it or seen it
+   * weaker (a ghost is where its car was a moment ago). Within GHOST.knockWindow s, along dv's direction the car gets the
+   * larger of the two shares: what its own solver gave it and dv — never their sum.
+   */
+  netKnock(other, dv, dw) {
+    if (this.ghost || this.righting) return;
+    let r = this._knock(other);
+    if (r.k > 0) r = this._knock(other, true); // a second hit: matched with what happens here from now on
+    r.kv.copy(dv);
+    r.kw.copy(dw);
+    r.k = r.kv.length();
+    if (r.k < 1e-3) return;
+    this._knockApply(r);
+    // what was added on top of the car's own share can trip it, like any hit
+    if (r.e > 0) this.hit(_nn.copy(r.kv).multiplyScalar(r.e / r.k));
+  }
+
+  /** The record of hits with `other` within GHOST.knockWindow (a new one if there is none, or fresh). */
+  _knock(other, fresh = false) {
+    let r = this.knocks.get(other);
+    if (!r || fresh || this.phys.time - r.t > GHOST.knockWindow) {
+      r = { t: this.phys.time, lv: new THREE.Vector3(), kv: new THREE.Vector3(), kw: new THREE.Vector3(), k: 0, e: 0 };
+      this.knocks.set(other, r);
+    }
+    return r;
+  }
+
+  /** Top up (or take back) the event's knock so that along its direction the car has max(event, own solver's). */
+  _knockApply(r) {
+    const along = r.lv.dot(r.kv) / r.k;
+    const e = Math.max(0, r.k - along), d = e - r.e;
+    r.e = e;
+    if (Math.abs(d) < 1e-4) return;
+    const b = this.body, lv = b.linvel(), av = b.angvel(), s = d / r.k;
+    b.setLinvel({ x: lv.x + r.kv.x * s, y: lv.y + r.kv.y * s, z: lv.z + r.kv.z * s }, true);
+    b.setAngvel({ x: av.x + r.kw.x * s, y: av.y + r.kw.y * s, z: av.z + r.kw.z * s }, true);
   }
 
   /** Put the car upright at (x, y, z) facing yaw, standing still. */
@@ -181,6 +513,11 @@ export class Vehicle {
     this.padIn = null;
     this.contacts = 4;
     this.airT = 0;
+    this.net = null; // a ghost waits here for its first snapshot
+    if (this.hold) this.hold.need = 0;
+    this.setV.set(0, 0, 0);
+    this.setW.set(0, 0, 0);
+    this._putOverlaps();
     this.sync();
   }
 
@@ -220,6 +557,7 @@ export class Vehicle {
     if (on === this.active) return;
     this.active = on;
     this.body.setEnabled(on);
+    this.touching.clear();
     this.statics.clear();
     this.leans.clear();
     this.props.clear();
@@ -241,7 +579,7 @@ export class Vehicle {
       return;
     }
     const lv0 = b.linvel();
-    ctrl.updateVehicle(h);
+    ctrl.updateVehicle(h, undefined, GROUPS.wheels);
     let n = 0;
     for (let i = 0; i < 4; i++) if (ctrl.wheelIsInContact(i)) n++;
     this.contacts = n;
@@ -303,10 +641,21 @@ export class Vehicle {
     this.padIn = pad;
     if (changed) b.setLinvel(_lv, true);
     this.setV.copy(_lv);
+    this.setW.copy(_av);
   }
 
-  /** Once a frame: the flip rule — a car on its side or roof that has (nearly) stopped rolls back onto its wheels. */
+  /**
+   * Once a frame: the flip rule — a car on its side or roof that has (nearly) stopped rolls back onto its wheels. A
+   * ghost only casts its wheels' rays (no force), so that its wheel meshes touch the ground.
+   */
   update(dt) {
+    if (this.ghost) {
+      this.ctrl.updateVehicle(dt, RAPIER.QueryFilterFlags.EXCLUDE_SENSORS, GROUPS.rays);
+      let n = 0;
+      for (let i = 0; i < 4; i++) if (this.ctrl.wheelIsInContact(i)) n++;
+      this.contacts = n;
+      return;
+    }
     if (this.righting || this.car.wrecked) {
       this.tippedT = 0;
       return;
@@ -462,8 +811,9 @@ export class Vehicle {
    */
   hit(dv = null) {
     if (!dv) {
-      const v = this.body.linvel();
-      dv = _lv.set(v.x, v.y, v.z).sub(this.setV);
+      const v = this.body.linvel(), w = this.body.angvel();
+      dv = this.knockV.set(v.x, v.y, v.z).sub(this.setV);
+      this.knockW.set(w.x, w.y, w.z).sub(this.setW);
     }
     const r = this.body.rotation();
     _r.set(-1, 0, 0).applyQuaternion(_q.set(r.x, r.y, r.z, r.w));
@@ -474,7 +824,7 @@ export class Vehicle {
 
   /** A sudden change of velocity (an explosion's jolt), m/s and rad/s. */
   kick(vx, vy, vz, wx = 0, wy = 0, wz = 0) {
-    if (this.righting) return;
+    if (this.righting || this.ghost) return; // a ghost moves as its snapshots say
     this.hit({ x: vx, y: vy, z: vz });
     const b = this.body, lv = b.linvel(), av = b.angvel();
     b.setLinvel({ x: lv.x + vx, y: lv.y + vy, z: lv.z + vz }, true);
