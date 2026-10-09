@@ -371,5 +371,165 @@ export async function sideHit(game, { speeds = [40, 60, 80, 100, 125] } = {}) {
     out.push({ kmh: v0, closingKmh: hits[0] ?? 0, victimMaxLean: Math.round(lean), tipped, victimThrownKmh: Math.round(thrown), upright: B.upY > 0.9, victimHp: Math.round(B.health), ramHp: Math.round(A.health) });
   }
   game.phys.onCarHit = onHit;
+  B.teleport({ x: -150, z: 150, yaw: 0 }); // off the lane the other tests use
   return out;
+}
+
+/**
+ * Test ground: a bot-like driver (steer = 2.2 × bearing, ≤ 15 m/s, ≤ 10 m/s in sharp turns — as Rival.think) heads
+ * for a point 10 m behind an obstacle it starts 15 m in front of, at lateral offsets −2…2 m and approach angles
+ * 0…60°. Counts the runs where it gets stuck the way a bot would back up (under 1.5 m/s with throttle for 1.4 s).
+ * kind: 'pole' (r 0.36), 'tree' (r 0.5) or 'wall' (a 20 m building face).
+ */
+export async function obstacle(game, { kind = 'pole', secs = 6 } = {}) {
+  if (!game.test) throw new Error('obstacle(): open the test ground (?map=test)');
+  const inp = takeOver(game);
+  game.restart();
+  const car = game.car;
+  car.applyDamage = () => {}; // the old physics damages the car on the obstacle: a wreck would end the game
+  const ox = 170, oz = 0;
+  // the obstacle, added to the 2D world and (on Rapier) as a static collider
+  if (!game._testObstacle) {
+    const w = game.city.world;
+    if (kind === 'wall') {
+      w.addAABB(ox - 10, oz, ox + 10, oz + 2, { kind: 'building', h: 10 });
+      game.phys?.addSolid({ kind: 'building', box: [ox, 5, oz + 1, 10, 5, 1] });
+    } else {
+      const r = kind === 'tree' ? 0.5 : 0.36;
+      w.addCircle(ox, oz, r, { kind, h: 7 });
+      game.phys?.addSolid({ kind, cyl: [ox, 3.5, oz, 3.5, r] });
+    }
+    game._testObstacle = kind;
+  }
+  const runs = [];
+  for (const deg of [0, 20, 40, 60]) {
+    for (const off of [-2, -1.2, -0.6, -0.2, 0.2, 0.6, 1.2, 2]) {
+      const a = (deg * Math.PI) / 180;
+      // start 15 m before the obstacle, coming in at angle a, aimed `off` m to its side
+      const sx = ox + off * Math.cos(a) - Math.sin(a) * 15, sz = oz - 15 * Math.cos(a) - off * Math.sin(a);
+      const tx = ox + off * Math.cos(a) + Math.sin(a) * 10, tz = oz + 10 * Math.cos(a) - off * Math.sin(a);
+      car.teleport({ x: sx, z: sz, yaw: a });
+      Object.assign(inp, idle());
+      let stuckT = 0, worst = 0, reached = false;
+      await run(game, secs, () => {
+        const dx = tx - car.x, dz = tz - car.z;
+        const s = Math.sin(car.yaw), c = Math.cos(car.yaw);
+        const ang = Math.atan2(dx * -c + dz * s, dx * s + dz * c);
+        inp.steer = Math.max(-1, Math.min(1, ang * 2.2));
+        const vt = Math.abs(ang) > 0.6 ? 10 : 15;
+        inp.throttle = car.speed < vt - 0.5 ? 1 : 0;
+        inp.brake = car.speed > vt + 1.5 ? 1 : 0;
+        if (car.speed < 1.5 && inp.throttle > 0) stuckT += DT;
+        else stuckT = Math.max(0, stuckT - DT * 2);
+        worst = Math.max(worst, stuckT);
+        if (Math.hypot(dx, dz) < 3) reached = true;
+        return !reached;
+      });
+      runs.push({ deg, off, stuck: worst > 1.4, reached });
+    }
+  }
+  return {
+    phys: game.phys ? 'rapier' : 'old',
+    kind,
+    stuck: runs.filter((r) => r.stuck).length,
+    notReached: runs.filter((r) => !r.reached).length,
+    of: runs.length,
+    stuckRuns: runs.filter((r) => r.stuck).map((r) => `${r.deg}°/${r.off}`),
+  };
+}
+
+/**
+ * Test ground: glancing hits on the east boundary wall. The car runs north at `kmh` turned `deg`° towards the wall,
+ * keeps going for 1 s after touching it, then steers away. Speed when it touches, when it leaves, and its heading.
+ */
+export async function wallScrape(game, { speeds = [60, 100], angles = [10, 25, 45] } = {}) {
+  if (!game.test) throw new Error('wallScrape(): open the test ground (?map=test)');
+  const inp = takeOver(game);
+  game.restart();
+  const car = game.car;
+  car.applyDamage = () => {};
+  const wallX = game.city.outer;
+  const out = [];
+  for (const kmh of speeds) {
+    for (const deg of angles) {
+      const a = (deg * Math.PI) / 180;
+      Object.assign(inp, idle(), { i: 0 });
+      // run-up with the car held straight: start further back, heading along the wall first, then turn into it
+      car.teleport({ x: wallX - 4 - 25 * Math.sin(a), z: -120, yaw: 0 });
+      await run(game, 20, () => {
+        hold(inp, car, kmh / KMH);
+        return car.z < 40 - 25 * Math.cos(a) - 30;
+      });
+      // point it at the wall keeping the speed
+      const v = car.speed;
+      car.teleport({ x: wallX - 4 - 25 * Math.sin(a), z: car.z, yaw: a });
+      car.nudge(Math.sin(a) * v, Math.cos(a) * v);
+      let touchV = null, touchT = null, leaveV = null, t = 0, maxX = 0, v03 = null, v1 = null;
+      await run(game, 5, () => {
+        const near = car.x > wallX - 2.1; // the body's half width is 1.1, a corner reaches further at an angle
+        if (touchV == null && near) {
+          touchV = car.speed;
+          touchT = t;
+        }
+        if (touchT != null && v03 == null && t >= touchT + 0.3) v03 = car.speed;
+        if (touchT != null && v1 == null && t >= touchT + 1) v1 = car.speed;
+        if (touchT != null && t > touchT + 1) {
+          inp.steer = 1; // right, away from the wall (east is the car's left)
+          inp.throttle = 1;
+          if (leaveV == null && car.x < wallX - 4) leaveV = car.speed;
+        } else hold(inp, car, kmh / KMH);
+        maxX = Math.max(maxX, car.x);
+        t += DT;
+      });
+      out.push({ kmh, deg, touchKmh: r1((touchV ?? 0) * KMH), after03: r1((v03 ?? 0) * KMH), after1: r1((v1 ?? 0) * KMH), afterLeavingKmh: leaveV == null ? null : r1(leaveV * KMH), leftWall: leaveV != null, intoWallM: r1(maxX - wallX), up: r1(car.upY) });
+    }
+  }
+  return { phys: game.phys ? 'rapier' : 'old', out };
+}
+
+/**
+ * City: `races` seeded 8-car races of `secs` s (my car on autopilot). Every time a car tips past 60° (not wrecked):
+ * the hardest car hit it took in the 1.5 s before (closing speed) and the shell blasts that shoved it.
+ */
+export async function rollovers(game, { races = 20, secs = 75, seed0 = 100 } = {}) {
+  const random = Math.random;
+  const tips = [];
+  for (let k = 0; k < races; k++) {
+    const seed = seed0 + k;
+    soloRace(game, 7, seed);
+    const shoves = [], hits = [];
+    for (const c of game.cars) {
+      const nudge = Object.getPrototypeOf(c).nudge;
+      c.nudge = (a, b, w = 0) => {
+        shoves.push({ t: game.race.clock, car: c, dv: Math.hypot(a, b) });
+        nudge.call(c, a, b, w);
+      };
+    }
+    const onHit = game.phys?.onCarHit;
+    if (game.phys) {
+      game.phys.onCarHit = (...a) => {
+        onHit(...a);
+        hits.push({ t: game.race.clock, a: a[0], b: a[1], kmh: a[2] * KMH });
+      };
+    }
+    const was = new Map();
+    await run(game, secs, () => {
+      for (const c of game.cars) {
+        const tipped = !c.wrecked && Math.acos(Math.max(-1, Math.min(1, c.upY))) * DEG > 60;
+        if (tipped && !was.get(c)) {
+          const T = game.race.clock;
+          const hh = hits.filter((x) => (x.a === c || x.b === c) && x.t > T - 1.5);
+          tips.push({
+            seed, car: c.name, t: r1(T), maxHitKmh: r1(Math.max(0, ...hh.map((x) => x.kmh))),
+            blasts: shoves.filter((s) => s.car === c && s.t > T - 1.5 && s.dv > 2).map((s) => r1(s.dv)),
+          });
+        }
+        was.set(c, tipped);
+      }
+    });
+    for (const c of game.cars) delete c.nudge;
+    if (game.phys) game.phys.onCarHit = onHit;
+  }
+  Math.random = random;
+  return { phys: game.phys ? 'rapier' : 'old', races, tips: tips.length, perRace: r1(tips.length / races), list: tips };
 }

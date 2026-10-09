@@ -12,8 +12,12 @@ export const PHYS = {
   gravity: 20, // m/s² — arcade gravity, as in the old vertical model: short punchy jumps (the test ground is laid out for it)
   step: 1 / 120, // s — fixed physics step
   maxSteps: 8, // steps per frame at most: after a long freeze the game slows down instead of catching up
-  friction: 0.5, // static colliders (ground, walls, ramps)
+  friction: 0.5, // static colliders: the ground, ramps, curbs (a car on its side or roof slides on them)
+  wallFriction: 0.1, // walls, buildings, poles, trees… (Physics OBSTACLES): a car pushing into one slides along it
 };
+
+/** Static colliders a car can lean on and slide around (not the surfaces it drives on). */
+const OBSTACLES = new Set(['building', 'wall', 'pole', 'tree', 'pillar', 'fountain', 'statue', 'pump', 'rail']);
 
 /** How long the WASM module took to start, ms. */
 export const rapierStats = { initMs: 0 };
@@ -52,7 +56,7 @@ export class Physics {
         ? RAPIER.ColliderDesc.cylinder(s.cyl[3], s.cyl[4]).setTranslation(s.cyl[0], s.cyl[1], s.cyl[2])
         : RAPIER.ColliderDesc.convexHull(new Float32Array(s.hull));
     if (!desc) throw new Error(`Rapier: degenerate collider (${s.kind})`);
-    desc.setFriction(PHYS.friction);
+    desc.setFriction(OBSTACLES.has(s.kind) ? PHYS.wallFriction : PHYS.friction);
     const c = this.world.createCollider(desc);
     this.kinds.set(c.handle, s.kind);
     return c;
@@ -93,9 +97,14 @@ export class Physics {
     const w = this.world, seen = this._seen ?? (this._seen = new Set());
     seen.clear();
     this.events.drainCollisionEvents((h1, h2, started) => {
-      if (!started) return;
       const A = this.carOf.get(h1), B = this.carOf.get(h2);
-      if (!A || !B || A === B) return;
+      if (!A !== !B) {
+        // a car and a static collider: keep track of the obstacles the chassis leans on (Vehicle.obstacles)
+        const v = A || B, own = A ? h1 : h2, other = A ? h2 : h1;
+        if (OBSTACLES.has(this.kinds.get(other))) v.touch(own, other, started);
+        return;
+      }
+      if (!started || !A || !B || A === B) return;
       const key = A.id < B.id ? A.id * 4096 + B.id : B.id * 4096 + A.id;
       if (seen.has(key)) return;
       seen.add(key);

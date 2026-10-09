@@ -15,10 +15,10 @@ export const VEH = {
   com: 0.55, // m — centre of mass above the wheels' contact: rolled past ~60° (atan(0.95 / 0.55)) the car falls over
   inertia: [2050, 2250, 600], // kg·m² about the car's x (pitch), y (yaw) and z (roll) axes — a 2 × 1.4 × 4.3 m box
   // chassis colliders, centre and half sizes: the lower body (as wide as the tyres) and the cabin. Seen from above the
-  // lower body's corners are rounded with radius `corner` m (only a 0.4 m flat is left at the nose and the tail): an
-  // off-centre hit on a pole, a tree or a building's corner glances off the way the old physics' round-ended car did,
-  // instead of snagging on a square corner
-  lower: { at: [0, 0.68, 0], half: [1.1, 0.38, 2.25], corner: 0.9 },
+  // lower body's ends are rounded with radius `corner` m — half its width, so the nose and the tail are semicircles,
+  // like the old physics' round-ended car: a hit on a pole, a tree or a building's corner glances off instead of
+  // snagging on a square corner or a flat nose
+  lower: { at: [0, 0.68, 0], half: [1.1, 0.38, 2.25], corner: 1.1 },
   cabin: { at: [0, 1.36, -0.3], half: [0.8, 0.3, 1.05] },
   friction: 0.3, // body against walls, cars and the ground (sliding along a wall, on the side or the roof); the lower
   // of the two surfaces' values is used — the old physics' wall friction was 0.3 too
@@ -49,8 +49,10 @@ export const VEH = {
   // contact; trip — how much of it does. Only the sideways speed the hit itself gave the car can trip it: a car that
   // spins out on its own, or gets a light tap while sliding, doesn't roll over
   tripAccel: 40,
-  trip: 2,
+  trip: 1.5,
   tripTime: 0.4,
+  // how much of the sideways grip is left while the body leans on a wall, a pole, a tree… (see preStep)
+  leanGrip: 0.25,
   // test-ground pads
   boost: 36, // m/s ≈ 130 km/h along the heading
   launch: 18, // m/s straight up (catapult)
@@ -65,13 +67,13 @@ const _lv = new THREE.Vector3();
 const _av = new THREE.Vector3();
 const _Y = new THREE.Vector3(0, 1, 0);
 
-/** A box { at, half, corner } with its four vertical edges rounded (radius corner, 4 segments), as a convex hull. */
+/** A box { at, half, corner } with its four vertical edges rounded (radius corner, 6 segments), as a convex hull. */
 function roundedBox({ at, half: [hx, hy, hz], corner: c }) {
   const pts = [];
   for (const y of [at[1] - hy, at[1] + hy]) {
     for (const [sx, sz] of [[1, 1], [-1, 1], [-1, -1], [1, -1]]) {
-      for (let i = 0; i <= 4; i++) {
-        const a = (i / 4) * (Math.PI / 2);
+      for (let i = 0; i <= 6; i++) {
+        const a = (i / 6) * (Math.PI / 2);
         pts.push(at[0] + sx * (hx - c + c * Math.cos(a)), y, at[2] + sz * (hz - c + c * Math.sin(a)));
       }
     }
@@ -135,6 +137,7 @@ export class Vehicle {
     this.active = true;
     this.tripT = 0; // > 0: just hit, grip can trip the car over (VEH.tripTime)…
     this.tripV = 0; // … stopping at most this much sideways speed more, m/s
+    this.leans = new Set(); // contacts "chassis collider:obstacle" between the body and walls, poles, trees…
     this.setV = new THREE.Vector3(); // the velocity the controls left the body with before the current step
     this.contacts = 0; // wheels on the ground at the last step
     this.tippedT = 0;
@@ -182,6 +185,7 @@ export class Vehicle {
     if (on === this.active) return;
     this.active = on;
     this.body.setEnabled(on);
+    this.leans.clear();
   }
 
   afterStep() {
@@ -217,7 +221,9 @@ export class Vehicle {
     const k = (n / 4) * clamp((_u.y - VEH.upNone) / (VEH.upFull - VEH.upNone), 0, 1);
     let changed = false;
     if (k > 0) {
-      const dvR = (car.vR - vR) * k;
+      // leaning on an obstacle, grip lets the car slide along it: the sideways speed the contact gives it isn't taken
+      // away, so it glances off a pole or a corner and scrapes along a wall (as the old physics' push-out did)
+      const dvR = (car.vR - vR) * k * (this.leans.size ? VEH.leanGrip : 1);
       _lv.addScaledVector(_f, (car.vF - vF) * k).addScaledVector(_r, dvR);
       // the body's angular damping (ω /= 1 + h·d at the step) would shave ~2% off the yaw rate: pre-compensate it
       _av.addScaledVector(_u, (car.angVel * (1 + h * VEH.angularDamping) - yawRate) * k);
@@ -299,6 +305,13 @@ export class Vehicle {
     const b = this.body, lv = b.linvel();
     b.setLinvel({ x: lv.x, y: Math.min(0, lv.y), z: lv.z }, true);
     b.setAngvel({ x: 0, y: 0, z: 0 }, true);
+  }
+
+  /** A collision event between chassis collider own and an obstacle (see Physics._carContacts). */
+  touch(own, other, started) {
+    const key = `${own}:${other}`;
+    if (started) this.leans.add(key);
+    else this.leans.delete(key);
   }
 
   /**
