@@ -152,6 +152,16 @@ const DRIVE = {
   offLip: 6, // m past the lip it doesn't brake (nor in the air)
   stop: 18, // m/s² — the braking it counts on to stop before a lip it gives up, or before an edge it hasn't planned to go off…
   edge: 3, // m — … stopping this far before such an edge (looked at every DRIVE.recheck s, as far as it needs to stop)
+  retreat: [2, 1], // stopped after giving a jump up: backs off straight for retreat[0] s (while there are retreat[1] m
+  // behind), away from the lip, before the new path takes it anywhere
+  // a lip taken in turn: a bot heading for a jump claims its lip (when it gets there, s); another one whose jump goes
+  // off a lip within lipR m of it and would get there less than lipGap s after it slows down to arrive lipGap s later —
+  // before its run-up only, and not below lipMin m/s (JUMP.entryV: the speed its run-up was found for; slower, it
+  // can't make the jump and gives it up on the ramp) — seven cars don't take the big ramp's four columns at once
+  lipR: 4,
+  lipGap: 1,
+  lipMin: 8,
+  lipLook: 60, // m — a lip this far ahead along the path or nearer is claimed
 };
 /** Not driving into cars and wrecks, which the grid doesn't know (NAV_PLAN session 3). */
 const AVOID = {
@@ -303,6 +313,9 @@ export class Rival {
     this.banned = []; // lips it gave a jump up at: { x, z, t } — its paths take no jump off within PATH.banR m for t more s
     this.jumpsTaken = 0; // jumps it drove off (tests count these)
     this.aborts = 0; // jumps given up on its run-up
+    this.retreatT = 0; // s it still backs off after giving a jump up (DRIVE.retreat)
+    this.claim = null; // the lip it is heading for: { x, z, eta } (DRIVE.lipR…)
+    this.yields = 0; // times it slowed down for another bot's claim (tests count these)
     this.backT = 0; // отъезд назад для нового тарана
     this.chargeT = 0; // пока > 0, новый отъезд не начинаем — даём разогнаться
     this.boost = 1;
@@ -606,6 +619,8 @@ export class Rival {
     if (this.onPath && !this.esc && !air && off > ESCAPE.uturn && v < ESCAPE.uturnV && this.uturnT <= 0 && this._roomHere() < ESCAPE.uturnRoom) this._startTurn(tx, tz);
     // on a jump's run-up too slow to land well: give it up (brake, and a path without it)
     if (this.onPath && !air) target = Math.min(target, this._jumpCheck(v));
+    // another bot takes the same lip just before it: in turn
+    target = Math.min(target, this._lipTurn(v));
     // an edge ahead it isn't going to jump off (straight at a target on a deck): able to stop before it
     const edge = !air && !this._onRunUp() ? this._edgeAhead(v) : Infinity;
     target = Math.min(target, edge);
@@ -649,6 +664,19 @@ export class Rival {
     else if (!finished && !(this.mode === 'hunt' && Math.hypot(this.target.x - car.x, this.target.z - car.z) < STUCK.ram)) a.t += dt;
     if (this.stuckAt.t > STUCK.time) this.respawn();
     // протаранил жертву — сдать назад, держа её в прицеле (задним ходом руль наоборот), и ударить снова
+    // gave a jump up and stopped by the lip: back off straight before the new path turns it (it could roll over the lip)
+    const Jd = this._jumpAhead();
+    if (Jd?.dropped && !Jd.retreated && v < 0.5 && !this.esc) {
+      Jd.retreated = true;
+      this.retreatT = DRIVE.retreat[0];
+    }
+    if (this.retreatT > 0 && !this.esc) {
+      this.retreatT -= dt;
+      if (this._roomAlong(-1) < DRIVE.retreat[1]) this.retreatT = 0;
+      throttle = 0;
+      brake = 1;
+      steer = 0;
+    }
     this.chargeT -= dt;
     if (this.backT > 0 && !this.esc) {
       this.backT -= dt;
@@ -1027,6 +1055,33 @@ export class Rival {
     return this.edgeV;
   }
 
+  /**
+   * Claims the lip of the jump ahead (within DRIVE.lipLook, not given up) and returns a speed limit: another bot's
+   * claim on a lip within DRIVE.lipR, arriving earlier but less than DRIVE.lipGap s before this one — slow enough to
+   * arrive DRIVE.lipGap s after it (only before its run-up). Infinity — none.
+   */
+  _lipTurn(v) {
+    const J = this.onPath && this._jumpAhead();
+    const D = J ? J.s1 - this.pathS : 0;
+    if (!J || J.dropped || D <= 0 || D > DRIVE.lipLook) {
+      this.claim = null;
+      return Infinity;
+    }
+    const lip = this.city.nav.jumps[J.q].lip, eta = D / Math.max(v, DRIVE.lipMin);
+    this.claim = { x: lip.x, z: lip.z, eta };
+    if (this.pathS > J.s0 - 1) return Infinity; // on its run-up: go
+    let lim = Infinity;
+    for (const o of this.cars ?? []) {
+      const c = o.ai?.claim;
+      if (!c || o === this.car || o.wrecked || c.eta > eta || eta - c.eta >= DRIVE.lipGap) continue;
+      if (Math.hypot(c.x - lip.x, c.z - lip.z) > DRIVE.lipR) continue;
+      lim = Math.min(lim, Math.max(DRIVE.lipMin, D / (c.eta + DRIVE.lipGap)));
+    }
+    if (lim < v - 1 && !this._yielding) this.yields++;
+    this._yielding = lim < v - 1;
+    return lim;
+  }
+
   /** The first jump of the path not yet behind the car (its run-out not passed): the path's { k0, k1, k2, q, s0, s1, s2 } or null. */
   _jumpAhead() {
     const P = this.path;
@@ -1067,8 +1122,8 @@ export class Rival {
     for (let k = 0; k < n; k++) w = Math.sqrt(Math.max(0, w * w + 2 * (thrustAt(w) - PHYS.gravity * grade) * (D / n)));
     const off = Math.abs(wrapAngle(car.yaw - Math.atan2(jd.dx, jd.dz)));
     if (w >= jd.lo && !(D < DRIVE.last[0] && (v < jd.lo - 0.5 || off > DRIVE.last[1]))) return Infinity;
-    // too late to stop before the lip: better go than brake over it (it would pitch the nose down)
-    if (D < (v * v) / (2 * DRIVE.stop) + 1.5) return Infinity;
+    // too late to stop DRIVE.edge m short of the lip: better go than brake over it (it would pitch the nose down)
+    if (D < (v * v) / (2 * DRIVE.stop) + DRIVE.edge) return Infinity;
     J.dropped = true;
     this.banned.push({ x: jd.lip.x, z: jd.lip.z, t: DRIVE.ban });
     this.aborts++;
@@ -1172,6 +1227,7 @@ export class Rival {
     this.reverseT = 0;
     this.stuckAt = null;
     this.esc = null;
+    this.retreatT = 0;
     this.traps = [];
     this.lastTrap = null;
     this.path = null;

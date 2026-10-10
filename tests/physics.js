@@ -1020,7 +1020,7 @@ export async function testGround(game, { runs = 5, secs = 120, type = 'race', mo
         return imp.call(this, into, nx, nz, x, z, kind, y);
       };
     }
-    const j0 = rivals.map((r) => [r.jumpsTaken, r.aborts]);
+    const j0 = rivals.map((r) => [r.jumpsTaken, r.aborts, r.yields]);
     await run(game, secs, () => {
       if (game.state !== 'play') return false;
       rivals.forEach((r, i) => {
@@ -1067,6 +1067,7 @@ export async function testGround(game, { runs = 5, secs = 120, type = 'race', mo
       run: k, secs: r1(t), used, sideHits: sides.length, sides: sides.slice(0, 10), walls, stuckMax: r1(worst.max), stuckAt: worst.at, teleports,
       tips: st.reduce((a, s) => a + s.tips, 0), wrecked: rivals.filter((r) => r.car.wrecked).length,
       jumps: rivals.reduce((a, r, i) => a + r.jumpsTaken - j0[i][0], 0), aborts: rivals.reduce((a, r, i) => a + r.aborts - j0[i][1], 0),
+      yields: rivals.reduce((a, r, i) => a + r.yields - j0[i][2], 0),
       gates: rivals.reduce((a, r) => a + r.tr.passed, 0), laps: rivals.map((r) => r.tr.lap - 1 + (r.tr.finished ? 1 : 0)),
       kills: rivals.reduce((a, r) => a + r.car.kills, 0),
     });
@@ -1076,7 +1077,7 @@ export async function testGround(game, { runs = 5, secs = 120, type = 'race', mo
   return {
     type, bots: game.rivals.length, runs, used: Object.fromEntries(Object.keys(FEATURES).map((f) => [f, sum((r) => r.used[f])])),
     sideHits: sum((r) => r.sideHits), stuckMax: Math.max(...res.map((r) => r.stuckMax)), stuckOver10: res.filter((r) => r.stuckMax > 10).length,
-    teleports: sum((r) => r.teleports), tips: sum((r) => r.tips), wrecked: sum((r) => r.wrecked), jumps: sum((r) => r.jumps), aborts: sum((r) => r.aborts),
+    teleports: sum((r) => r.teleports), tips: sum((r) => r.tips), wrecked: sum((r) => r.wrecked), jumps: sum((r) => r.jumps), aborts: sum((r) => r.aborts), yields: sum((r) => r.yields),
     gates: sum((r) => r.gates), crashes: window.crash?.entries?.length ?? 0, runs: res,
   };
 }

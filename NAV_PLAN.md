@@ -826,3 +826,49 @@ back in 10 more crew games, and its trace wasn't kept. `traps()`: as in session 
   add ~30 ms on the desktop.
 - **Battle royale on the test ground** turns into a brawl before the bots reach the features (a zone waypoint is a
   random floor). Not needed for navigation.
+
+**Follow-up (the same day): the recommendations applied** (`src/racers.js`, `src/nav/path.js`, `tests/physics.js`)
+
+- **Lips taken in turn** (`Rival._lipTurn`, `DRIVE.lipR/lipGap/lipMin/lipLook`): a bot whose path has a jump within
+  60 m claims its lip (`claim`: where, when it gets there at its speed, ≥ 8 m/s); another bot heading for a lip within
+  4 m that would get there less than 1 s after it slows down to arrive 1 s later — before its run-up only, not below
+  8 m/s (`JUMP.entryV`). The first version yielded down to 5 m/s and on the run-up too: bots then came onto the big
+  ramp too slow, gave the jump up on it and stood there (2 games of 6 with a bot 13 s stuck, 15 give-ups).
+  `testGround()` reports `yields`.
+- **Straight lines and ramps' sides** (`NavPaths.lineFree`): between two samples a line climbs or drops at most
+  `NAV.step` + the steepest slope over the distance (0.72 m per 0.75 m; was 1.3 m — a ramp's low side by its foot
+  passed); and it crosses a slope only within ~30° of along it (`PATH.along`; slopes over 3° whose neighbour along
+  them slopes the same way — 775 floors on the test ground, none in the city: a curb's bevel is one floor wide).
+  Direct lines at a target, path legs and the line to the point steered at all use it. A hunter's ram already stops at
+  an edge (`_edgeAhead` limits every target speed but on a run-up).
+- **Backing off after a give-up** (`DRIVE.retreat`): stopped at the lip after giving a jump up, the bot reverses
+  straight for 2 s (while there is 1 m behind) before the new path takes it anywhere; and it gives up only while it can
+  stop 3 m short of the lip (was 1.5 m).
+- The other recommendations were "nothing until a map needs it" (boost pads on a run-up, spin in the flight model,
+  the tube's room cost).
+
+Measured (`featureRuns()` unchanged: every feature 5 / 5, no tips, no side hits). `testGround()`, race, 6 games of
+120 s each, per 6 games:
+
+| | Big ramp | Up the deck | Off the deck | Tube | Jumps | Given up | Yields | Tips > 60° (in the first 8 s) | Side hits | Stuck max, s | Teleports | Gates |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Session 4 | 40 | 50 | 48 | 33 | 74 | 6 | — | 20 (5) | 9 | 9.6 | 0 | 281 |
+| Lip turns, lines, back-off | 46 | 57 | 55 | 37 | 90 | 1 | 76 | 19 (2) | 11 | 6.7 | 0 | 293 |
+| … and lines along ramps | 42 | 51 | 48 | 28 | 82 | 6 | 76 | 17 (2) | 11 | 7.6 | 0 | 254 |
+
+An intermediate run (lines and back-off, the first lip turns) had 3 side hits in 6 games and 347 gates, so side hits
+swing 3–11 per 6 games between runs; about two thirds are hunters and butchers fighting at the deck ramp's foot, the
+rest a car pushed or scraping along its side in traffic (traced alone, a bot rounds the ramp's corner and turns into
+it before its foot). The start's tips at the big ramp: 5 → 2. City (battle royale, 19 bots, 5 games): stuck 11.1 s
+(2 games over 10 — hunters ramming in a scrum; without rams 8 s), teleports 0, kills 75, rams 65 — as before.
+
+**Left for later** (updated)
+
+- Side hits at the deck ramp's foot (~2 per game, two thirds in fights): (a) avoidance that sees a ramp's side from
+  below (a cast of the box ahead against static colliders, as the escape's), (b) leave them — they cost little hull
+  at 15–40 km/h. Recommended (b) unless a map's ramps sit in the traffic's way.
+- Slow falls at the deck's west edge (~1 per game, mostly hunters and butchers chasing across the deck): the edge
+  look watches the heading only — a car turning by an edge swings its side over. (a) Also look along the velocity and
+  to the side the car turns. Recommended (a) if it matters.
+- The rest of session 4's list stands (boost pads on a run-up, no spin in flights, the tube's room cost, one-way
+  areas, thin strips, lips off the grid's 8 directions, the phone).

@@ -73,8 +73,13 @@ lose by wrecking your own car or running out of time.
   doesn't brake for 6 m past the lip (braking with the back wheels still on it would pitch the nose down) and holds the
   wheel straight in the air. If it won't make the band's slowest speed by the lip at full throttle (the car's thrust
   against the climb), or within 6 m of the lip it's slower than that or more than 0.45 rad off the jump's way, it gives
-  the jump up — it brakes if it can still stop before the lip (else it goes) and takes no jump off that lip (within 6 m)
-  for 15 s. It slows down before a crest (the grade dropping by 0.06 or more) to fly at most 8 m off it (the deck's top:
+  the jump up — it brakes if it can still stop 3 m short of the lip (else it goes), backs off straight for 2 s once
+  stopped, and takes no jump off that lip (within 6 m) for 15 s. Lips are taken in turn: a bot heading for a jump
+  claims its lip with its arrival time, and one heading for a lip within 4 m of it that would arrive less than 1 s later
+  slows down before its run-up to arrive 1 s later (not below 8 m/s — slower, it couldn't make the jump). A straight
+  line (a leg of a path, the line to a goal or to the point steered at) may climb or drop no more than 0.25 m plus the
+  steepest slope between two samples 0.75 m apart, and crosses a ramp (a slope over 3° that goes on) only within ~30°
+  of along it: bots turn before a ramp, not on it, and don't cut onto one over its low side by the foot. It slows down before a crest (the grade dropping by 0.06 or more) to fly at most 8 m off it (the deck's top:
   23 m/s), and brakes in time to stop 3 m short of a drop it isn't taking (a deck's edge while chasing someone across
   it); held there it gets out as below, and the escape's legs and a hunter's back-up see drops too. Cars and wrecks the grid doesn't know: one in the way (ahead within 6 m + 1.1 s of the
   speed, its centre within 3 m of the line; a moving car only if the bot closes in on it at 2 m/s or more) is passed
@@ -492,6 +497,6 @@ Main tuning numbers: `PHYS` in `src/physics/rapier.js` (gravity, the step and `m
 `HEAL` in `src/main.js` (repair for kills), `RACE` in `src/race.js` (laps, pace, time bonuses, how far under or over a gate counts),
 `CANNON` in `src/cannon.js` (reload, damage, blast radius), `MG` in `src/mg.js` (machine gun), `MOLOTOV` in `src/molotov.js` (cocktails), `RIVALS` (personality `aggr`/`gore`, speed; battle bots beyond seven reuse the same personalities under names from `EXTRA`), `MAX_CARS`/`MAX_CARS_ROYALE` (cars in a race / in battle),
 `HUNT`/`GORE`/`PREY_WEIGHT`/`HUNT_DELAY`, `DRIVE`, `AVOID`, `ESCAPE`, `STUCK` and `CAR_HIT` in `src/racers.js` (how personality scales turn into behavior,
-whom hunters go after, how a bot drives a path and brakes for its corners and crests, holds a jump's speed and gives it up, stops before an edge, passes cars and wrecks, how a stuck bot gets out and when it is put elsewhere, ram damage), `SPOT` in `src/zone.js` (where
+whom hunters go after, how a bot drives a path and brakes for its corners and crests, holds a jump's speed, takes a lip in turn and gives a jump up, stops before an edge, passes cars and wrecks, how a stuck bot gets out and when it is put elsewhere, ram damage), `SPOT` in `src/zone.js` (where
 it is put), `NAV` in `src/nav/grid.js` (the nav grid: cell size, step, slope, clearance, inflation, open spots), `JUMP` in `src/nav/links.js` (the jumps: speeds tried, the flight's step and box, run-ups and their entries, run-outs, landings, bands), `PATH` in `src/nav/path.js` (path costs — room, alleys, wrecks, traps, crowds, turning back, slopes, jumps —, the search budget, the goal's field for another level, straight legs, corners, crests), `RACE.goreWin` (how many pedestrians to win), `KNOCK_SPEED`/`KILL_SPEED` and pedestrian reactions in `_panic()`
 in `src/pedestrians.js`, `QUALITY`/`CITY` in `src/config.js`.

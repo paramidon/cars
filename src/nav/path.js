@@ -47,6 +47,8 @@ export const PATH = {
   slope: 150, // a metre up or down a slope costs this × (grade − flat)² more: the 13° ramp +1, the deck's 8.5° ramp
   flat: 0.15, // nothing; the grade from the neighbours' heights (a curb's bevel floor alone would show its 27°, a
   // curb's corner up to 0.14)
+  along: 0.85, // a straight line crosses a slope (over 3°, a ramp, not a curb's bevel) only this close to along it (~30°):
+  // it turns before a ramp, not on it, and doesn't cut onto it over its low side by the foot
   // jumps (NavGrid.jumps): the run-up costs its length, the flight and the run-out after it `fly` per metre (nothing
   // to hit up there, and it's the fun part), plus `jump`; plus `gap` per m/s the lip needs over JUMP.speeds[0] (a
   // gap: too slow, it falls in), plus `hurt` per m/s of landing harder than VEH.landSafe
@@ -87,6 +89,8 @@ export class NavPaths {
     this.stamp = 0;
     // a floor's own cost per metre: 1, more near an unwalkable floor
     this.base = new Float32Array(n);
+    this.slopeX = new Float32Array(n); // a slope's unit way (0, 0 — no slope; see PATH.along)
+    this.slopeZ = new Float32Array(n);
     const span = PATH.room - nav.cell;
     for (let i = 0; i < n; i++) {
       const r = nav.roomAt(i);
@@ -94,6 +98,17 @@ export class NavPaths {
       for (let d = 0; d < 8; d += 2) {
         const j = nav.next(i, d);
         if (j >= 0) grade = Math.max(grade, Math.abs(nav.y[j] - nav.y[i]) / nav.cell);
+      }
+      // a slope's way (for straight lines over it): over 3°, and a neighbour along it sloping the same way (a ramp
+      // goes on; a curb's 0.3 m bevel is one floor wide)
+      const gx = nav._gx[i], gz = nav._gz[i], gl = Math.hypot(gx, gz);
+      if (gl > 0.05) {
+        const d = ((Math.round(Math.atan2(gz, gx) / (Math.PI / 4)) % 8) + 8) % 8;
+        const same = (j) => j >= 0 && (nav._gx[j] * gx + nav._gz[j] * gz) / (gl * (Math.hypot(nav._gx[j], nav._gz[j]) || 1)) > 0.9 && Math.hypot(nav._gx[j], nav._gz[j]) > gl / 2;
+        if (same(nav.next(i, d)) || same(nav.next(i, (d + 4) % 8))) {
+          this.slopeX[i] = gx / gl;
+          this.slopeZ[i] = gz / gl;
+        }
       }
       this.base[i] = 1 + PATH.roomCost * Math.min(1, Math.max(0, (PATH.room - r) / span)) ** 2 + PATH.alleyCost * Math.min(1, Math.max(0, (PATH.alley - r) / (PATH.alley - nav.cell)))
         + PATH.slope * Math.max(0, grade - PATH.flat) ** 2;
@@ -448,21 +463,27 @@ export class NavPaths {
 
   /**
    * A car can drive straight from (x0, y0, z0) to (x1, z1): every PATH.sample m along the line (from `skip` m on) the
-   * floor under it — on the level the line is on: it may climb or drop a step at a time, not jump layers — is
+   * floor under it — on the level the line is on: it may climb or drop NAV.step plus the steepest slope (NAV.slope)
+   * between samples, not jump layers or a ramp's side; it crosses a slope only along it (PATH.along) — is
    * reachable and, but within PATH.ends of either end, has `room` m of room or more (NavGrid.roomAt).
    */
   lineFree(x0, y0, z0, x1, z1, room, skip = 0) {
     const nav = this.nav, dx = x1 - x0, dz = z1 - z0, L = Math.hypot(dx, dz);
     if (L < 1e-3) return true;
     const ux = dx / L, uz = dz / L, n = Math.ceil(L / PATH.sample), up = NAV.step + 0.3, r10 = room * 10 - 0.5;
-    let y = y0;
+    const rise = Math.tan((NAV.slope * Math.PI) / 180);
+    let y = y0, last = 0;
     for (let k = 1; k <= n; k++) {
       const t = (k / n) * L;
       if (t < skip) continue;
       const i = nav.cellAt(x0 + ux * t, y, z0 + uz * t, up);
-      if (!nav.reachable(i) || Math.abs(nav.y[i] - y) > up + PATH.sample) return false;
+      // (no more than a step plus the steepest slope since the last sample: a ramp's side between two samples, or at
+      // its low foot, is a wall to the line, not a way up)
+      if (!nav.reachable(i) || Math.abs(nav.y[i] - y) > NAV.step + (t - last) * rise) return false;
+      if ((this.slopeX[i] || this.slopeZ[i]) && Math.abs(ux * this.slopeX[i] + uz * this.slopeZ[i]) < PATH.along) return false;
       if (nav.room[i] < r10 && t > PATH.ends && t < L - PATH.ends) return false;
       y = nav.y[i];
+      last = t;
     }
     return true;
   }
