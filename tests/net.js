@@ -9,6 +9,7 @@
  *   await t.rollover(s);   // A with two wheels up the big ramp: rolls over, rights itself
  *   await t.ram(s);        // A into the side of B's parked car: knock and damage on both screens
  *   await t.reconnect(s);  // B's car on its roof, B's page reloads, the race resumes
+ *   await t.overlap(s);    // B's car put onto A's parked car: they part on both screens
  *   await t.bandwidth(s);  // bytes per snapshot (city: setup({ query: '?mute', bots: 7 }))
  *   // crew: setup({ mode: 'crew', gunner: true }) seats B in A's gun, then await t.gunner(s)
  *
@@ -404,36 +405,45 @@ export async function ram(s, { speeds = [40, 60, 100] } = {}) {
 }
 
 /**
- * B's car put right onto A's parked car (a respawn onto it): how fast either car gets on either screen over 3 s, and
- * whether the ghosts let go of each other (Vehicle.ghostDeep). Without that both cars sped up together to 276 km/h.
+ * B's car put right onto A's parked car (a respawn onto it): how fast either car gets on either screen, whether the
+ * ghosts let go of each other (Vehicle.ghostDeep) and when the two cars are apart again on both screens (each eases its
+ * own car out of the other's ghost, Vehicle._easeOut). Without the letting go both cars sped up together to 276 km/h;
+ * without easing out they stayed inside each other until one drove off.
  */
-export async function overlap(s, { dz = 1.3 } = {}) {
+export async function overlap(s, { dz = 1.3, secs = 5 } = {}) {
   const A = s.A.game, B = s.B.game;
   await place(s, 'A', 170, 60 + dz, 0);
   await place(s, 'B', 120, 140, 0);
   const top = { A: 0, B: 0, ghostA: 0, ghostB: 0 };
-  let through = { onA: false, onB: false };
+  const through = { onA: false, onB: false }, apart = { onA: null, onB: null };
+  const t0 = now();
   const ha = () => {
+    const g = carIn(s.A, s.ids.B).rb;
     top.A = Math.max(top.A, A.car.speed * KMH);
     top.ghostB = Math.max(top.ghostB, carIn(s.A, s.ids.B).speed * KMH);
-    through.onA ||= carIn(s.A, s.ids.B).rb.through;
+    through.onA ||= g.through;
+    if (through.onA && !g.through && apart.onA == null) apart.onA = r2((now() - t0) / 1000);
   };
   const hb = () => {
+    const g = carIn(s.B, s.ids.A).rb;
     top.B = Math.max(top.B, B.car.speed * KMH);
     top.ghostA = Math.max(top.ghostA, carIn(s.B, s.ids.A).speed * KMH);
-    through.onB ||= carIn(s.B, s.ids.A).rb.through;
+    through.onB ||= g.through;
+    if (through.onB && !g.through && apart.onB == null) apart.onB = r2((now() - t0) / 1000);
   };
   s.a.hooks.add(ha);
   s.b.hooks.add(hb);
   B.car.teleport({ x: 170, z: 60, yaw: Math.PI / 2 });
-  await sleep(3000);
+  await sleep(secs * 1000);
   s.a.hooks.delete(ha);
   s.b.hooks.delete(hb);
   const at = (c) => [r1(c.x), r1(c.z)];
   return {
     topKmh: Object.fromEntries(Object.entries(top).map(([k, v]) => [k, Math.round(v)])),
     through,
+    apartAfterS: apart,
     end: { A: at(A.car), B: at(B.car), ghostAonB: at(carIn(s.B, s.ids.A)), ghostBonA: at(carIn(s.A, s.ids.B)) },
+    gapM: { onA: r2(Math.hypot(A.car.x - carIn(s.A, s.ids.B).x, A.car.z - carIn(s.A, s.ids.B).z)), onB: r2(Math.hypot(B.car.x - carIn(s.B, s.ids.A).x, B.car.z - carIn(s.B, s.ids.A).z)) },
     stillThrough: { onA: carIn(s.A, s.ids.B).rb.through, onB: carIn(s.B, s.ids.A).rb.through },
   };
 }

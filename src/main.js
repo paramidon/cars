@@ -113,7 +113,7 @@ class Game {
     this.peds = new Pedestrians(scene, this.city, this.fx, this.audio, QUALITY);
     this.artillery = new Artillery(scene, this.phys, this.fx, this.audio);
     this.mg = new MachineGuns(scene, this.city, this.phys, this.fx, this.audio);
-    this.molotovs = new Molotovs(scene, this.city, this.fx, this.audio);
+    this.molotovs = new Molotovs(scene, this.city, this.phys, this.fx, this.audio);
     this.weapon = 'cannon'; // моё оружие: cannon | mg (у ботов — только пушка)
     this.race = new Race(scene, this.city, this.fx, this.audio);
     this.raceLaps = RACE.laps;
@@ -418,7 +418,7 @@ class Game {
   _myWreck() {
     const car = this.car;
     this._wreckedBy(car)?.heal(WRECK_HEAL);
-    this.peds.explosion(car.x, car.z, 11, car);
+    this.peds.explosion(car.x, car.z, 11, car, undefined, car.y + 0.8);
     this.cam.shake(1);
     this.hud.damageFlash(1);
     this.hud.popup('ТАЧКА РАЗБИТА!', 'big warn');
@@ -1068,7 +1068,7 @@ class Game {
   _carWrecked(c) {
     const player = this.car;
     if (c.ai) c.ai.out = true;
-    this.peds.explosion(c.x, c.z, 10, c);
+    this.peds.explosion(c.x, c.z, 10, c, undefined, c.y + 0.8);
     if (c.vol() > 0.2) this.cam.shake(0.5 * c.vol());
     const by = this._wreckedBy(c);
     const healed = by ? by.heal(WRECK_HEAL) : 0;

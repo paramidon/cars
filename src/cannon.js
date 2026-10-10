@@ -15,6 +15,7 @@ export const CANNON = {
   push: 7, // толчок машин взрывом, м/с
   recoil: 1.6, // отдача стреляющей машине, м/с
   carHitPad: 0.4, // м: попасть в машину чуть проще, чем в неё врезаться (её коробка шире на столько со всех сторон)
+  pedHitPad: 0.4, // m: a shell hits a person passing this far above their head (the muzzle is 1.97 m up) or below their feet
 };
 
 // «убийца» пешеходов от чужого выстрела по сети: у стрелявшего свои пешеходы и свой счёт
@@ -104,7 +105,7 @@ export class Artillery {
       }
       if (this.peds) {
         const h = Math.hypot(s.dx, s.dz) || 1;
-        const ph = this.peds.raycast(s.x, s.z, s.dx / h, s.dz / h, t * h, true);
+        const ph = this.peds.raycast(s.x, s.z, s.dx / h, s.dz / h, t * h, true, s.y, s.dy / h, CANNON.pedHitPad);
         if (ph) {
           t = ph.t / h;
           hitPed = ph.ped;
@@ -177,7 +178,7 @@ export class Artillery {
       if (this.onCarHit) this.onCarHit(car, shooter, dmg, direct, local);
     }
     if (this.peds) {
-      this.peds.explosion(x, z, R, local ? shooter : REMOTE_SHOT, local);
+      this.peds.explosion(x, z, R, local ? shooter : REMOTE_SHOT, local, y);
       this.peds.alert(x, z, 30);
     }
     // уличную мелочь ломает только снаряд стрелявшего: остальным она придёт по сети, у всех одна и та же

@@ -9,7 +9,7 @@
  *   await t.wallDamage(game);           // test ground: hull lost nose first into a wall / a pole 
  *   await t.botBattles(game, { type: 'royale', bots: 19 }); // city: 10 bot games of 2 min — stuck bots, wrecks, kills
  *   // also: landings, carCrashes, blasts, pedJumps, props, muzzle (session 3), sideHit, obstacle, wallScrape, rollovers,
- *   // gunnerTilt (session 5)
+ *   // gunnerTilt (session 5), pedShots, rocking, molotovs, tyreMarks (the open problems' fixes)
  *
  * Rapier is the only car physics since session 5 (the old 2D physics was deleted in session 6); the "old physics"
  * numbers in PHYSICS_PLAN.md were measured before that. The functions stop the page's own
@@ -986,4 +986,172 @@ export async function gunnerTilt(game, { gunner = null } = {}) {
   out.push({ pose: 'mg, rolled 30°', bearing: 20, err: r1(wrap(heading() - b) * DEG) });
   fresh(car, game.city.spawn);
   return out;
+}
+
+/**
+ * Test ground: shells and bullets against pedestrians in 3D. A person stands (or lies) on the lane 10 / 25 m in front of
+ * the car, which is level or posed nose up 10° / 30° (the body's pose only, for the muzzle). Per case: whether a shell
+ * (flown by Artillery.update) or a burst of 6 bullets (MachineGuns._fire) hit them, and the shell's height over them.
+ */
+export async function pedShots(game) {
+  if (!game.test) throw new Error('pedShots(): open /?map=test');
+  takeOver(game);
+  game.restart();
+  const car = game.car, rb = car.rb, peds = game.peds;
+  const ST = { WAIT: 2, DEAD: 6 };
+  const Q = rb.quat.constructor;
+  const ax = (deg) => new Q().setFromAxisAngle({ x: 1, y: 0, z: 0, isVector3: true }, (deg * Math.PI) / 180);
+  const p = peds.peds.find((q) => q.state !== 0);
+  const others = peds.peds.filter((q) => q !== p).map((q) => [q, q.x, q.z]);
+  for (const [q] of others) q.x += 1000; // nobody else on the line
+  const out = [];
+  for (const [pose, deg] of [['level', 0], ['nose up 10°', -10], ['nose up 30°', -30]]) {
+    for (const lying of [false, true]) {
+      for (const d of [10, 25]) {
+        const res = { pose, ped: lying ? 'lying' : 'standing', distM: d };
+        for (const gun of ['shell', 'mg']) {
+          fresh(car, { x: 170, z: -60, yaw: 0 });
+          rb.quat.copy(ax(deg));
+          const g = game.city.groundHeight(170, -60 + d);
+          Object.assign(p, { x: 170, z: -60 + d, vx: 0, vz: 0, vy: 0, state: lying ? ST.DEAD : ST.WAIT, deadT: 0 });
+          p.cy = lying ? g + 0.16 : g + 1;
+          let hit = false;
+          const shoot = peds.shoot, explosion = peds.explosion;
+          peds.shoot = () => (hit = true);
+          peds.explosion = (x, z, R, src, local, y) => {
+            const [y0, y1] = peds.span(p);
+            const dd = Math.hypot(Math.hypot(p.x - x, p.z - z), y == null ? 0 : Math.max(0, y0 - y, y - y1));
+            if (dd < R * 0.4) hit = true;
+          };
+          try {
+            if (gun === 'shell') {
+              const m = car.muzzle();
+              m.v = 95;
+              game.artillery.fire(car, m);
+              res.shellOverHeadM = r1(m.y + (m.dy / Math.hypot(m.dx, m.dz)) * d - (p.cy + 0.85));
+              for (let i = 0; i < 60 && game.artillery.shells.length; i++) game.artillery.update(DT);
+              game.artillery.clear();
+            } else for (let i = 0; i < 6; i++) game.mg._fire(car, [car], true);
+          } finally {
+            peds.shoot = shoot;
+            peds.explosion = explosion;
+          }
+          res[gun] = hit;
+        }
+        if (lying) delete res.shellOverHeadM; // shells pass over lying people anyway
+        out.push(res);
+      }
+    }
+  }
+  for (const [q, x, z] of others) Object.assign(q, { x, z });
+  fresh(car, game.city.spawn);
+  return { crashes: window.crash?.entries?.length ?? 0, out };
+}
+
+/**
+ * Test ground: the flip rule for a car that isn't still. The car is laid on its side and, from 0.8 s on, its speed along
+ * its length is set to `push` m/s every 0.2 s (rocking, shoved by others). When it starts righting itself, if at all.
+ */
+export async function rocking(game, { pushes = [0, 1, 2, 3, 5] } = {}) {
+  if (!game.test) throw new Error('rocking(): open /?map=test');
+  takeOver(game);
+  const car = game.car, rb = car.rb, b = rb.body;
+  const Q = rb.quat.constructor;
+  const out = [];
+  for (const push of pushes) {
+    game.restart();
+    fresh(car, { x: 170, z: 0, yaw: 0 });
+    await run(game, 10 * DT);
+    const t = b.translation();
+    b.setTranslation({ x: t.x, y: t.y + 1.3, z: t.z }, true);
+    b.setRotation(new Q().setFromAxisAngle({ x: 0, y: 0, z: 1, isVector3: true }, Math.PI / 2), true);
+    rb.afterStep();
+    rb.prevP.copy(rb.curP);
+    rb.prevQ.copy(rb.curQ);
+    let righted = null, sum = 0, n = 0;
+    await run(game, 12, (T) => {
+      if (rb.righting) {
+        righted = r1(T);
+        return false;
+      }
+      if (push && T > 0.8 && Math.round(T / DT) % 12 === 0) {
+        const v = b.linvel();
+        b.setLinvel({ x: v.x, y: v.y, z: push }, true);
+      }
+      if (T > 1) {
+        sum += car.speed;
+        n++;
+      }
+    });
+    out.push({ pushMs: push, meanMs: r1(sum / (n || 1)), rightsAtS: righted });
+  }
+  fresh(car, game.city.spawn);
+  return { crashes: window.crash?.entries?.length ?? 0, out };
+}
+
+/**
+ * Test ground: Molotov bottles against 3D surfaces — thrown at the raised deck's side, dropped onto the deck, onto the big
+ * ramp's slope and the flat. Where each one broke and the height its puddle burns at.
+ */
+export async function molotovs(game) {
+  if (!game.test) throw new Error('molotovs(): open /?map=test');
+  takeOver(game);
+  game.restart();
+  game.step(DT); // Rapier's scene queries see the world after a step
+  const M = game.molotovs, shatter = M._shatter;
+  const out = [];
+  for (const [name, x, y, z, vx, vy, vz] of [
+    ['at the deck side (x = 100)', 90, 3, 95, 15, 2, 0],
+    ['onto the deck (6 m)', 115, 12, 95, 0, 0, 0],
+    ['onto the big ramp', -15, 6, -40, 0, 0, 0],
+    ['on the flat', 170, 3, -40, 0, 0, 5],
+  ]) {
+    M.clear();
+    let at = null;
+    M._shatter = function (a, b, c) {
+      at = [r1(a), r1(b), r1(c)];
+      shatter.call(this, a, b, c);
+    };
+    M.throw(x, y, z, vx, vy, vz);
+    for (let i = 0; i < 300 && M.items.length; i++) M.update(DT);
+    out.push({ throw: name, brokeAt: at, puddleY: M.fires[0] ? Math.round(M.fires[0].y * 100) / 100 : null });
+  }
+  M._shatter = shatter;
+  M.clear();
+  return out;
+}
+
+/**
+ * Test ground: tyre marks off the flat ground — a handbrake slide up the big ramp and through the tube. How many marks
+ * were laid on the slope / under the ground, and how far the ramp's marks are from its surface.
+ */
+export async function tyreMarks(game) {
+  if (!game.test) throw new Error('tyreMarks(): open /?map=test');
+  const inp = takeOver(game);
+  const car = game.car, marks = game.fx.marks;
+  const laid = () => Array.from({ length: marks.used }, (_, i) => marks.mesh.instanceMatrix.array.slice(i * 16 + 12, i * 16 + 15));
+  const out = [];
+  game.restart();
+  fresh(car, { x: -15, z: -70, yaw: 0 });
+  await run(game, 0.5);
+  marks.clear();
+  await drive(game, inp, car, 14, 4, () => {
+    inp.throttle = 1;
+    const on = car.z > -44 && car.z < -33;
+    inp.handbrake = on;
+    inp.steer = on ? 0.3 : 0;
+  });
+  const ramp = laid().filter((p) => p[1] > 0.3);
+  out.push({ run: 'big ramp', marks: marks.used, onSlope: ramp.length, offSurfaceM: Math.max(0, ...ramp.map((p) => Math.round(Math.abs(p[1] - game.city.groundHeight(p[0], p[2])) * 1000) / 1000)) });
+  game.restart();
+  fresh(car, { x: -130, z: -90, yaw: 0 });
+  await run(game, 0.5);
+  marks.clear();
+  let i = 0;
+  await drive(game, inp, car, 16, 5, () => {
+    inp.handbrake = car.y < -3 && i++ % 40 < 15;
+  });
+  out.push({ run: 'tube', marks: marks.used, underGround: laid().filter((p) => p[1] < -3).length });
+  fresh(car, game.city.spawn);
+  return { crashes: window.crash?.entries?.length ?? 0, out };
 }

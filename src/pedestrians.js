@@ -854,32 +854,47 @@ export class Pedestrians {
     p.nSeen = this.snapSeq;
   }
 
-  /** Ближайший пешеход на луче (снаряды). standingOnly — лежачих не задевает. */
-  raycast(ox, oz, dx, dz, maxT, standingOnly = false) {
+  /**
+   * Ближайший пешеход на луче (снаряды). standingOnly — лежачих не задевает. With oy the ray is 3D: it starts oy
+   * high and climbs `slope` m per metre along (dx, dz); it hits a person only where it passes within pad + cone × the
+   * distance of their body's height (span()) — a shell flying over heads or into the ground in front of someone misses.
+   */
+  raycast(ox, oz, dx, dz, maxT, standingOnly = false, oy = null, slope = 0, pad = 0, cone = 0) {
     let best = null, bt = maxT;
     for (const p of this.peds) {
       if (p.state === ST.FREE) continue;
       if (standingOnly && this.isLying(p)) continue;
       const r = this.isLying(p) ? 0.7 : 0.45;
       const t = rayCircle(ox, oz, dx, dz, p.x, p.z, r);
-      if (t >= 0 && t < bt) {
-        bt = t;
-        best = p;
+      if (t < 0 || t >= bt) continue;
+      if (oy !== null) {
+        // the ray's height across the circle, from where it enters to where it leaves (or meets a wall)
+        const [y0, y1] = this.span(p);
+        const tc = Math.max(t, (p.x - ox) * dx + (p.z - oz) * dz);
+        const ya = oy + slope * t, yb = oy + slope * Math.min(2 * tc - t, maxT), m = pad + cone * t;
+        if (Math.max(ya, yb) < y0 - m || Math.min(ya, yb) > y1 + m) continue;
       }
+      bt = t;
+      best = p;
     }
     return best ? { ped: best, t: bt } : null;
   }
 
   /**
    * Взрыв: ближних рвёт, дальних раскидывает. local — взрыв посчитан здесь (мой снаряд, моя машина, бот у хоста);
-   * по сети чужой взрыв пешеходов не трогает — что с ними стало, придёт от того, чей он.
+   * по сети чужой взрыв пешеходов не трогает — что с ними стало, придёт от того, чей он. With y the distance also
+   * counts how far above or below the person's body the blast is (one on the deck spares the people under it).
    */
-  explosion(x, z, radius, source = null, local = !source?.remote) {
+  explosion(x, z, radius, source = null, local = !source?.remote, y = null) {
     if (this.netRole && !local) return;
     for (const p of this.peds) {
       if (p.state === ST.FREE) continue;
       const dx = p.x - x, dz = p.z - z;
-      const d = Math.hypot(dx, dz);
+      let d = Math.hypot(dx, dz);
+      if (y !== null) {
+        const [y0, y1] = this.span(p);
+        d = Math.hypot(d, Math.max(0, y0 - y, y - y1));
+      }
       if (d > radius) continue;
       p.killer = source;
       const nx = dx / (d || 1), nz = dz / (d || 1);
@@ -1262,6 +1277,11 @@ export class Pedestrians {
     this.onThrow(r2(hx), r2(hy), r2(hz), r2((tx - hx) / t), r2(vy), r2((tz - hz) / t));
   }
 
+  /** The heights a person's body takes up (standing, lying or flying): [bottom, top]. */
+  span(p) {
+    return p.state === ST.FLYING ? [p.cy - 0.8, p.cy + 0.8] : this.isLying(p) ? [p.cy - 0.2, p.cy + 0.3] : [p.cy - 1, p.cy + 0.85];
+  }
+
   /**
    * Пешеход и машина: сбить, оттолкнуть, раздавить, переехать. In 3D: the person (a vertical segment — standing,
    * lying or flying) against the car's box turned with its body, grown by 0.3 m — a car flying over heads or driving
@@ -1270,7 +1290,7 @@ export class Pedestrians {
   _contact(p, car) {
     const dx = p.x - car.x, dz = p.z - car.z;
     if (dx * dx + dz * dz >= 16) return;
-    const [y0, y1] = p.state === ST.FLYING ? [p.cy - 0.8, p.cy + 0.8] : this.isLying(p) ? [p.cy - 0.2, p.cy + 0.3] : [p.cy - 1, p.cy + 0.85];
+    const [y0, y1] = this.span(p);
     if (car.segHit(p.x, y0, p.z, p.x, y1, p.z, 0.3) < 0) return;
     const ax = car.axes();
     const lx = -car.toLocal(p.x, (y0 + y1) / 2, p.z).x; // to the car's right

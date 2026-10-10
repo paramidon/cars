@@ -38,10 +38,13 @@ export const VEH = {
   // on its side or roof (up·Y < flipUp) and nearly still (flipStill m/s and rad/s) for flipAfter s, the car rolls
   // back onto its wheels: still a dynamic body (walls push it away), it is turned upright about its centre of mass at
   // up to rightRate rad/s, heading kept, its centre of mass held up to rightLift m higher the more upside down it is;
-  // after rightTime s at most it is let go
+  // after rightTime s at most it is let go. Slow but not still (below flipSlow: rocking, pushed by others) counts at
+  // flipSlowRate, so such a car rights itself after flipAfter / flipSlowRate s
   flipUp: 0.5,
   flipAfter: 1.5,
   flipStill: 1.5,
+  flipSlow: 4,
+  flipSlowRate: 0.5,
   rightRate: 6,
   rightLift: 0.9,
   rightTime: 1.5,
@@ -88,6 +91,7 @@ export const GHOST = {
   snap: 8, // m — farther than this from where it should be (a respawn), it is put there at once
   deep: 0.3, // m — this far inside a car driven here, it stops touching cars until it overlaps none (ghostDeep)…
   loose: 2, // m — … and so it does this far from where its snapshot puts it, until it is within half of that
+  ease: 1.5, // m/s — a car driven here left inside such a ghost moves out of it at least this fast (_easeOut)
   // after a car driven here hits it, it moves on its own share of the hit until a snapshot's velocity has changed by
   // holdShow of what its own has, at most hold s (ghostHit)
   holdShow: 0.5,
@@ -382,9 +386,13 @@ export class Vehicle {
     const w = this.phys.world;
     if (this.through) {
       if (this.ghostErr > GHOST.loose / 2) return;
-      let still = false;
-      this._overlaps(this.curP, this.curQ, GROUPS.cars, () => (still = true));
-      if (!still) this._setThrough(false);
+      // (not from inside the query, as in _putOverlaps)
+      const hit = new Set();
+      this._overlaps(this.curP, this.curQ, GROUPS.cars, (c) => hit.add(this.phys.carOf.get(c.handle)));
+      if (!hit.size) this._setThrough(false);
+      // left inside a car driven here and as close to its snapshot as that (two cars at rest one inside the other):
+      // that car eases out of it. Its owner does the same with the other car, away from this one, so they part
+      for (const v of hit) v?._easeOut(this);
       return;
     }
     if (!this.touching.size) return;
@@ -394,6 +402,28 @@ export class Vehicle {
     };
     for (const o of this.touching) for (const a of this.colliders) for (const b of o.colliders) w.contactPair(a, b, check);
     if (deep) this._setThrough(true);
+  }
+
+  /**
+   * This car (driven here) overlaps ghost g, which passes through it: move away from it, sideways on the ground, at
+   * GHOST.ease m/s at least (the controls can drive it away faster). Centres on top of each other: along x, the side
+   * chosen by the cars' network ids, so the two computers pick opposite ones.
+   */
+  _easeOut(g) {
+    if (this.ghost || this.righting) return;
+    let dx = this.curP.x - g.curP.x, dz = this.curP.z - g.curP.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 0.05) {
+      dx = String(this.car.netId) < String(g.car.netId) ? -1 : 1;
+      dz = 0;
+    } else {
+      dx /= d;
+      dz /= d;
+    }
+    const v = this.body.linvel(), along = v.x * dx + v.z * dz;
+    if (along >= GHOST.ease) return;
+    const add = GHOST.ease - along;
+    this.body.setLinvel({ x: v.x + dx * add, y: v.y, z: v.z + dz * add }, true);
   }
 
   _setThrough(on) {
@@ -662,8 +692,10 @@ export class Vehicle {
       return;
     }
     const lv = this.body.linvel(), av = this.body.angvel();
-    const still = Math.hypot(lv.x, lv.y, lv.z) < VEH.flipStill && Math.hypot(av.x, av.y, av.z) < VEH.flipStill;
-    this.tippedT = this.up.y < VEH.flipUp && still ? this.tippedT + dt : 0;
+    const v = Math.hypot(lv.x, lv.y, lv.z), w = Math.hypot(av.x, av.y, av.z);
+    // still: the full rate; rocking on its side or shoved by other cars (slow, not still): a slower one
+    const rate = v < VEH.flipStill && w < VEH.flipStill ? 1 : v < VEH.flipSlow && w < VEH.flipSlow ? VEH.flipSlowRate : 0;
+    this.tippedT = this.up.y < VEH.flipUp && rate ? this.tippedT + dt * rate : 0;
     if (this.tippedT > VEH.flipAfter) this.right();
   }
 
@@ -886,12 +918,20 @@ export class Vehicle {
   }
 
   /**
-   * Wheel i rolls on the ground the 2D effects know about (tyre marks, blood): in contact, and its contact point near
-   * city.groundHeight (not on the tunnel's floor under the ground's surface, not on a ramp's slope).
+   * Where wheel i touches a surface (tyre marks, blood tracks): out filled with the contact point (x, y, z) and the
+   * surface's normal (nx, ny, nz) — on the flat, a ramp's slope or the tube's floor; null in the air, while righting or
+   * on a surface steeper than ~45°.
    */
-  wheelOnGround(i, wx, wz) {
-    if (this.righting || !this.ctrl.wheelIsInContact(i)) return false;
-    const c = this.ctrl.wheelContactPoint(i);
-    return !!c && Math.abs(c.y - this.car.city.groundHeight(wx, wz)) < 0.25;
+  wheelContact(i, out) {
+    if (this.righting || !this.ctrl.wheelIsInContact(i)) return null;
+    const c = this.ctrl.wheelContactPoint(i), n = this.ctrl.wheelContactNormal(i);
+    if (!c || !n || n.y < 0.7 || this.ctrl.wheelGroundObject(i)?.parent()) return null; // not on another car
+    out.x = c.x;
+    out.y = c.y;
+    out.z = c.z;
+    out.nx = n.x;
+    out.ny = n.y;
+    out.nz = n.z;
+    return out;
   }
 }

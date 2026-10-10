@@ -30,6 +30,7 @@ given below. Run them in order. At the end of every session, tick its checkbox i
 - [x] Session 5: bots on the new physics
 - [x] Session 6: remove the old physics, docs, performance
 - [x] Session 7 (optional): carry over the non-physics changes from `claude/test-verticals`
+- [x] Follow-up: fix the open problems left by sessions 1–7 (branch `claude/physics-open-problems`)
 
 ## Why
 
@@ -1007,3 +1008,84 @@ The user asked for Session 7 as a whole, so all five items were ported without a
 - **Docs:** README (test ground, pedestrians, points) and the test ground's note in `index.html` are updated.
 - **Problems found:** none new. Initialising `Pedestrians.dueAt` in the constructor (and not only in `reset`) was a fix
   made while porting, so `update` can't run before `reset`.
+
+### Follow-up (2026-10-10): the open problems
+
+The user asked to fix the open problems these notes list and to give options with a recommended step for the ones that
+can't be fixed here. Work on `claude/physics-open-problems`, from `master` after session 7.
+
+**Fixed**
+
+- **A bot on its side lay up to 5.5 s** (session 5): the flip rule's 1.5 s of stillness never came while the car rocked
+  or other cars shoved it. Slow but not still (under `VEH.flipSlow` = 4 m/s and 4 rad/s) now counts at
+  `flipSlowRate` = 0.5, so such a car rights itself after 3 s; a car sliding faster still isn't righted. `rocking()`
+  (a car on its side, its speed along its length set to 0…5 m/s every 0.2 s) — the old rule / the new one:
+
+  | Push, m/s (mean speed) | 0 (0) | 1 (0.4) | 2 (1.4) | 3 (2.4) | 5 (4.4) |
+  | --- | --- | --- | --- | --- | --- |
+  | Starts righting, s — old | 1.7 | 1.7 | never (12 s) | never | never |
+  | … new | 1.6 | 1.6 | 1.7 | 2.1 | never |
+
+- **Two cars left overlapping at rest online passed through each other until one moved off** (session 4). While a ghost
+  passes through a car driven here (`through`) and is within 1 m of its snapshot, that car eases out of it
+  (`Vehicle._easeOut`): its velocity away from the ghost (on the ground plane) is raised to `GHOST.ease` = 1.5 m/s if it
+  is lower. Its owner does the same with the other car, away from this one, so they part; centres on top of each other
+  pick opposite sides by the cars' network ids. A floor on the velocity, not an impulse, so nothing builds up.
+  `tests/net.js` `overlap()` (B's car put across A's parked car, A 0 / 1.3 / 2.5 m off): apart on both screens after
+  0.57 / 0.75 / 0.32 s (lag 0) and 0.57 / 0.77 s (lag 60 ms), top speed 5 km/h (ghosts 5–8), cars and ghosts end
+  5.3 m apart at the same spots on both screens. Before: still inside each other after 3 s. Rams with 60 ms lag are
+  unchanged (100 km/h: −53.8, thrown 60 km/h on both screens). A car facing the push rolls on a little (A ended 2.9 m
+  from where it stood): the push is along its wheels.
+- **Molotov bottles met walls in 2D** (session 3). Each step's flight is now a ray against Rapier's static colliders
+  (`Physics.castStatic`; walls, poles, ramps, the deck, the ground). The puddle burns on the first surface under the
+  shatter point (`groundBelow`), not at `groundHeight`. `molotovs()`: at the deck's side — breaks at its face, puddle at
+  its foot (0.1 m); onto the deck — breaks at 6.1 m, puddle at 6.1; onto the big ramp — at its slope (1.26 m).
+- **Pedestrians' side of shell and bullet ray casts was 2D** (session 3). `Pedestrians.raycast` takes the ray's height
+  and slope: a person is hit only where the ray passes within `pad` + `cone` × distance of their body's height
+  (`span()`, the same heights `_contact` uses). Shells: `CANNON.pedHitPad` 0.4 m (the muzzle is 1.97 m up, a standing
+  person's top 1.85 m, so a level shot still hits). Bullets: 0.3 m and `MG.pitchCone` tan 20° — the gun dips onto a
+  person by itself, so it still finishes off people lying down (`MG.downShots` keeps meaning something). Blasts and
+  wrecks (`Pedestrians.explosion`) count the height too. `pedShots()` (a person 10 / 25 m ahead, the car posed):
+
+  | Car | Standing: shell / mg | Lying: shell / mg |
+  | --- | --- | --- |
+  | Level | hit / hit (0.1 m over the head) | — (shells pass over lying people, as before) / hit |
+  | Nose up 10° (barrel 6°) | miss (1.5 / 3 m over) / hit | — / hit |
+  | Nose up 30° | miss / miss | — / miss |
+
+  Before, all of them hit (2D).
+- **Tyre marks and bloody tracks were skipped off the flat ground** (sessions 1, 6). `Vehicle.wheelContact()` gives the
+  wheel's contact point and normal (none on a surface steeper than ~45° or on another car, whose roof moves);
+  `FX.tireMark` lays the strip in that plane, along the wheel's 3D path. Blood spots keep their height, and a wheel
+  picks up blood only within 1 m of it (a pool in the street doesn't stain a car in the tube under it). `tyreMarks()`:
+  a handbrake slide up the big ramp lays 51 strips on the slope, within 8 mm of its surface; one through the tube lays
+  114 on its floor (before: none on either).
+
+**Checks** (fresh pages, `?mute`): `handling()` 42.9 / 76.9 / 99.2 / 118.9 / 125.5 km/h, top 126, yaw 120.6 / 107.4 /
+69.9 / 58.4 °/s; `sideHit()` 24 / 32 / 43 / 59 / 67 km/h, −19 / −36 / −48 / −54 / −61; `pedJumps()` 1 / 1 / 1 / 0 / 0 on
+the big ramp, 1 on the flat, 2 on the deck ramp, 0 in the tube, 1 on its roof — all as in sessions 3 and 6; `blasts()`
+and `props()` unchanged. `botBattles()` royale, 19 bots, 5 games: stuck max 8.4 s, wrecked 19, kills 58.4, rams 55.2,
+shots 130, tipped 0.6 per game, the longest 2.2 s (session 6: 3 s, session 5: 5.5 s). Race, 7 bots, 10 games: stuck max
+7.8 s, wrecked 4.1, kills 48.3, rams 17.6, shots 78.9, tipped 0.2 per game, the longest 1.4 s (session 6: 9.3 / 4.0 /
+47.1 / 16.6 / 76.3 / 0.5, 3.5 s). `crash.entries` stayed empty. Gotcha: a page that has run other tests can give
+different numbers (one gave 38 km/h after 1 s in `handling()` and dozens of pedestrians in `pedJumps()`), and editing a
+file under `tests/` makes Vite reload the page mid-run — measure in a fresh page and don't edit while a long run is
+going.
+
+**Not fixed — options**
+
+- **Ghosts overshoot the spin through an impact for a moment** (session 4): left as it is, as decided with the user then.
+- **Real phone FPS is still unmeasured** — no phone here. Recommended: `npm run dev` prints a LAN address; open it on a
+  phone with `?q=low&debug` (the FPS counter), play a battle royale for a minute and note the FPS. If it is under ~50,
+  the first lever is `QUALITY.low` (pixel ratio, pedestrians), not the physics (0.7 ms of a 20-car frame here).
+- **After the boost pad the car lands on the second kicker nose down and flips** (session 3; still so: 3 of 4 runs at
+  130 km/h, landing on the second kicker's slope at −14…−18°). Not a physics fault: nose-first landings are wanted, and
+  at 130 km/h the 25 m between kickers puts the landing on the next one's slope. Options: (a) space the kickers ~40 m
+  apart (−125, −85, −45), so a boosted car lands on the flat between them — recommended, it only touches the test
+  ground; (b) add air pitch damping — changes every jump and the session 1 acceptance numbers; (c) leave it, as a
+  trap.
+- **A head-on at 100 vs 80 km/h does −32 to each car, less than a T-bone at 60 (−36)** (session 3): a tuning question,
+  not physics — the bull bar's nose takes 0.3 of ram damage (`CAR_HIT.zone.front`). Options: (a) leave it (the bull bar
+  is the point of ramming nose first) — recommended; (b) raise `zone.front` (head-ons only) to ~0.45, so a head-on at
+  178 km/h closing does ~−48.
+

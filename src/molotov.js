@@ -14,12 +14,10 @@ export const MOLOTOV = {
   gravity: 18,
 };
 
-const wallFilter = (c) => c.kind !== 'breakable' && c.h >= 1.5;
-
 /** Летящие бутылки и горящие лужи. */
 export class Molotovs {
-  constructor(scene, city, fx, audio) {
-    this.world = city.world;
+  constructor(scene, city, phys, fx, audio) {
+    this.phys = phys;
     this.ground = city.groundHeight;
     this.fx = fx;
     this.audio = audio;
@@ -63,7 +61,9 @@ export class Molotovs {
     for (let k = 0; k < 14; k++) this.fx.fire(x + rand(-0.8, 0.8), y + rand(0, 0.6), z + rand(-0.8, 0.8), rand(0.6, 1.2));
     this.fx.glass(x, y, z, 8);
     this.audio.molotov(this._vol(x, z));
-    this.fires.push({ x, z, t: MOLOTOV.burn, acc: 0 });
+    // the puddle burns on the first surface under the shatter point (a wall hit drips to its foot, the deck holds it)
+    const fy = (this.phys.groundBelow(x, y + 0.2, z, 40, null, true) ?? this.ground(x, z)) + 0.1;
+    this.fires.push({ x, y: fy, z, t: MOLOTOV.burn, acc: 0 });
   }
 
   update(dt) {
@@ -84,13 +84,15 @@ export class Molotovs {
         break;
       }
       if (!done) {
-        const step = Math.hypot(nx - b.x, nz - b.z);
-        const w = ny < 6 && step > 0 ? this.world.raycast(b.x, b.z, (nx - b.x) / step, (nz - b.z) / step, step, wallFilter) : null;
+        // any static collider in 3D (a wall, a pole, a ramp, the deck, the ground): this step's flight as a ray
+        const dx = nx - b.x, dy = ny - b.y, dz = nz - b.z, step = Math.hypot(dx, dy, dz);
+        const w = step > 0 ? this.phys.castStatic(b.x, b.y, b.z, dx / step, dy / step, dz / step, step) : null;
         if (w) {
-          this._shatter(b.x + ((nx - b.x) / step) * w.t, ny, b.z + ((nz - b.z) / step) * w.t);
+          const k = w.t / step;
+          this._shatter(b.x + dx * k + w.nx * 0.1, b.y + dy * k + w.ny * 0.1, b.z + dz * k + w.nz * 0.1);
           done = true;
-        } else if (ny <= this.ground(nx, nz) + 0.1) {
-          this._shatter(nx, this.ground(nx, nz) + 0.1, nz);
+        } else if (ny <= this.ground(nx, nz, b.y + 0.5) + 0.1) {
+          this._shatter(nx, this.ground(nx, nz, b.y + 0.5) + 0.1, nz);
           done = true;
         }
       }
@@ -118,7 +120,7 @@ export class Molotovs {
       if (f.acc <= 0) {
         f.acc = 0.07;
         const k = Math.min(1, f.t / 1.5);
-        this.fx.fire(f.x + rand(-1, 1), this.ground(f.x, f.z) + 0.1, f.z + rand(-1, 1), rand(0.5, 0.9) * (0.4 + k * 0.6));
+        this.fx.fire(f.x + rand(-1, 1), f.y, f.z + rand(-1, 1), rand(0.5, 0.9) * (0.4 + k * 0.6));
       }
       if (f.t <= 0) this.fires.splice(i, 1);
     }

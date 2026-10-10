@@ -60,6 +60,7 @@ export const CAR_GRIP = P.grip;
 // лоб с кенгурятником держит удар: урон по передней части при ударе о столб/стену
 const FRONT_ARMOR_WALL = 0.75;
 export const CAR_HALF_W = 1.05;
+const _wc = { x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0 }; // a wheel's contact (Vehicle.wheelContact)
 const BLOOD_TRACK = 26; // сколько метров колесо мажет кровью после лужи
 export const CAR_HALF_L = 2.35;
 const GUN_Z = -0.35; // ось башни на крыше (вдоль машины)
@@ -490,7 +491,7 @@ export class Car {
     this.wreckTime = 0;
     this.frontHits = 0;
     this.rearHits = 0;
-    this.trails = WHEELS.map(() => ({ skid: false, sx: 0, sz: 0, blood: 0, bx: 0, bz: 0 }));
+    this.trails = WHEELS.map(() => ({ skid: false, s: { x: 0, y: 0, z: 0 }, blood: 0, b: { x: 0, y: 0, z: 0 } }));
     this.roll = 0;
     this.rollVel = 0;
     this.pitch = 0;
@@ -779,19 +780,22 @@ export class Car {
    * Отрезок следа от последней отмеченной точки колеса до текущей — след всегда позади колеса.
    * Возвращает длину нарисованного отрезка (0, если колесо проехало слишком мало).
    */
-  _trailMark(wx, wz, tr, kx, kz, step, r, g, b, opacity) {
-    const dx = wx - tr[kx], dz = wz - tr[kz];
-    const d = Math.hypot(dx, dz);
+  _trailMark(w, last, step, r, g, b, opacity) {
+    const dx = w.x - last.x, dy = w.y - last.y, dz = w.z - last.z;
+    const d = Math.hypot(dx, dy, dz);
     if (d > 4) {
       // машину переставили (или кадр был огромным) — не тянуть полосу через полкарты
-      tr[kx] = wx;
-      tr[kz] = wz;
+      last.x = w.x;
+      last.y = w.y;
+      last.z = w.z;
       return 0;
     }
     if (d < step) return 0;
-    this.fx.tireMark((wx + tr[kx]) / 2, (wz + tr[kz]) / 2, Math.atan2(dx, dz), d + 0.04, r, g, b, opacity);
-    tr[kx] = wx;
-    tr[kz] = wz;
+    // on the surface the wheel rolls on (flat ground, a ramp's slope, the tube's floor), along the wheel's path
+    this.fx.tireMark((w.x + last.x) / 2, (w.y + last.y) / 2, (w.z + last.z) / 2, w.nx, w.ny, w.nz, dx, dy, dz, d + 0.04, r, g, b, opacity);
+    last.x = w.x;
+    last.y = w.y;
+    last.z = w.z;
     return d;
   }
 
@@ -821,10 +825,10 @@ export class Car {
     this.slip = skidding ? clamp(slip / 10 + (this.handbrake ? 0.4 : 0) + (this.braking ? 0.3 : 0), 0, 1) : 0;
     if (this.isPlayer) this.audio.skid(this.slip);
     for (let i = 0; i < 4; i++) {
-      const w = WHEELS[i], tr = this.trails[i];
-      const wx = this.x + w.x * c + w.z * s, wz = this.z - w.x * s + w.z * c;
-      if (!this.rb.wheelOnGround(i, wx, wz)) {
-        // a wheel in the air (or on a slope, on the tunnel's floor) leaves no marks
+      const tr = this.trails[i];
+      const w = this.rb.wheelContact(i, _wc);
+      if (!w) {
+        // a wheel in the air (or on a wall, on another car) leaves no marks
         tr.skid = false;
         tr.blood = 0;
         continue;
@@ -834,24 +838,26 @@ export class Car {
       if (skidding && i >= 2) {
         if (!tr.skid) {
           tr.skid = true;
-          tr.sx = wx;
-          tr.sz = wz;
+          tr.s.x = w.x;
+          tr.s.y = w.y;
+          tr.s.z = w.z;
         }
-        const d = this._trailMark(wx, wz, tr, 'sx', 'sz', 0.25, 0.05, 0.05, 0.05, 0.55);
-        if (d > 0 && Math.random() < 0.35) this.fx.tireSmoke(wx, this.y + 0.2, wz);
+        const d = this._trailMark(w, tr.s, 0.25, 0.05, 0.05, 0.05, 0.55);
+        if (d > 0 && Math.random() < 0.35) this.fx.tireSmoke(w.x, w.y + 0.2, w.z);
       } else tr.skid = false;
 
       // кровь: колесо пачкается, только проехав по крови, и оставляет след позади себя
-      if (!this.wrecked && this.fx.bloodAt(wx, wz)) {
+      if (!this.wrecked && this.fx.bloodAt(w.x, w.y, w.z)) {
         if (tr.blood <= 0) {
-          tr.bx = wx;
-          tr.bz = wz;
+          tr.b.x = w.x;
+          tr.b.y = w.y;
+          tr.b.z = w.z;
         }
         tr.blood = BLOOD_TRACK;
       }
       if (tr.blood > 0) {
         const op = Math.min(1, tr.blood / 12) * 0.75;
-        const d = this._trailMark(wx, wz, tr, 'bx', 'bz', 0.35, 0.55, 0.02, 0.02, op);
+        const d = this._trailMark(w, tr.b, 0.35, 0.55, 0.02, 0.02, op);
         tr.blood -= d;
       }
     }

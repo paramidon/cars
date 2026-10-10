@@ -15,6 +15,7 @@ export const MG = {
   autoCone: 0.436, // классика: башня сама доворачивает на цель в этом секторе перед носом, рад (±25°)
   autoRange: 55, // м
   turn: 7, // скорость доворота башни, рад/с
+  pitchCone: 0.36, // the gun dips or lifts by itself onto a person up to this slope off the barrel's (tan 20°)
 };
 
 const bulletFilter = (c) => c.kind !== 'breakable' && c.h >= 1.5;
@@ -135,7 +136,7 @@ export class MachineGuns {
         hitCar = c;
       }
     }
-    const ph = this.peds.raycast(m.x, m.z, dx, dz, t * fh);
+    const ph = this.peds.raycast(m.x, m.z, dx, dz, t * fh, false, m.y, fh > 0 ? dy / fh : 0, 0.3, MG.pitchCone);
     if (ph) {
       t = ph.t / fh;
       hitCar = null;
