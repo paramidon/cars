@@ -769,7 +769,7 @@ export function buildCity(scene, quality, test = false) {
 
     // ---- ramps
     ramp(-21, -45, -9, -30, '+z', 0, 3.5); // the big one: at ~100 km/h lands in the line of 50
-    for (const z of [-110, -85, -60]) ramp(70, z, 78, z + 6, '+z', 0, 1.2); // three kickers in a row
+    for (const z of [-110, -70, -30]) ramp(70, z, 78, z + 6, '+z', 0, 1.2); // three kickers 40 m apart: a boosted car (130 km/h) lands on the flat between them
     ramp(-152, 64, -140, 74, '+x', 0, 2.5); // over the tube's exit trench
 
     // ---- the underground tube

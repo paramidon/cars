@@ -135,7 +135,7 @@ lose by wrecking your own car or running out of time.
   stands up again in their spot after 15 s if no car is within 50 m. It also has vertical play for the physics:
   - a big 3.5 m ramp in front of the line of 50: at ~108 km/h you land right in it, nose first; with one side up it
     you roll over;
-  - three 1.2 m kickers with a boost pad before them, and a ramp over the tube's exit trench (clears it from ~79 km/h);
+  - three 1.2 m kickers 40 m apart with a boost pad before them (a boosted car lands on the flat between them), and a ramp over the tube's exit trench (clears it from ~79 km/h);
   - the underground tube on the west side: an open trench down 5.5 m, an 80 m covered tunnel with lights and a
     pedestrian standing on its roof, a trench back up; the trenches are fenced with 0.9 m rails, and the camera stays
     under the tunnel's ceiling;

@@ -1081,11 +1081,13 @@ going.
 - **After the boost pad the car lands on the second kicker nose down and flips** (session 3; still so: 3 of 4 runs at
   130 km/h, landing on the second kicker's slope at −14…−18°). Not a physics fault: nose-first landings are wanted, and
   at 130 km/h the 25 m between kickers puts the landing on the next one's slope. Options: (a) space the kickers ~40 m
-  apart (−125, −85, −45), so a boosted car lands on the flat between them — recommended, it only touches the test
-  ground; (b) add air pitch damping — changes every jump and the session 1 acceptance numbers; (c) leave it, as a
-  trap.
+  apart, so a boosted car lands on the flat between them — recommended, it only touches the test ground; (b) add air
+  pitch damping — changes every jump and the session 1 acceptance numbers; (c) leave it, as a trap.
+  **Applied (a)** at the user's request: the kickers start at z = −110, −70, −30. 8 runs off the boost pad (130 km/h,
+  x = 72…76, full and part throttle): all land on the flat (z ≈ −78, −41, −4) nose first at −15…−25°, largest tilt
+  21–46°, all upright at the end (before: 3 of 4 flipped).
 - **A head-on at 100 vs 80 km/h does −32 to each car, less than a T-bone at 60 (−36)** (session 3): a tuning question,
   not physics — the bull bar's nose takes 0.3 of ram damage (`CAR_HIT.zone.front`). Options: (a) leave it (the bull bar
-  is the point of ramming nose first) — recommended; (b) raise `zone.front` (head-ons only) to ~0.45, so a head-on at
+  is the point of ramming nose first) — recommended, and left as it is; (b) raise `zone.front` (head-ons only) to ~0.45, so a head-on at
   178 km/h closing does ~−48.
 
