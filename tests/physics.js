@@ -548,7 +548,7 @@ export async function rollovers(game, { races = 20, secs = 75, seed0 = 100 } = {
  * autopilot and can't be wrecked. Per run: the longest time any bot spent within 6 m of one spot while the game was on
  * (not wrecked, not finished), bots wrecked, pedestrians killed by bots, rams, shots, bot teleports (Rival.respawn) and
  * back-ups, tips
- * past 60° and how long the longest one lasted. A run stops early when the game ends (a bot wins or everyone is wrecked).
+ * past 60° and how long the longest one lasted (tips over LONG_TIP s traced every 0.5 s in `longTips`). A run stops early when the game ends (a bot wins or everyone is wrecked).
  * `each(t, rivals)` is called every step (for tracing one bot).
  */
 export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type = 'race', mode = 'classic', seed0 = 500, each = null } = {}) {
@@ -566,6 +566,7 @@ export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type =
     const rivals = game.rivals;
     const st = rivals.map((r) => ({ ax: r.car.x, az: r.car.z, still: 0, max: 0, at: null, tipT: 0, maxTip: 0, tips: 0 }));
     let teleports = 0, reverses = 0, rams = 0, shots = 0, t = 0;
+    const longTips = [];
     const wasRev = rivals.map(() => false);
     for (const r of rivals) {
       const orig = r.respawn;
@@ -595,10 +596,15 @@ export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type =
         wasRev[i] = rev;
         const lean = Math.acos(Math.max(-1, Math.min(1, c.upY))) * DEG;
         if (lean > 60 && !c.wrecked) {
-          if (s.tipT === 0) s.tips++;
+          if (s.tipT === 0) (s.tips++, (s.trace = []));
           s.tipT += DT;
           s.maxTip = Math.max(s.maxTip, s.tipT);
-        } else s.tipT = 0;
+          // a long tip: what the car does every 0.5 s from 4 s on (kept if it lasts over LONG_TIP s)
+          if (s.tipT > 4 && Math.round(s.tipT / DT) % 30 === 0) s.trace.push(tipSample(game, r, s.tipT, t));
+        } else {
+          if (s.tipT > LONG_TIP) longTips.push({ run: k, name: r.name, secs: r1(s.tipT), trace: s.trace });
+          s.tipT = 0;
+        }
         if (c.wrecked || r.tr.finished || Math.hypot(c.x - s.ax, c.z - s.az) > 6) {
           s.ax = c.x;
           s.az = c.z;
@@ -623,6 +629,7 @@ export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type =
       kills: rivals.reduce((a, r) => a + r.car.kills, 0) - kills0,
       rams, shots, teleports, reverses,
       tips: st.reduce((a, s) => a + s.tips, 0), longestTip: r1(Math.max(...st.map((s) => s.maxTip))),
+      longTips: [...longTips, ...st.filter((s) => s.tipT > LONG_TIP).map((s, i) => ({ run: k, name: 'still tipped at the end', secs: r1(s.tipT), trace: s.trace }))],
     });
   }
   Math.random = random;
@@ -632,10 +639,23 @@ export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type =
     stuckMax: Math.max(...res.map((r) => r.stuckMax)), stuckOver10: res.filter((r) => r.stuckMax > 10).length,
     wrecked: mean((r) => r.wrecked), kills: mean((r) => r.kills), rams: mean((r) => r.rams), shots: mean((r) => r.shots),
     teleports: mean((r) => r.teleports), reverses: mean((r) => r.reverses), tips: mean((r) => r.tips),
-    longestTip: Math.max(...res.map((r) => r.longestTip)), crashes: window.crash?.entries?.length ?? 0, runs: res,
+    longestTip: Math.max(...res.map((r) => r.longestTip)), longTips: res.flatMap((r) => r.longTips), crashes: window.crash?.entries?.length ?? 0, runs: res,
   };
 }
 const CAR_HIT_MIN = 4.5; // CAR_HIT.threshold: a ram that does damage
+const LONG_TIP = 6; // s tipped past 60° that botBattles() reports in detail (longTips)
+
+/** A tipped bot's state for botBattles()' longTips: speed, spin, the flip rule's clock, what it touches. */
+function tipSample(game, r, tipT, t) {
+  const c = r.car, b = c.rb, lv = b.body.linvel(), av = b.body.angvel();
+  return {
+    t: r1(t), tip: r1(tipT), x: r1(c.x), y: Math.round(c.y * 100) / 100, z: r1(c.z), up: Math.round(c.upY * 100) / 100,
+    v: Math.round(Math.hypot(lv.x, lv.y, lv.z) * 100) / 100, w: Math.round(Math.hypot(av.x, av.y, av.z) * 100) / 100,
+    righting: b.righting ? r1(b.righting.t) : null, tippedT: Math.round((b.tippedT ?? 0) * 100) / 100, wheels: b.contacts,
+    statics: [...b.statics.values()].map((q) => q[2]),
+    cars: game.cars.filter((o) => o !== c && Math.hypot(o.x - c.x, o.z - c.z) < 6).map((o) => `${o.wrecked ? 'wreck' : 'car'} ${r1(Math.hypot(o.x - c.x, o.z - c.z))}`),
+  };
+}
 
 // ---------------------------------------------------------------- NAV_PLAN session 1: getting out of traps
 

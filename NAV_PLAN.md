@@ -198,6 +198,19 @@ Also:
      8–12 s after `out` in `treeBuilding`, `boxed`, `caged`, `pinned`). Acceptance: `traps()` — every trap but
      `pinned` out by itself, and after `out` no stay over 5 s away from the goal; `pinned` still teleports at 20 s.
 6. Performance: `game.step` with 19 bots, desktop and phone-sized `?q=low`, before/after.
+7. From session 2 (the nav grid, `src/nav/grid.js`):
+   - `Rival._navPoint` is the last reader of `city.roads` outside the race route: A* replaces it.
+   - Spawns and the battle royale's waypoints use "open" floors (`NAV.open` 6 m of walkable floor all round) only
+     because today's straight-line steering can't get into yards (with 3 m, 21% of waypoints fell in yards and parks).
+     Once bots drive paths, lower `NAV.open` to ~3 m and check that they reach yard waypoints.
+   - Path costs: `nav.roomAt(i)` (distance to the nearest unwalkable floor, 0.1 m steps) is there for the penalty near
+     solids; `nav.next(i, d)` walks the 8 links; `nav.comp[i] === nav.main` is the reachable area.
+   - The grid's build time was measured on a desktop only (city 0.2–0.3 s, test ground 0.13–0.21 s; `navGrid(game)` in
+     `tests/physics.js`). Measure it on a real phone together with the frame cost; if it is over ~1 s there, bake the
+     grid at build time per map (a few typed arrays, ~1.7 MB raw) or build it in slices behind the menu.
+   - Still seen in `botBattles()` royale after session 2: about one game in 10 with a bot within 6 m of one spot for
+     10–13 s, in `hunt` mode (e.g. 12.8 s at (−133.7, −24), a yard by the x = −120 street; the session-1 code gave 10.8 s
+     in its baseline run) — the straight line to the target; paths should remove it (acceptance: no bot > 10 s).
 
 **Acceptance**
 
@@ -223,6 +236,13 @@ Also:
    with gates or a zone placed for it), so the 3D features get exercised.
 4. Write down what a future map must provide for navigation (colliders, kinds, gates, spawn areas) — the nav itself
    must need nothing map-specific beyond that.
+5. From session 2 (the nav grid):
+   - Today a ramp's lip and the deck's edge are plain edges (unwalkable floors, no link off them): the links go there.
+   - What the grid already needs from a map: static colliders in the Rapier world with a `kind` each (`Physics.kinds`;
+     tops of `OBSTACLES` kinds are never floors), `city.bounds` (`x0, z0, x1, z1` — where cars can be — and `y0, y1`
+     — the colliders' height range). Upright boxes and cylinders are cheapest (their bottom needs no ray).
+   - Floors are sampled at column centres (`NAV.cell` 1.5 m): a drivable strip narrower than that (a plank, a thin
+     bridge) may be missed or broken — a finer cell for such a map, or a link along it.
 
 **Acceptance**
 
@@ -417,13 +437,25 @@ Royale rows are within the baseline's spread (kills swing 17–92 per game; crew
 wrecked). Session 1's royale crew row (58.8 kills) and its back-ups (9.7) aren't reproduced by its own code today
 either. A race run after the royale rows in the same page gave 38 kills; in a fresh page 56.
 
-**Left for later**
+**Follow-up (the same day): the open problems**
+
+- The 11.4 s tip: `botBattles()` now traces every tip over 6 s (`longTips`: speed, spin, the flip rule's clock, righting,
+  wheels, what the body touches, cars within 6 m, every 0.5 s from 4 s on). 60 more royale games (seeds 500–559): the
+  longest tip 4 s, none traced — 1 in 80 logged games, not reproduced. Safety net added instead (`VEH.flipMax` 8 s in
+  `src/physics/vehicle.js`): a car tipped 8 s in a row rights itself whatever it does. Check: a car on its side dragged
+  at 5 m/s (the flip rule's rate is 0 above 4 m/s) is righted at 8.03 s; before, never.
+- The rest moved into the later sessions' scopes: `_navPoint`, `NAV.open`, path costs and the phone build time into
+  session 3 (item 7), the ramps' lips and the deck's edges, what a map must provide and thin strips into session 4
+  (item 5).
+
+**Left for later** (now in sessions 3 and 4's scopes)
+
 
 - `Rival._navPoint` still reads `city.roads` (the only reader outside the race route); session 3 replaces it with A*
   on this grid, as its scope says.
 - Spawns and zone waypoints avoid yards (`NAV.open` 6 m) only because the bots can't find their way into them yet;
   with session 3's paths `open` can go down to ~3 m.
-- One bot lay tipped for 11.4 s in one game of 20 logged royale games (the others: ≤ 5.1 s; earlier sessions up to
+- (Done in the follow-up above: (a) and (c).) One bot lay tipped for 11.4 s in one game of 20 logged royale games (the others: ≤ 5.1 s; earlier sessions up to
   5.5 s). Not reproduced: a car put on its roof on a wreck rights itself in 2–2.3 s, and the logged tips were cars
   rocking on their side at ~2 m/s (the flip rule's slow rate, 3 s). Unrelated to navigation (it only moved spawns and
   waypoints). Options: (a) log every tip over 6 s in `botBattles()` (speed, spin, righting, contacts) and catch it —

@@ -45,6 +45,9 @@ export const VEH = {
   flipStill: 1.5,
   flipSlow: 4,
   flipSlowRate: 0.5,
+  // a safety net: tipped for flipMax s in a row, whatever it does (pushed along on its side, hung on something), the
+  // car rights itself anyway (one bot in ~80 bot games lay tipped 11 s; the rule above normally takes 1.5–3 s)
+  flipMax: 8,
   rightRate: 6,
   rightLift: 0.9,
   rightTime: 1.5,
@@ -196,6 +199,7 @@ export class Vehicle {
     this.knockW = new THREE.Vector3(); // … and to the spin
     this.contacts = 0; // wheels on the ground at the last step
     this.tippedT = 0;
+    this.tipAll = 0; // s tipped in a row (VEH.flipMax)
     this.righting = null;
     this.padIn = null;
     this.ghost = false; // another computer drives this car: the body follows its snapshots (setRemote, GHOST)
@@ -232,6 +236,7 @@ export class Vehicle {
     this.props.clear();
     this.knocks.clear();
     this.tippedT = 0;
+    this.tipAll = 0;
     this.tripT = 0;
   }
 
@@ -540,6 +545,7 @@ export class Vehicle {
     this.curQ.copy(_q);
     this.prevQ.copy(_q);
     this.tippedT = 0;
+    this.tipAll = 0;
     this.padIn = null;
     this.contacts = 4;
     this.airT = 0;
@@ -689,14 +695,16 @@ export class Vehicle {
     }
     if (this.righting || this.car.wrecked) {
       this.tippedT = 0;
+      this.tipAll = 0;
       return;
     }
+    this.tipAll = this.up.y < VEH.flipUp ? this.tipAll + dt : 0;
     const lv = this.body.linvel(), av = this.body.angvel();
     const v = Math.hypot(lv.x, lv.y, lv.z), w = Math.hypot(av.x, av.y, av.z);
     // still: the full rate; rocking on its side or shoved by other cars (slow, not still): a slower one
     const rate = v < VEH.flipStill && w < VEH.flipStill ? 1 : v < VEH.flipSlow && w < VEH.flipSlow ? VEH.flipSlowRate : 0;
     this.tippedT = this.up.y < VEH.flipUp && rate ? this.tippedT + dt * rate : 0;
-    if (this.tippedT > VEH.flipAfter) this.right();
+    if (this.tippedT > VEH.flipAfter || this.tipAll > VEH.flipMax) this.right();
   }
 
   get tipped() {
@@ -712,6 +720,7 @@ export class Vehicle {
     _f.set(0, 0, 1).applyQuaternion(this.quat);
     this.righting = { t: 0, ground, roll: _f.clone().setY(0).normalize() };
     this.tippedT = 0;
+    this.tipAll = 0;
     this.car.onRight?.();
   }
 
