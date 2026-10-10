@@ -119,6 +119,13 @@ const ESCAPE = {
   probe: [7, 2.5], // m — a side is picked only if the floor this far along the obstacle and this far out is free
   trap: 10, // s its paths keep off the spot it got stuck at (PATH.trap, PATH.trapCost)
   again: 6, // m — stuck again this close to the last trap: try its other side
+  // turning round on purpose: its path starts more than uturn rad off the nose, it's slower than uturnV m/s and the
+  // floor under it has less than uturnRoom m of room (an alley) — a many-point turn towards the path at once, rather
+  // than driving into the walls until it gets stuck; not again for uturnPause s
+  uturn: 2,
+  uturnV: 4,
+  uturnRoom: 3.5,
+  uturnPause: 3,
 };
 /** Driving a path (NAV_PLAN session 3). */
 const DRIVE = {
@@ -274,9 +281,11 @@ export class Rival {
     this.direct = false; // the goal is close and the way to it open: straight at it (looked at every DRIVE.recheck s)
     this.directT = 0;
     this.directKind = null;
+    this.uturnT = 0; // s before it may start another turn round on purpose (ESCAPE.uturn)
     this.avSide = 0; // the side it went round a car on last (AVOID.keep s)
     this.avSideT = 0;
     this.teleports = 0;
+    this.uturns = 0; // turns round on purpose (tests count these)
     this.backT = 0; // отъезд назад для нового тарана
     this.chargeT = 0; // пока > 0, новый отъезд не начинаем — даём разогнаться
     this.boost = 1;
@@ -507,6 +516,7 @@ export class Rival {
     this.dt = dt;
     this.replanT -= dt;
     this.avSideT -= dt;
+    this.uturnT -= dt;
     for (const t of this.traps) t.t -= dt;
     if (this.traps.length && this.traps.some((t) => t.t <= 0)) this.traps = this.traps.filter((t) => t.t > 0);
 
@@ -572,6 +582,8 @@ export class Rival {
     // facing away from where it steers: slow (DRIVE.sharp: 18 m/s at 0.6 rad off, down to 10 at 1 rad and more)
     const off = Math.abs(ang);
     if (off > DRIVE.sharp[0]) target = Math.min(target, lerp(DRIVE.sharp[2], DRIVE.sharp[3], clamp((off - DRIVE.sharp[0]) / (DRIVE.sharp[1] - DRIVE.sharp[0]), 0, 1)));
+    // the path starts behind it in a narrow place: turn round in several goes now
+    if (this.onPath && !this.esc && off > ESCAPE.uturn && v < ESCAPE.uturnV && this.uturnT <= 0 && this._roomHere() < ESCAPE.uturnRoom) this._startTurn(tx, tz);
     let throttle = v < target - 0.5 ? 1 : 0;
     let brake = v > target + 1.5 ? 1 : 0;
 
@@ -729,8 +741,28 @@ export class Rival {
     this.esc = { back, t: 0, ox, oz, legs: 0, x: car.x, z: car.z };
   }
 
+  /** Floor room (NavGrid.roomAt) under the car, 0 if it isn't on a walkable floor. */
+  _roomHere() {
+    const nav = this.city.nav, car = this.car, i = nav.cellAt(car.x, car.y, car.z);
+    return nav.walkable(i) ? nav.roomAt(i) : 0;
+  }
+
+  /** A many-point turn (the escape's legs) until the nose points at (tx, tz): back first if there's room behind. */
+  _startTurn(tx, tz) {
+    const car = this.car;
+    let ox = tx - car.x, oz = tz - car.z;
+    const l = Math.hypot(ox, oz) || 1;
+    ox /= l;
+    oz /= l;
+    this.uturnT = ESCAPE.uturnPause;
+    this.uturns++;
+    this.esc = { back: this._roomAlong(-1) >= ESCAPE.room, t: 0, ox, oz, legs: 0, x: car.x, z: car.z, turn: true };
+  }
+
   _endEscape() {
+    const turn = this.esc?.turn;
     this.esc = null;
+    if (turn) return; // a turn round on purpose: it wasn't stuck
     this.stuckT = 0.6; // still stuck — the next try comes sooner
     this.replan = true; // from where it got to, keeping off the trap
   }

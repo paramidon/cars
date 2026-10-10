@@ -599,11 +599,8 @@ searches hit the 12 000 cap.
 
 **Left for later** (what concerns 3D is in session 4's scope, item 6)
 
-- Turning round in a narrow place: the path may start behind the car in an alley (both ways out cost about the same),
-  and the bot drives into the alley's walls until the many-point turn gets it round (`alley` start 3: 6.6 s).
-  Options: (a) start the many-point turn on purpose when the path starts more than ~2 rad off the nose and the room
-  at the car is under ~3.5 m (cheap, reuses `_startEscape`'s legs; **recommended**); (b) A* over (floor, heading) with
-  the car's turning radius (8× the states, slower searches); (c) a stronger heading cost where room is low.
+- ~~Turning round in a narrow place~~ — done in the follow-up below, option (a). Options (b) (A* over floor and
+  heading with the car's turning radius) and (c) (a stronger heading cost where room is low) weren't needed.
 - `botBattles()`' `stuckMax` still counts a hunter ramming in a scrum (`stuckNoRam` doesn't): the remaining long
   stays are mostly scrums (rams went up from ~54 to ~63 per royale).
 - The grid's build time on a real phone is still not measured (no phone here); see session 2's options.
@@ -611,3 +608,20 @@ searches hit the 12 000 cap.
   edge may be missed. Rapier shape casts (as the escape uses) if it shows.
 - Lanes only shift the steering point; with every racer on the same cached gate legs a jam at a narrow gate is
   possible (none seen).
+
+**Follow-up (the same day): turning round on purpose** (`Rival._startTurn`, `_roomHere`, `ESCAPE.uturn*`)
+
+- A bot slower than 4 m/s whose steering point on its path is more than 2 rad off the nose, on a floor with under
+  3.5 m of room (or no walkable floor), starts the escape's many-point turn at once towards that point (back first if
+  there's 1 m behind), not again for 3 s; it isn't a trap (no cost, no stuck bump after it). `traps()` reports `uturns`,
+  `botBattles()` `uturns` per game.
+- `traps()`: tree and building out after 1.8–4.1 s (was 4.4–5.5), building with wrecks both sides 1.5–1.6 s in 4 of 5
+  (was 3.2), the caged one 8.3–10.8 s (was 6.6–11.5); after out at most 2.4 s everywhere but the same `alley` start 3
+  (6.6 s, the turn didn't fire there: it was outside the alley by then; in another page the same start turned twice and
+  got out east in 8 s — the outcome depends on the page's state); `pinned` still 20.0 s, 8–9.8 m, nearest car 6.2 m,
+  2 m up. Every non-pinned start reaches the goal (end 2.4–7.1 m).
+- `botBattles()` (per game): royale stuck max 12.2 s (2 of 10 over 10 s, both a hunter ramming in a scrum —
+  `stuckNoRam` 8.7, 0 over 10), wrecked 18.1, kills 69.7, rams 62.9, back-ups 27 (13.8 of them turns), teleports 0;
+  race 9.9 (0), wrecked 3.8, kills 45.8, back-ups 12.7 (6.6 turns), teleports 0; royale crew 7.9 (0), kills 52.8;
+  race crew 4.6 (0), kills 42.2. `botLaps()` 55.1 km/h, 16 gates per run (within the range above). `frameCost()`:
+  step 1.08 ms, the bots 0.079 ms — unchanged.

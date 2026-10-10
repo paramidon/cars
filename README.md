@@ -65,7 +65,9 @@ lose by wrecking your own car or running out of time.
   0.25, 0.5 or 0.8 rad to one side where the grid has 10 m of room; with no way past, the bot slows down to its speed,
   but not below 4 m/s — it nudges a wreck aside or gets stuck against it and out as below, rather than waiting behind it
   for good. A bot steering more than 0.6 rad off its nose slows to 18 m/s, at 1 rad and more to 10 m/s. A hunter rams
-  its target, never avoids it. A bot stuck pushing on
+  its target, never avoids it. A slow bot (under 4 m/s) whose path starts more than 2 rad off its nose in a narrow place
+  (under 3.5 m of room — an alley) turns round at once in several goes, as below, instead of driving into the walls
+  (not again for 3 s). A bot stuck pushing on
   (under 1.5 m/s for 1.4 s) gets itself out: it looks behind (a cast of its box against walls and cars) and, if there is
   at least 1 m of room, backs up, the nose swinging away from what it hit towards the side that leads to its target;
   with no room behind it pulls forward instead, and when that way runs out too it switches — a many-point turn of up to

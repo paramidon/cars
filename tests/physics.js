@@ -630,6 +630,7 @@ export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type =
       t += DT;
     });
     for (const r of rivals) delete r.respawn;
+    const uturns = rivals.reduce((a, r) => a + r.uturns, 0);
     delete game._fire;
     delete game._carHit;
     const worst = st.reduce((a, s) => (s.max > a.max ? s : a), st[0]);
@@ -638,7 +639,7 @@ export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type =
       run: k, secs: r1(t), state: game.state, stuckMax: r1(worst.max), stuckAt: worst.at, stuckNoRam: r1(worst2.max2), stuckNoRamAt: worst2.at2,
       wrecked: rivals.filter((r) => r.car.wrecked).length,
       kills: rivals.reduce((a, r) => a + r.car.kills, 0) - kills0,
-      rams, shots, teleports, reverses,
+      rams, shots, teleports, reverses, uturns,
       tips: st.reduce((a, s) => a + s.tips, 0), longestTip: r1(Math.max(...st.map((s) => s.maxTip))),
       longTips: [...longTips, ...st.filter((s) => s.tipT > LONG_TIP).map((s, i) => ({ run: k, name: 'still tipped at the end', secs: r1(s.tipT), trace: s.trace }))],
     });
@@ -650,7 +651,7 @@ export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type =
     stuckMax: Math.max(...res.map((r) => r.stuckMax)), stuckOver10: res.filter((r) => r.stuckMax > 10).length,
     stuckNoRam: Math.max(...res.map((r) => r.stuckNoRam)), stuckNoRamOver10: res.filter((r) => r.stuckNoRam > 10).length,
     wrecked: mean((r) => r.wrecked), kills: mean((r) => r.kills), rams: mean((r) => r.rams), shots: mean((r) => r.shots),
-    teleports: mean((r) => r.teleports), reverses: mean((r) => r.reverses), tips: mean((r) => r.tips),
+    teleports: mean((r) => r.teleports), reverses: mean((r) => r.reverses), uturns: mean((r) => r.uturns), tips: mean((r) => r.tips),
     longestTip: Math.max(...res.map((r) => r.longestTip)), longTips: res.flatMap((r) => r.longTips), crashes: window.crash?.entries?.length ?? 0, runs: res,
   };
 }
@@ -767,6 +768,7 @@ export async function traps(game, { names = Object.keys(TRAPS), seeds = [0, 1, 2
         t += DT;
       });
       row.teleports = bot.teleports;
+      row.uturns = bot.uturns; // turns round on purpose (ESCAPE.uturn)
       if (T.pin) T.wrecks.forEach((_, i) => {
         const b = rest[i].car.rb.body;
         b.lockTranslations(false, true);
