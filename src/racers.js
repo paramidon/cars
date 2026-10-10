@@ -91,10 +91,15 @@ const GORE = {
   fireRange: [0, 50], // стрельба по толпе (у мясника), м
   firePause: [2, 4], // пауза между выстрелами по толпе, с
   clearance: 8, // по толпе не стреляет, если рядом с ней машина, м
+  skip: 6, // s: a pedestrian the bot gave up on (couldn't reach in time) isn't picked again for this long
 };
 const FIRE_MIN = 8; // в упор не стреляют
 // охотник не толкает жертву, а таранит раз за разом: после удара сдаёт назад и разгоняется снова
 const RAM = { back: [1.0, 1.5], charge: 1.5 }; // сколько с сдавать назад; сколько с после этого не отъезжать
+// no way out (wedged between a tree and a building, circling a pedestrian it can't reach…): a bot that hasn't got more
+// than `near` m away from one spot in `time` s respawns. Each back-up resets the stuck timer above, so a bot in a trap
+// could back up and drive into it again for ever. Ramming a target within `ram` m doesn't count
+const STUCK = { near: 8, time: 8, ram: 15 };
 const at = (pair, k) => lerp(pair[0], pair[1], k);
 // пара диапазонов [[от, до] при 0, [от, до] при 1] → диапазон при k
 const at2 = (pairs, k) => [at([pairs[0][0], pairs[1][0]], k), at([pairs[0][1], pairs[1][1]], k)];
@@ -203,6 +208,7 @@ export class Rival {
     this.tr = this.race.newTracker();
     this.stuckT = 0;
     this.reverseT = 0;
+    this.stuckAt = null; // where the bot has been for stuckAt.t s (STUCK)
     this.backT = 0; // отъезд назад для нового тарана
     this.chargeT = 0; // пока > 0, новый отъезд не начинаем — даём разогнаться
     this.boost = 1;
@@ -215,6 +221,8 @@ export class Rival {
     this.prey = null;
     this.preyT = 0;
     this.scanT = 0;
+    this.skipPrey = null; // a pedestrian just given up on: not picked again for GORE.skip s
+    this.skipT = 0;
     this.fireCD = rand(...at2(HUNT.firePause, this.def.aggr));
     this.goreCD = rand(...GORE.firePause);
     this.out = false; // разбит — выбыл
@@ -319,6 +327,7 @@ export class Rival {
     for (const p of peds.peds) {
       if (p.state === ST.FREE || p.state === ST.DEAD || p.state === ST.FLYING) continue;
       if (this._unsafe(p.x, p.z)) continue; // за пешеходом в зону смерти не едем
+      if (p === this.skipPrey && this.skipT > 0) continue;
       const { ang, d } = this._bearing(p.x, p.z);
       if (d > range || Math.abs(ang) > cone) continue;
       const lying = p.state === ST.DOWN || p.state === ST.GETUP;
@@ -333,11 +342,18 @@ export class Rival {
   _goreDecision(dt, peds) {
     const g = this.def.gore;
     if (!peds || g <= 0) return;
+    this.skipT -= dt;
     if (this.mode === 'gore') {
       const p = this.prey;
       this.preyT += dt;
       const gone = !peds.isLiving(p) || this._unsafe(p.x, p.z);
-      if (gone || this.preyT > at(GORE.give, g) || Math.hypot(p.x - this.preyX, p.z - this.preyZ) > 15) {
+      const late = this.preyT > at(GORE.give, g);
+      if (gone || late || Math.hypot(p.x - this.preyX, p.z - this.preyZ) > 15) {
+        // couldn't get it in time (circling it, or it's behind a wall): leave it alone for a while
+        if (late && !gone) {
+          this.skipPrey = p;
+          this.skipT = GORE.skip;
+        }
         this.mode = 'race';
         this.prey = null;
         this.scanT = 0.3;
@@ -403,6 +419,7 @@ export class Rival {
       if (fwd <= 0) continue;
       const ang = Math.abs(Math.atan2(dx * -c + dz * s, fwd));
       if (ang > cone + 1.2 / d) continue;
+      if (!car.shotReaches(t.x, t.y, t.z, 1.7)) continue; // tilted: the barrel points into the ground or over it
       if (!this.city.world.raycast(car.x, car.z, dx / Math.hypot(dx, dz), dz / Math.hypot(dx, dz), d, shotFilter)) return true;
     }
     return false;
@@ -417,6 +434,7 @@ export class Rival {
     const hit = peds.raycast(car.x, car.z, s, c, range, true);
     if (!hit || hit.t < FIRE_MIN + 4) return false;
     const hx = car.x + s * hit.t, hz = car.z + c * hit.t;
+    if (!car.shotReaches(hx, this.city.groundHeight(hx, hz), hz)) return false;
     for (const o of cars) {
       if (o !== car && !o.wrecked && Math.hypot(o.x - hx, o.z - hz) < GORE.clearance) return false;
     }
@@ -527,7 +545,10 @@ export class Rival {
       steer = -Math.sign(ang || 1);
       if (this.reverseT <= 0) this.stuckT = 0.6;
     }
-    if (this.stuckT > 5) this.respawn();
+    const a = this.stuckAt;
+    if (!a || Math.hypot(car.x - a.x, car.z - a.z) > STUCK.near) this.stuckAt = { x: car.x, z: car.z, t: 0 };
+    else if (!finished && !(this.mode === 'hunt' && Math.hypot(this.target.x - car.x, this.target.z - car.z) < STUCK.ram)) a.t += dt;
+    if (this.stuckT > 5 || this.stuckAt.t > STUCK.time) this.respawn();
     // протаранил жертву — сдать назад, держа её в прицеле (задним ходом руль наоборот), и ударить снова
     this.chargeT -= dt;
     if (this.backT > 0) {
@@ -569,6 +590,7 @@ export class Rival {
     car.teleport(z ? roadPointNear(this.city, z.cx, z.cz, Math.max(12, z.radius * 0.6)) : this.race.respawnPoint(this.tr.lastCp, this.startPoint()));
     this.stuckT = 0;
     this.reverseT = 0;
+    this.stuckAt = null;
     this.mode = 'race';
     this.target = null;
     this.prey = null;

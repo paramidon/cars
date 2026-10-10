@@ -27,7 +27,7 @@ export class MachineGuns {
     this.fx = fx;
     this.audio = audio;
     this.peds = null;
-    this.phys = null; // Rapier (?phys=rapier): bullets fly in 3D against its static colliders
+    this.phys = null; // Rapier: bullets fly in 3D against its static colliders
     this.listener = null;
     this.onCarHit = null; // (victim, shooter, dmg, x, z, dx, dz) — моя пуля попала в машину
     const geo = new THREE.BoxGeometry(1, 1, 1);
@@ -62,7 +62,7 @@ export class MachineGuns {
         car.mgTarget = this._pick(car, cars);
       }
       const t = car.mgTarget;
-      if (t && (t.isCar ? !t.wrecked : this.peds.isAlive(t))) want = wrapAngle(Math.atan2(t.x - car.x, t.z - car.z) - car.yaw);
+      if (t && (t.isCar ? !t.wrecked : this.peds.isAlive(t))) want = car.turretToward(Math.atan2(t.x - car.x, t.z - car.z));
       else car.mgTarget = null;
     }
     const d = wrapAngle(want - car.turretYaw);

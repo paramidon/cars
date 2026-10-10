@@ -72,6 +72,8 @@ export const CAR_HALF_L = 2.35;
 const GUN_Z = -0.35; // ось башни на крыше (вдоль машины)
 const BARREL = 2.25; // от оси башни до дульного среза
 const MUZZLE_LEVEL = (4 * Math.PI) / 180; // rad of the barrel's slope ignored (see muzzle)
+const SHOT_PAD = 0.4; // m: a shell passing this far below or above a target still counts (CANNON.carHitPad)
+const TURRET_STEEP = (50 * Math.PI) / 180; // rad: steeper than this, the turret only gets as close as it can (turretToward)
 
 /** Свои: одна команда (или один экипаж) — друг друга не бьют. */
 export const sameTeam = (a, b) => a !== b && a.team != null && a.team === b.team;
@@ -354,6 +356,24 @@ export class Car {
     return { x: p.x, y: p.y, z: p.z, dx: dx * Math.cos(a), dy: Math.sin(a), dz: dz * Math.cos(a) };
   }
 
+  /**
+   * Would a shell fired now hit something up to h m tall standing on ground y at (x, z)? Shells fly straight, so on a
+   * tilted car the barrel can point into the ground or over the target; on its roof the muzzle can be under the ground.
+   * Bots check this before they fire.
+   */
+  shotReaches(x, y, z, h = 1.8) {
+    const m = this.muzzle();
+    const hd = Math.hypot(m.dx, m.dz);
+    if (hd < 0.2) return false; // (nearly) straight up or down
+    const at = m.y + (m.dy / hd) * Math.hypot(x - m.x, z - m.z);
+    if (at < y - SHOT_PAD || at > y + h + SHOT_PAD) return false;
+    if (!this.rb) return true;
+    // the muzzle itself must be in the open: from the body's middle to it, nothing static in the way
+    const c = this.toWorld(0, 0.9, 0, _a);
+    const dx = m.x - c.x, dy = m.y - c.y, dz = m.z - c.z, d = Math.hypot(dx, dy, dz);
+    return !this.rb.phys.castStatic(c.x, c.y, c.z, dx / d, dy / d, dz / d, d);
+  }
+
   /** The body's rotation: the rigid body's on Rapier, the heading alone on the old physics. */
   _rot() {
     return this.rb ? this.rb.quat : _qi.setFromAxisAngle(_Y, this.yaw);
@@ -403,16 +423,34 @@ export class Car {
 
   /** Куда смотрит ствол (мировой угол). */
   get aimYaw() {
-    return this.yaw + this.turretYaw;
+    if (!this.rb) return this.yaw + this.turretYaw;
+    // on Rapier: the barrel's real heading, also on a tilted car (straight up or down — the car's heading plus the turret)
+    const t = this.turretYaw;
+    const d = this.toWorld(Math.sin(t), 0, Math.cos(t), _b, true);
+    return Math.hypot(d.x, d.z) > 1e-3 ? Math.atan2(d.x, d.z) : wrapAngle(this.yaw + t);
   }
 
   /**
-   * The turret's angle (relative to the body) that points the barrel as close as it can get to the world heading a: on a
-   * tilted or flipped car the turret turns about the body's own up axis, not the world's.
+   * The turret's angle (relative to the body) that points the barrel at the world heading a: on a tilted or flipped car
+   * the turret turns about the body's own up axis, not the world's. Of the two angles whose barrel lies in the vertical
+   * plane of a, the one facing a — unless the barrel would point more than TURRET_STEEP up or down (the car is on its
+   * side): then the angle that points it as close as it can get to a.
    */
   turretToward(a) {
     if (!this.rb) return wrapAngle(a - this.yaw);
-    const d = _b.set(Math.sin(a), 0, Math.cos(a)).applyQuaternion(_qi.copy(this._rot()).invert());
+    const inv = _qi.copy(this._rot()).invert();
+    // the barrel (sin t, 0, cos t) in the body's frame lies in the plane of a when it is square to n, a's horizontal normal
+    const n = _a.set(Math.cos(a), 0, -Math.sin(a)).applyQuaternion(inv);
+    if (Math.hypot(n.x, n.z) > 1e-3) {
+      let t = Math.atan2(-n.z, n.x);
+      const d = this.toWorld(Math.sin(t), 0, Math.cos(t), _b, true);
+      if (d.x * Math.sin(a) + d.z * Math.cos(a) < 0) {
+        t = wrapAngle(t + Math.PI);
+        d.negate();
+      }
+      if (Math.abs(d.y) < Math.sin(TURRET_STEEP)) return t;
+    }
+    const d = _b.set(Math.sin(a), 0, Math.cos(a)).applyQuaternion(inv);
     // the heading lies along the body's up axis (the car is on its side, facing up or down): any turret angle will do
     return Math.hypot(d.x, d.z) < 1e-3 ? this.turretYaw : Math.atan2(d.x, d.z);
   }

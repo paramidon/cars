@@ -33,8 +33,3 @@ export const DEBUG = params.has('debug');
 export const MUTE = params.has('mute');
 /** `?map=test` — тестовый полигон: пустая площадка с парой домов, неподвижные пешеходы, без соперников и победы. */
 export const TEST_MAP = params.get('map') === 'test';
-/**
- * `?phys=rapier` — every car (yours and the bots) on the rigid-body engine Rapier, in the city and on the test ground
- * (which then also gets ramps, the tube and the deck). Work in progress (PHYSICS_PLAN.md); single player only for now.
- */
-export const PHYS_RAPIER = params.get('phys') === 'rapier';

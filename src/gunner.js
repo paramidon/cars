@@ -89,9 +89,13 @@ export class BotGunner {
       const tx = T.x + (T.isCar ? T.vx : 0) * lead - car.x, tz = T.z + (T.isCar ? T.vz : 0) * lead - car.z;
       want = Math.atan2(tx, tz) + (T.isCar ? this.err : 0);
     }
-    car.turretYaw = wrapAngle(turnToward(car.yaw + car.turretYaw, want, GUNNER.turn * dt) - car.yaw);
+    // the turret turns towards the angle that points the barrel at `want` (on a tilted car — Car.turretToward)
+    car.turretYaw = turnToward(car.turretYaw, car.turretToward(want), GUNNER.turn * dt);
     if (!T || car.reload > 0 || this.pause > 0) return false;
     if (Math.abs(wrapAngle(want - car.aimYaw)) >= GUNNER.cone + 1 / d) return false;
+    // a tilted car's barrel can point into the ground or over the target
+    const ty = T.isCar ? T.y : car.city.groundHeight(T.x, T.z);
+    if (!car.shotReaches(T.x, ty, T.z, T.isCar ? 1.7 : 1.8)) return false;
     this.pause = rand(...GUNNER.pause);
     return true;
   }

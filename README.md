@@ -43,7 +43,12 @@ lose by wrecking your own car or running out of time.
   Racers are rubber-banded: if they fall far behind they ease off a little, if they get ahead they press a little. For the first ~10 s
   everyone drives together. So that two cars don't circle forever firing and missing, hunting has patience: every hit resets it,
   and without hits the bot gives up the victim after a few seconds and follows the track for a while (if the victim is hunting
-  it back, patience runs out faster). Everyone backs up when stuck and runs over pedestrians (it repairs their hull too). Your place is shown at the top of the screen,
+  it back, patience runs out faster). Everyone backs up when stuck and runs over pedestrians (it repairs their hull too).
+  A bot that can't get more than 8 m away from one spot for 8 s (wedged between a tree and a building, circling a
+  pedestrian it can't hit) respawns at its last gate (in battle royale — inside the zone; ramming a target within 15 m
+  doesn't count), and a pedestrian a bot gave up on isn't picked again for 6 s (`STUCK`, `GORE.skip`). Bots also don't
+  fire when a shell would miss because their car is tilted — into the ground, over the target, or from under the car on
+  its roof (`Car.shotReaches`); a tipped bot rolls back onto its wheels like any car. Your place is shown at the top of the screen,
   along with how many enemies are left; on desktop the left side shows a table of participants with their pedestrian counts (a rival
   approaching 50 is announced at 25, 40 and 45); rivals are marked on the minimap,
   and each car shows a name and a hull bar above it.
@@ -114,9 +119,9 @@ lose by wrecking your own car or running out of time.
   stands up again in their spot after 5 s if no car is within 8 m. No rivals, no track, no timer and no win condition — only
   your own car; if it gets wrecked — «ЕЩЁ ЗАЕЗД». Single player only. New mechanics should be added here too.
   Layout — `testGround()` in `src/world/city.js`.
-- **Rigid-body physics (work in progress)** — `?phys=rapier` puts every car (yours and the bots, in the city and on the
-  test ground) on the 3D physics engine Rapier (`PHYSICS_PLAN.md`). Online play works on it too, if every player opens
-  the game with the flag (see Multiplayer). Each car is a 1200 kg body (centre of mass 0.55 m up) on four ray-cast springs; seen from above its
+- **Rigid-body physics** — every car (yours and the bots, in the city, on the test ground and online) is a body in the
+  3D physics engine Rapier (`PHYSICS_PLAN.md`; the old 2D car physics is still in the code, unused, until it is
+  deleted). Each car is a 1200 kg body (centre of mass 0.55 m up) on four ray-cast springs; seen from above its
   lower body has semicircular ends, and it slides along walls, poles and trees (friction 0.1, little sideways grip while
   touching one), so a car glances off a pole or a building's corner as before instead of getting stuck. The same handling numbers as the old physics are applied as velocity changes while wheels
   touch the ground, so top speed, acceleration, steering, the handbrake slide and reverse are unchanged (measured to
@@ -140,7 +145,7 @@ lose by wrecking your own car or running out of time.
   fires upwards; its springs' few degrees are ignored) and hit the car's box turned with its body; shells and bullets
   stop at any solid surface, the ground included. Pedestrians are hit by that box too: a car flying over their heads
   or driving through the tube under them misses them, one landing on them hits them as hard as it falls. Street props
-  break when the body touches them, so a car flying over a bin misses it. On the test ground the flag also adds
+  break when the body touches them, so a car flying over a bin misses it. The test ground also has
   vertical play (`verticals()` in `src/world/city.js`): a big 3.5 m ramp in front of the line of 50 (at ~108 km/h you
   land right in it), three 1.2 m kickers with a boost pad before them, a ramp over the tube's exit trench, the
   underground tube on the west side (an open trench down 5.5 m, an 80 m covered tunnel with lights, a trench back
@@ -184,7 +189,6 @@ mode (classic / crew), number of bots (0–7, in battle also 10 / 15 / 19; at mo
 
 **Versions.** The game has a fingerprint: the version from `package.json` + a hash of the sources (`scripts/build-id.mjs`), shown
 in the lobby. A room only admits players with the same fingerprint; a room with a different version is greyed out in the list with a note.
-With `?phys=rapier` the fingerprint ends in `+rapier`: the same build on the other physics can't join the room.
 
 **How it works.** The server (`server/server.js`) handles the lobby, rooms and message relaying; it doesn't simulate the game.
 Everyone simulates their own car, and the host also simulates the bots; other cars arrive as snapshots 20 times a second and
@@ -203,7 +207,7 @@ Every client measures its round trip to the server (a ping every 2 s) and sends 
 adds its own half and carries each snapshot forward by that much (at most 0.15 s), so a car is shown where it is now, not
 where it was when the snapshot left.
 
-**On the rigid-body physics** (`?phys=rapier`) a snapshot carries a car's full pose: position with height, rotation (one
+**On the rigid-body physics** a snapshot carries a car's full pose: position with height, rotation (one
 number: the quaternion's three smallest components, 10 bits each, ~0.1°), velocity and spin on all three axes — 80 bytes
 per car instead of 66 (a host with 7 cars sends 12 KB/s). A car another computer drives is a *ghost*: a body of a car's
 mass with no gravity that touches only the cars driven here, pulled each physics step towards its snapshot (carried
@@ -221,7 +225,9 @@ other's ghost would push both cars the same way, faster and faster. A respawn mo
 120 ms round trips, a ram does the same damage as single player (36.6 at 60 km/h, 53.8 at 100) and throws the victim
 about as far. Coming back after a reload puts the car exactly as it was — on its roof if it lay on its roof. The
 gunner in someone else's car aims through the car's real rotation: on a tilted or flipped car the turret turns in the
-body's own plane and the barrel takes the nearest direction to where the gunner looks.
+body's own plane and the barrel points at the heading the gunner looks along (nose up across a ramp it tilts up or
+down with the car); only when that would point it more than 50° up or down (on its side) does it take the nearest
+direction it can. Bot gunners and the machine gun's auto-aim turn the turret the same way.
 
 **If you drop out.** When the connection breaks, the game reconnects by itself every 2 s, and the server holds your slot for 90 s
 (the others see «СВЯЗЬ ПОТЕРЯНА, ЖДЁМ…» — "connection lost, waiting"; while the gunner is away, a bot fires their gun). Even if the page
@@ -264,7 +270,6 @@ URL parameters:
   (default: phone — low, desktop — high);
 - `?peds=100` — how many live pedestrians to keep in the city (default 84 on desktop, 54 on a phone);
 - `?map=test` — the test ground instead of the city;
-- `?phys=rapier` — every car on the Rapier rigid-body physics, in the city and on the test ground (which then also gets ramps, the tube and the deck); online too, when every player in the room has it; work in progress;
 - `?debug` — FPS counter;
 - `?mute` — start muted without touching saved settings (automated tests run this way, together with Chromium's `--mute-audio`).
 
@@ -294,12 +299,13 @@ src/
   hud.js              HUD, popup captions, blood on screen, minimap
   audio.js            synthesized sound: engine and effects buses, volume settings
   physics/collision.js  2D collisions: AABBs + circles, spatial grid, DDA raycast
-  physics/rapier.js   ?phys=rapier: the Rapier world, static colliders from the city, prop sensors, fixed 1/120 s
+  physics/rapier.js   the Rapier world, static colliders from the city, prop sensors, fixed 1/120 s
                       steps, car-vs-car hits, ray casts for shells and bullets
-  physics/vehicle.js  ?phys=rapier: a car as a rigid body — chassis, ray-cast suspension, arcade layer, tripping,
+  physics/vehicle.js  a car as a rigid body — chassis, ray-cast suspension, arcade layer, tripping,
                       self-righting, wall / landing / roof hits, blasts; a ghost of another player's car (network)
 tests/physics.js      in-browser measurements of the physics: handling numbers, lean in a race, bots' pace, side hits,
-                      damage (walls, landings, rams), blasts, pedestrians and props against the car's box, the muzzle
+                      damage (walls, landings, rams), blasts, pedestrians and props against the car's box, the muzzle,
+                      bot games (stuck bots, wrecks, kills), the bot gunner on a tilted car
 tests/net.html, net.js  two games side by side in one page, joined in a room through the server: a car vs its ghost
                       in jumps, rollovers and ordinary driving, rams, the gunner on a tilted car, reconnecting, bytes
   world/city.js       city generation (and the test ground), pedestrian graph, minimap
@@ -320,15 +326,14 @@ tests/net.html, net.js  two games side by side in one page, joined in a room thr
 server/server.js      server: serves dist/, lobby and rooms, relaying, who was first
 ```
 
-There is no physics engine by default: collisions are computed in the XZ plane (a car is three circles, buildings are AABBs, poles are circles),
-which is enough for an arcade game and cheap on phones. `?phys=rapier` replaces that for cars with the Rapier engine
-(see above); pedestrians, the camera and bot navigation still use the 2D world, with heights from the car's real
+Cars are bodies in the Rapier physics engine (see above). Everything else collides in the XZ plane (buildings are
+AABBs, poles are circles), which is enough for an arcade game and cheap on phones: pedestrians, the camera and bot navigation still use the 2D world, with heights from the car's real
 pose (pedestrians, shells, bullets and bottles test the car's box turned with its body). Pedestrians (all body parts) are drawn in ~6 draw calls via
 `InstancedMesh`. On a weak device the render resolution drops automatically if the FPS sags.
 
-Main tuning numbers: `PHYS` in `src/physics/rapier.js` and `VEH` in `src/physics/vehicle.js` (`?phys=rapier` only: gravity, step, wall friction, mass, centre of mass, chassis shape and friction, grip against obstacles — `leanGrip`, suspension, tripping — `tripAccel`/`trip`/`tripTime`, landing and roof damage — `landSafe`/`landScale`/`roofSafe`/`roofScale`, blasts — `blastLift`/`blastSpin`, self-righting, pads; `GHOST` — other players' cars over the network: the spring's `rate`, how far a snapshot is carried forward — `ahead`, `sink`, `snap`, passing through — `deep`/`loose`, a just-hit ghost — `holdShow`/`hold`, reconciling knocks — `knockWindow`), `SNAP_HZ`/`LEAD_MAX` in `src/net/netplay.js` (snapshots a second, the most a snapshot is carried forward for the network's delay), `P` in `src/car.js` (thrust, grip, steering at speed — the `yawCap` table and `hardFrom`/`hardTo`/`steerTime`/`yawResp`, steering return — `steerReturn`/`yawUnwind`, damage threshold and multiplier),
+Main tuning numbers: `PHYS` in `src/physics/rapier.js` and `VEH` in `src/physics/vehicle.js` (gravity, step, wall friction, mass, centre of mass, chassis shape and friction, grip against obstacles — `leanGrip`, suspension, tripping — `tripAccel`/`trip`/`tripTime`, landing and roof damage — `landSafe`/`landScale`/`roofSafe`/`roofScale`, blasts — `blastLift`/`blastSpin`, self-righting, pads; `GHOST` — other players' cars over the network: the spring's `rate`, how far a snapshot is carried forward — `ahead`, `sink`, `snap`, passing through — `deep`/`loose`, a just-hit ghost — `holdShow`/`hold`, reconciling knocks — `knockWindow`), `SNAP_HZ`/`LEAD_MAX` in `src/net/netplay.js` (snapshots a second, the most a snapshot is carried forward for the network's delay), `P` in `src/car.js` (thrust, grip, steering at speed — the `yawCap` table and `hardFrom`/`hardTo`/`steerTime`/`yawResp`, steering return — `steerReturn`/`yawUnwind`, damage threshold and multiplier),
 `HEAL` in `src/main.js` (repair for kills), `RACE` in `src/race.js` (laps, pace, time bonuses),
 `CANNON` in `src/cannon.js` (reload, damage, blast radius), `MG` in `src/mg.js` (machine gun), `MOLOTOV` in `src/molotov.js` (cocktails), `RIVALS` (personality `aggr`/`gore`, speed; battle bots beyond seven reuse the same personalities under names from `EXTRA`), `MAX_CARS`/`MAX_CARS_ROYALE` (cars in a race / in battle),
-`HUNT`/`GORE`/`PREY_WEIGHT`/`HUNT_DELAY` and `CAR_HIT` in `src/racers.js` (how personality scales turn into behavior,
-whom hunters go after, ram damage), `RACE.goreWin` (how many pedestrians to win), `KNOCK_SPEED`/`KILL_SPEED` and pedestrian reactions in `_panic()`
+`HUNT`/`GORE`/`PREY_WEIGHT`/`HUNT_DELAY`, `STUCK` and `CAR_HIT` in `src/racers.js` (how personality scales turn into behavior,
+whom hunters go after, when a stuck bot respawns, ram damage), `RACE.goreWin` (how many pedestrians to win), `KNOCK_SPEED`/`KILL_SPEED` and pedestrian reactions in `_panic()`
 in `src/pedestrians.js`, `QUALITY`/`CITY` in `src/config.js`.

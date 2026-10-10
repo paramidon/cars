@@ -26,7 +26,7 @@ export class Artillery {
   constructor(scene, city, fx, audio) {
     this.scene = scene;
     this.world = city.world;
-    this.phys = null; // Rapier (?phys=rapier): shells fly in 3D against its static colliders
+    this.phys = null; // Rapier: shells fly in 3D against its static colliders
     this.fx = fx;
     this.audio = audio;
     this.cars = [];

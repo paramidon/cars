@@ -1,14 +1,10 @@
 import { version } from '../../package.json';
-import { PHYS_RAPIER } from '../config.js';
 
 /** Версия сборки: номер из package.json + отпечаток исходников (scripts/build-id.mjs). */
 // eslint-disable-next-line no-undef
 export const BUILD_VERSION = `${version}+${typeof __BUILD__ === 'string' ? __BUILD__ : 'dev'}`;
-/**
- * Версия игры для сетевой комнаты: the build's, plus "+rapier" with ?phys=rapier — the same build on the other physics
- * can't share a room with it.
- */
-export const GAME_VERSION = PHYS_RAPIER ? `${BUILD_VERSION}+rapier` : BUILD_VERSION;
+/** Версия игры для сетевой комнаты. */
+export const GAME_VERSION = BUILD_VERSION;
 const PING_MS = 2000; // how often to measure the round trip to the server
 const PINGS = 5; // … over how many of the last ones
 

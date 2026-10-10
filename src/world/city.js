@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CITY, PHYS_RAPIER } from '../config.js';
+import { CITY } from '../config.js';
 import { mulberry32, clamp } from '../utils.js';
 import { GeoBuilder, addBox, addCyl, addBlob } from './geom.js';
 import { CollisionWorld } from '../physics/collision.js';
@@ -24,7 +24,7 @@ const ROOF_COLORS = ['#8b3a2b', '#6b4a3a', '#4a5560', '#9c4f30', '#5a3a2a', '#3f
 const AWNING_COLORS = ['#c0392b', '#1f618d', '#239b56', '#b9770e', '#7d3c98', '#d35400'];
 const LEAF_COLORS = ['#3f7a2e', '#4c8a34', '#5a9a3a', '#356b28', '#6aa443'];
 
-// Test ground with ?phys=rapier: the underground tube along Z — an open trench down, a covered section, an open trench up.
+// Test ground: the underground tube along Z — an open trench down, a covered section, an open trench up.
 const TUBE = { x0: -134, x1: -126, floor: -5.5, ceil: -0.6, z: [-70, -30, 50, 90] };
 const DECK = { x0: 100, z0: 80, x1: 130, z1: 110, h: 6 }; // raised deck reached by a long ramp
 const CURB_BEVEL = 0.3; // m — the rigid-body curbs rise over this much (see curbSolid)
@@ -87,8 +87,8 @@ export function buildCity(scene, quality, test = false) {
   const pads = []; // полигон: площадки с бордюром под домами
   const gridN = test ? 0 : N; // на полигоне кварталов и разметки улиц нет
   let pedLayout = null;
-  // test ground on the rigid-body physics: ramps, the tube (no ground over its open trenches), the deck, pads
-  const vert = test && PHYS_RAPIER;
+  // test ground: ramps, the tube (no ground over its open trenches), the deck, pads
+  const vert = test;
   const holes = vert ? [[TUBE.x0, TUBE.z[0], TUBE.x1, TUBE.z[1]], [TUBE.x0, TUBE.z[2], TUBE.x1, TUBE.z[3]]] : [];
   const surfaces = []; // extra ground: { x0, z0, x1, z1, at(x, z), ramp }
   const triggers = []; // pads: { type: 'boost' | 'launch', x0, z0, x1, z1, y }

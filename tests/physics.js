@@ -1,15 +1,18 @@
 /**
- * In-browser physics measurements (PHYSICS_PLAN.md, sessions 2 and 3). Not part of the game build: load it into a running
- * dev server page and call the functions with the game, e.g. in the console of `/?mute&map=test&phys=rapier`:
+ * In-browser physics measurements (PHYSICS_PLAN.md, sessions 2, 3 and 5). Not part of the game build: load it into a running
+ * dev server page and call the functions with the game, e.g. in the console of `/?mute&map=test`:
  *
  *   const t = await import('/tests/physics.js');
  *   await t.handling(game);             // test ground: top speed, acceleration, yaw rates, handbrake, reverse, speedometer
  *   await t.leanRace(game, { secs: 75 }); // city: max lean of every car in an 8-car race
  *   await t.botLaps(game, { runs: 6 });   // city: bots' average speed, 6 seeded runs of 25 s
- *   await t.wallDamage(game);           // test ground: hull lost nose first into a wall / a pole (both paths)
- *   // also: landings, carCrashes, blasts, pedJumps, props, muzzle (session 3), sideHit, obstacle, wallScrape, rollovers
+ *   await t.wallDamage(game);           // test ground: hull lost nose first into a wall / a pole 
+ *   await t.botBattles(game, { type: 'royale', bots: 19 }); // city: 10 bot games of 2 min — stuck bots, wrecks, kills
+ *   // also: landings, carCrashes, blasts, pedJumps, props, muzzle (session 3), sideHit, obstacle, wallScrape, rollovers,
+ *   // gunnerTilt (session 5)
  *
- * Run the same calls without `phys=rapier` to get the old physics' numbers. The functions stop the page's own
+ * Rapier is the only car physics since session 5; the `phys: 'old'` results in PHYSICS_PLAN.md were measured before
+ * that, with `?phys=rapier` left out. The functions stop the page's own
  * animation loop and step the game by hand (game.step(1/60)), so they run faster than real time; reload afterwards.
  */
 
@@ -333,7 +336,7 @@ export async function botLaps(game, { runs = 6, secs = 25, bots = 7 } = {}) {
  * it was thrown, whether it ended on its wheels, the hit's closing speed and the ram damage.
  */
 export async function sideHit(game, { speeds = [40, 60, 80, 100, 125] } = {}) {
-  if (!game.test || !game.phys) throw new Error('sideHit(): open /?map=test&phys=rapier');
+  if (!game.test || !game.phys) throw new Error('sideHit(): open /?map=test');
   const inp = takeOver(game);
   game.restart();
   if (!game.dummies.length) game.addPhysDummies(1);
@@ -547,6 +550,100 @@ export async function rollovers(game, { races = 20, secs = 75, seed0 = 100 } = {
   return { phys: game.phys ? 'rapier' : 'old', races, tips: tips.length, perRace: r1(tips.length / races), list: tips };
 }
 
+/**
+ * City (session 5): `runs` seeded games of `secs` s with `bots` bots — a race (`game: 'race'`, up to 7 bots) or a battle
+ * royale (`'royale'`, up to 19), classic or crew (`mode: 'crew'`: bot gunners in every turret). My car runs on the
+ * autopilot and can't be wrecked. Per run: the longest time any bot spent within 6 m of one spot while the game was on
+ * (not wrecked, not finished), bots wrecked, pedestrians killed by bots, rams, shots, bot respawns and back-ups, tips
+ * past 60° and how long the longest one lasted. A run stops early when the game ends (a bot wins or everyone is wrecked).
+ * `each(t, rivals)` is called every step (for tracing one bot).
+ */
+export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type = 'race', mode = 'classic', seed0 = 500, each = null } = {}) {
+  if (game.test) throw new Error('open the city (no ?map=test)');
+  const random = Math.random;
+  const res = [];
+  for (let k = 0; k < runs; k++) {
+    takeOver(game);
+    Math.random = seeded(seed0 + k);
+    Object.assign(game.solo, { game: type, mode, seat: 'driver', bots });
+    game.restart();
+    game.autoDriver = autopilot(game);
+    game.car.applyDamage = () => {};
+    while (game.countdown > 0) game.step(DT);
+    const rivals = game.rivals;
+    const st = rivals.map((r) => ({ ax: r.car.x, az: r.car.z, still: 0, max: 0, at: null, tipT: 0, maxTip: 0, tips: 0 }));
+    let respawns = 0, reverses = 0, rams = 0, shots = 0, t = 0;
+    const wasRev = rivals.map(() => false);
+    for (const r of rivals) {
+      const orig = r.respawn;
+      r.respawn = function () {
+        respawns++;
+        return orig.call(this);
+      };
+    }
+    const carHit = game._carHit;
+    game._carHit = function (...a) {
+      if (a[2] > CAR_HIT_MIN) rams++;
+      return carHit.apply(this, a);
+    };
+    const fire = game._fire;
+    game._fire = function (c) {
+      if (c.ai || c.botGunner) shots++;
+      return fire.call(this, c);
+    };
+    const kills0 = rivals.reduce((a, r) => a + r.car.kills, 0);
+    await run(game, secs, () => {
+      if (game.state !== 'play') return false;
+      each?.(t, rivals);
+      rivals.forEach((r, i) => {
+        const s = st[i], c = r.car;
+        const rev = r.reverseT > 0;
+        if (rev && !wasRev[i]) reverses++;
+        wasRev[i] = rev;
+        const lean = Math.acos(Math.max(-1, Math.min(1, c.upY))) * DEG;
+        if (lean > 60 && !c.wrecked) {
+          if (s.tipT === 0) s.tips++;
+          s.tipT += DT;
+          s.maxTip = Math.max(s.maxTip, s.tipT);
+        } else s.tipT = 0;
+        if (c.wrecked || r.tr.finished || Math.hypot(c.x - s.ax, c.z - s.az) > 6) {
+          s.ax = c.x;
+          s.az = c.z;
+          s.still = 0;
+          return;
+        }
+        s.still += DT;
+        if (s.still > s.max) {
+          s.max = s.still;
+          s.at = { name: r.name, x: r1(c.x), z: r1(c.z), mode: r.mode, up: r1(c.upY), t: r1(t) };
+        }
+      });
+      t += DT;
+    });
+    for (const r of rivals) delete r.respawn;
+    delete game._fire;
+    delete game._carHit;
+    const worst = st.reduce((a, s) => (s.max > a.max ? s : a), st[0]);
+    res.push({
+      run: k, secs: r1(t), state: game.state, stuckMax: r1(worst.max), stuckAt: worst.at,
+      wrecked: rivals.filter((r) => r.car.wrecked).length,
+      kills: rivals.reduce((a, r) => a + r.car.kills, 0) - kills0,
+      rams, shots, respawns, reverses,
+      tips: st.reduce((a, s) => a + s.tips, 0), longestTip: r1(Math.max(...st.map((s) => s.maxTip))),
+    });
+  }
+  Math.random = random;
+  const mean = (f) => r1(res.reduce((a, r) => a + f(r), 0) / res.length);
+  return {
+    phys: game.phys ? 'rapier' : 'old', type, mode, bots, secs: mean((r) => r.secs),
+    stuckMax: Math.max(...res.map((r) => r.stuckMax)), stuckOver10: res.filter((r) => r.stuckMax > 10).length,
+    wrecked: mean((r) => r.wrecked), kills: mean((r) => r.kills), rams: mean((r) => r.rams), shots: mean((r) => r.shots),
+    respawns: mean((r) => r.respawns), reverses: mean((r) => r.reverses), tips: mean((r) => r.tips),
+    longestTip: Math.max(...res.map((r) => r.longestTip)), crashes: window.crash?.entries?.length ?? 0, runs: res,
+  };
+}
+const CAR_HIT_MIN = 4.5; // CAR_HIT.threshold: a ram that does damage
+
 // ---------------------------------------------------------------- session 3: damage, pedestrians, props, weapons
 
 /** Fresh car at sp: full hull, every part on (the bull bar), standing still. */
@@ -612,7 +709,7 @@ export async function wallDamage(game, { speeds = [25, 30, 40, 60, 80, 100, 125]
  * roofSafe).
  */
 export async function landings(game, { speeds = [8, 12, 14, 16, 20, 24] } = {}) {
-  if (!game.test || !game.phys) throw new Error('landings(): open /?map=test&phys=rapier');
+  if (!game.test || !game.phys) throw new Error('landings(): open /?map=test');
   takeOver(game);
   game.restart();
   const car = game.car, g = -game.phys.world.gravity.y;
@@ -648,7 +745,7 @@ export async function landings(game, { speeds = [8, 12, 14, 16, 20, 24] } = {}) 
  * T-bone (60 into a parked car's side), a side swipe (60 and 60, 15° apart). Closing speed and the hull each lost.
  */
 export async function carCrashes(game) {
-  if (!game.test || !game.phys) throw new Error('carCrashes(): open /?map=test&phys=rapier');
+  if (!game.test || !game.phys) throw new Error('carCrashes(): open /?map=test');
   const inp = takeOver(game);
   game.restart();
   if (!game.dummies.length) game.addPhysDummies(1);
@@ -693,7 +790,7 @@ export async function carCrashes(game) {
  * and a direct hit there. The car's largest lean, how fast it was thrown, the hull lost, did it tip over.
  */
 export async function blasts(game, { gaps = [0, 1, 2, 3], y = 0.9 } = {}) {
-  if (!game.test || !game.phys) throw new Error('blasts(): open /?map=test&phys=rapier');
+  if (!game.test || !game.phys) throw new Error('blasts(): open /?map=test');
   takeOver(game);
   game.restart();
   if (!game.dummies.length) game.addPhysDummies(1);
@@ -828,7 +925,7 @@ export async function props(game) {
  * upside down: the muzzle's height and the shell's slope; and a level shot from 40 m into a parked car.
  */
 export async function muzzle(game) {
-  if (!game.test || !game.phys) throw new Error('muzzle(): open /?map=test&phys=rapier');
+  if (!game.test || !game.phys) throw new Error('muzzle(): open /?map=test');
   takeOver(game);
   game.restart();
   const car = game.car, rb = car.rb;
@@ -841,6 +938,62 @@ export async function muzzle(game) {
     const m = car.muzzle();
     out.push({ pose: name, y: r1(m.y), slopeDeg: r1(Math.asin(m.dy) * DEG), dx: r1(m.dx), dz: r1(m.dz) });
   }
+  fresh(car, game.city.spawn);
+  return out;
+}
+
+/**
+ * Test ground on Rapier (session 5): the bot gunner and the machine gun's auto-aim on a tilted car. The car is posed
+ * (level, nose up 13° as across the big ramp, rolled 30°, on its side, on its roof) facing +z, a target 30 m away at
+ * bearings 0 / 45 / 270 / 200°; the gunner turns for 3 s. Per case: the barrel's heading error from the target's bearing
+ * (`err`), whether the gunner fired, and what the old yaw-only arithmetic would have pointed at (`oldErr`).
+ */
+export async function gunnerTilt(game, { gunner = null } = {}) {
+  if (!game.test || !game.phys) throw new Error('gunnerTilt(): open /?map=test');
+  takeOver(game);
+  game.restart();
+  const BotGunner = gunner ?? (await import('/src/gunner.js')).BotGunner;
+  const car = game.car, rb = car.rb;
+  const Q = rb.quat.constructor;
+  const ax = (x, y, z, deg) => new Q().setFromAxisAngle({ x, y, z, isVector3: true }, (deg * Math.PI) / 180);
+  const heading = () => {
+    const m = car.muzzle();
+    return Math.atan2(m.dx, m.dz);
+  };
+  const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+  const out = [];
+  for (const [pose, q] of [['level', ax(1, 0, 0, 0)], ['nose up 13°', ax(1, 0, 0, -13)], ['rolled 30°', ax(0, 0, 1, 30)], ['on its side', ax(0, 0, 1, 90)], ['on its roof', ax(0, 0, 1, 180)]]) {
+    for (const deg of [0, 45, 270, 200]) {
+      fresh(car, { x: 170, z: 0, yaw: 0 });
+      rb.quat.copy(q);
+      car.turretYaw = 0;
+      const b = (deg * Math.PI) / 180;
+      const T = { isCar: true, name: 'T', y: 0, x: car.x + Math.sin(b) * 30, z: car.z + Math.cos(b) * 30, vx: 0, vz: 0, wrecked: false, team: null };
+      const g = new BotGunner(car, game.city.world, 0);
+      g.errT = 1e9; // no aiming error
+      g.pause = 0;
+      car.reload = 0;
+      let fired = false;
+      for (let i = 0; i < 180; i++) if (g.update(DT, { cars: [car, T], peds: null, shellSpeed: 60 })) fired = true;
+      const err = wrap(heading() - b) * DEG;
+      // the old arithmetic: the turret at (bearing − yaw) as if the car stood level
+      const t0 = car.turretYaw;
+      car.turretYaw = wrap(b - car.yaw);
+      const oldErr = wrap(heading() - b) * DEG;
+      car.turretYaw = t0;
+      out.push({ pose, bearing: deg, target: g.target === T, err: r1(err), fired, oldErr: r1(oldErr), slope: r1(Math.asin(car.muzzle().dy) * DEG) });
+    }
+  }
+  // the machine gun's auto-aim (classic): rolled 30°, a target at 20°
+  fresh(car, { x: 170, z: 0, yaw: 0 });
+  rb.quat.copy(ax(0, 0, 1, 30));
+  car.turretYaw = 0;
+  const b = (20 * Math.PI) / 180;
+  const T = { isCar: true, x: car.x + Math.sin(b) * 20, z: car.z + Math.cos(b) * 20, wrecked: false, team: null };
+  car.mgRetarget = 1e9;
+  car.mgTarget = T;
+  for (let i = 0; i < 120; i++) game.mg.autoAim(car, [car], DT);
+  out.push({ pose: 'mg, rolled 30°', bearing: 20, err: r1(wrap(heading() - b) * DEG) });
   fresh(car, game.city.spawn);
   return out;
 }

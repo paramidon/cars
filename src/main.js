@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import './style.css';
-import { QUALITY, IS_TOUCH, DEBUG, MUTE, TEST_MAP, PHYS_RAPIER } from './config.js';
+import { QUALITY, IS_TOUCH, DEBUG, MUTE, TEST_MAP } from './config.js';
 import { Physics, initRapier, rapierStats } from './physics/rapier.js';
 import { Vehicle } from './physics/vehicle.js';
 import { buildCity } from './world/city.js';
@@ -102,9 +102,9 @@ class Game {
     this.debris = new Debris(scene, this.city.groundHeight, this.city.world);
     this.audio = new AudioFX({ forceMute: MUTE });
     this.breakables = new Breakables(scene, this.city.world, this.city.props, this.city.groundHeight, this.debris, this.fx, this.audio, QUALITY);
-    // ?phys=rapier: every car is a rigid body in a Rapier world (PHYSICS_PLAN.md)
-    this.phys = PHYS_RAPIER ? new Physics(this.city.solids) : null;
-    this.phys?.addProps(this.breakables.items);
+    // every car is a rigid body in a Rapier world (PHYSICS_PLAN.md)
+    this.phys = new Physics(this.city.solids);
+    this.phys.addProps(this.breakables.items);
     this.mainCar = new Car(scene, this.city, this.fx, this.audio, this.debris, QUALITY);
     this._addBody(this.mainCar);
     this.car = this.mainCar; // машина, в которой я сижу (по сети может быть чужая — если я в её пушке)
@@ -1133,7 +1133,7 @@ class Game {
     for (const rc of this.remotes) if (rc.car !== cars[0]) rc.car.postUpdate(dt, NO_INPUT);
   }
 
-  /** Debug (?phys=rapier&map=test): n more cars on Rapier driving in circles on the test ground's open asphalt. */
+  /** Debug (?map=test): n more cars on Rapier driving in circles on the test ground's open asphalt. */
   addPhysDummies(n) {
     if (!this.phys || !this.test) return 0;
     for (let i = 0; i < n; i++) {
@@ -1427,7 +1427,7 @@ boot();
 async function boot() {
   try {
     // the rigid-body engine's WASM has to be up before the world is built
-    if (PHYS_RAPIER) await initRapier();
+    await initRapier();
     start();
   } catch (err) {
     crash.report(err, 'запуск игры');

@@ -27,7 +27,7 @@ given below. Run them in order. At the end of every session, tick its checkbox i
 - [x] Session 2: whole world and all cars on Rapier, handling tuned
 - [x] Session 3: damage, rams, props, pedestrians, weapons in 3D
 - [x] Session 4: networking
-- [ ] Session 5: bots on the new physics
+- [x] Session 5: bots on the new physics
 - [ ] Session 6: remove the old physics, docs, performance
 - [ ] Session 7 (optional): carry over the non-physics changes from `claude/test-verticals`
 
@@ -813,3 +813,93 @@ handling, and `sideHit()` 24 / 32 / 43 / 59 / 67 km/h.
 - `BotGunner` and the machine gun's auto-aim on tilted cars: session 5.
 - The delay emulation only delays receiving, and real jitter or packet loss wasn't tested. Online play on the test ground
   is reachable only from a script (the menu hides the button there).
+
+### Session 5 (2026-10-10): bots on the new physics
+
+**Result:** `?phys=rapier` is gone: every car is on Rapier in single player, the city, the test ground (which always has
+the ramps, the tube and the deck now), battle royale and online. Bots drive, hunt, ram, back up and self-right on it with
+wreck and kill counts within the old physics' spread. Two AI traps that existed on both physics are fixed, and bot
+gunners and the machine gun's auto-aim aim correctly from a tilted car.
+
+**Decisions**
+
+- **Bots needed no driving changes.** `Rival` and the autopilot already drive through `Car._drive` on Rapier (session 2).
+  A tipped bot rolls back onto its wheels by the flip rule like any car (the arcade layer is off while it lies there).
+- **Stuck rule** (`STUCK` in `racers.js`, new). A bot that hasn't got more than 8 m away from one spot for 8 s
+  respawns. The old rule (`stuckT` > 5 s) never fired in a trap: each back-up resets `stuckT`, so a bot wedged between a
+  tree and a building (two at the north edge of the city, x ≈ 47 and −21, z ≈ 165) backed up and drove in again for up
+  to 56 s (old physics) / 28 s (Rapier). Ramming a target within 15 m doesn't count, nor does a finished bot. A first try
+  — respawn on the 3rd back-up within 8 m — still left 11.8 s and didn't catch bots circling a pedestrian.
+- **Butchers circling a pedestrian:** a bot gave up a pedestrian it couldn't hit (inside its turning circle) after
+  `GORE.give` and picked the same one 0.3 s later. A pedestrian given up on is now skipped for 6 s (`GORE.skip`).
+- **Turret on a tilted car** (`Car.turretToward`). Session 4 projected the wanted heading onto the body's plane. On a car
+  rolled 30° that maps heading 45° to a barrel at 37°, and `BotGunner`, which stepped the barrel's world heading, stalled
+  for good at −7.6° asked for 200° (each step was undone by the projection). Now the turret takes the angle whose barrel
+  lies in the wanted heading's vertical plane — the exact heading, tilted up or down with the car — and only when that
+  points more than 50° up or down (`TURRET_STEEP`; on its side) the nearest direction, as before. `BotGunner` steps the
+  turret angle towards it (2.6 rad/s in the turret's own angle), `MG.autoAim` asks it too, and `Car.aimYaw` is the
+  barrel's real heading on Rapier.
+- **Bots don't fire shots that can't land** (`Car.shotReaches`): shells fly straight, so a tilted barrel can hit the
+  ground a few metres away (rolled 30°, target to the side: −26°) or pass over the target (nose up 13° at 30 m: 6.7 m
+  high). A bot driver (`_shouldFire`, `_shouldFireAtPeds`) and a bot gunner fire only if the barrel's line passes the
+  target at 0.4 m below its feet … 0.4 m above its top, and nothing static lies between the body's middle and the muzzle
+  (on its roof the muzzle is under the ground — the session 3 open problem for bots).
+- **Flag removed:** `PHYS_RAPIER` (config), the `+rapier` version suffix (`GAME_VERSION` = `BUILD_VERSION`), the
+  test ground's verticals are unconditional. The old path's code (`_step`, `collideCars`, the `!this.phys` branches in
+  `main.js`, `cannon.js`, `mg.js`, `car.js`) is unreachable now and goes in session 6.
+- **Tests:** `botBattles()` (city: N seeded 2-minute games, race or battle royale, classic or crew; my car on the
+  autopilot and unwreckable; the longest time any bot stayed within 6 m of one spot, wrecks, kills, rams, shots,
+  respawns, back-ups, tips) and `gunnerTilt()` (test ground) in `tests/physics.js`.
+
+**Bot games** (`botBattles()`, 10 seeded games of 120 s per row; a game ends early when a bot wins or all bots are
+wrecked; "stuck" — the longest any bot stayed within 6 m of one spot while the game was on; per game averages)
+
+| | Stuck max, s | Wrecked | Ped kills | Rams > 4.5 m/s | Shots | Respawns | Tipped > 60° (longest) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Race, 7 bots — old physics, old AI | 13.5 (2 games > 10) | 4.7 | 40.3 | 24.5 | 72.8 | 0 | — |
+| … old physics, new AI | 8.4 | 4.2 | 54.3 | 22.9 | 85.9 | 0.6 | — |
+| … Rapier, old AI | 13.6 (1) | 4.1 | 51.6 | 18.7 | 78.8 | 0 | 0.1 (3.5 s) |
+| … **Rapier, final** | **8.7** | **4.2** | **48.6** | 19.1 | 82.8 | 0.2 | 0.1 (1.2 s) |
+| Royale, 19 bots — old physics, old AI | 56.2 (6) | 18.8 | 70.6 | 66.4 | 136 | 0 | — |
+| … old physics, new AI | 8.7 | 18.7 | 57.3 | 62.8 | 130 | 0.9 | — |
+| … Rapier, old AI | 9.8 | 18.7 | 71.5 | 58.6 | 141 | 0 | 0.8 (4.4 s) |
+| … **Rapier, final** | **8.7** | **18.7** | **65.6** | 56.7 | 128 | 0.2 | 0.5 (5.5 s) |
+| Race crew, 7 bots — old physics, old AI (5 games) | 38.5 (3) | 5.8 | 39.4 | 16 | 131 | 0 | — |
+| … old physics, new AI | 8.1 | 6.1 | 36.6 | 14.9 | 129 | 0.8 | — |
+| … **Rapier, final** | **6.1** | **6.0** | **34.8** | 16.7 | 120 | 0 | 1.2 (4.9 s) |
+| Royale crew, 19 bots — old physics, old AI (5 games) | 14 (1) | 19 | 59.8 | 30.4 | 201 | 0 | — |
+| … old physics, new AI | 9.5 | 18.8 | 68.9 | 26.8 | 199 | 0.8 | — |
+| … **Rapier, final** | **8.1** | **18.9** | **57.8** | 33 | 189 | 0.3 | 1.2 (3.4 s) |
+
+Kill counts swing ±20 between seeds of one configuration (19–74 in one race row), so the differences in that column are
+noise. Rapier has ~15% fewer hard rams than the old physics (cars glance off each other's round ends). `crash.entries`
+stayed empty in all 160 games. The "old AI" rows on Rapier were run with the gunner fix already in.
+
+**Gunner on a tilted car** (`gunnerTilt()`: the car posed, a target 30 m away; the barrel's heading error after 3 s of
+turning; "old" — what the old yaw arithmetic of `BotGunner` would point at)
+
+| Pose | 0° | 45° | 270° | 200° | Fires |
+| --- | --- | --- | --- | --- | --- |
+| Level | 0 | 0 | 0 | 0 | all |
+| Nose up 13° | 0 (old 0) | 0 (old 0.7) | 0 | 0 (old 0.5) | only at 270° (the barrel is level there; at 0/45/200° it points 9°/5°/−8°) |
+| Rolled 30° | 0 | 0 (old −4.1) | 0 | 0 (old −2.5) | 0° only (−26° at 270°: into the ground) |
+| On its side | 0 | −45 (can't turn there) | 90 (can't) | −20 (nearest: 180°) | 0° only |
+| On its roof | 0 | 0 (old −90) | 0 (old −180) | 0 (old −40) | none (muzzle under the ground) |
+
+The machine gun's auto-aim, rolled 30°, target at 20°: 0° off. Over the network (`tests/net.js` `gunner()`), B's barrel on
+A's car: level and across the ramp ≤ 0.1°, on its roof 89.8° asked 90° (session 4: 92.5°), on its side unchanged (17°
+nearest).
+
+**Online** (the dev build through `npm run server`): `ram()` at 60 / 100 km/h — thrown 36 / 60 km/h on both screens,
+−36.6 / −53.8, as in session 4. A battle royale in crew mode with 7 host bots (`follow()`, 25 s): ghosts 0.17 m / 1.3°
+from their cars. The production single file boots on Rapier with no flag. Handling (`handling()`) is unchanged: 42.9 /
+76.9 / 99.2 / 118.9 / 125.5 km/h, top 126, yaw rates 120.6 / 107.4 / 69.9 / 58.3 °/s, lean 0.1°.
+
+**Open problems**
+
+- A bot on its side can lie for up to 5.5 s: the flip rule waits for 1.5 s of stillness, and a car rocking on its side
+  or pushed by others isn't still. Fine for now.
+- Respawning at the last gate costs a stuck racer its place; a smarter way out of a trap (reversing further, another
+  route) would be nicer. The respawn rate is low (0–0.3 per game per all bots on Rapier).
+- The bots' track and navigation are still 2D (`_clearLine` against the 2D world): on the test ground's ramps, deck and
+  tube they would not know heights, but the test ground has no bots.

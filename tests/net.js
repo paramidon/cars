@@ -4,12 +4,12 @@
  * the right) and in its console:
  *
  *   const t = await import('/tests/net.js');
- *   const s = await t.setup({ query: '?mute&map=test&phys=rapier' }); // A hosts, B joins, the race starts
+ *   const s = await t.setup({ query: '?mute&map=test' }); // A hosts, B joins, the race starts
  *   await t.jump(s);       // A off the big ramp: A's car on A's screen vs its ghost on B's
  *   await t.rollover(s);   // A with two wheels up the big ramp: rolls over, rights itself
  *   await t.ram(s);        // A into the side of B's parked car: knock and damage on both screens
  *   await t.reconnect(s);  // B's car on its roof, B's page reloads, the race resumes
- *   await t.bandwidth(s);  // bytes per snapshot (city: setup({ query: '?mute&phys=rapier', bots: 7 }))
+ *   await t.bandwidth(s);  // bytes per snapshot (city: setup({ query: '?mute', bots: 7 }))
  *   // crew: setup({ mode: 'crew', gunner: true }) seats B in A's gun, then await t.gunner(s)
  *
  * setup({ lag: 60 }) delays every message each client receives by 60 ms (a 120 ms round trip). The page steps both games
@@ -117,7 +117,7 @@ function control(w) {
  * Two clients in one room, the race started. A creates the room (host), B joins; gunner — crew mode, B sits in A's gun.
  * Returns { A, B, a, b } — the windows and their controls.
  */
-export async function setup({ query = '?mute&map=test&phys=rapier', game = 'race', mode = 'classic', bots = 0, gunner = false, lag = 0, server = 'localhost:8080' } = {}) {
+export async function setup({ query = '?mute&map=test', game = 'race', mode = 'classic', bots = 0, gunner = false, lag = 0, server = 'localhost:8080' } = {}) {
   const [A, B] = await load(query);
   for (const [w, name] of [[A, 'A'], [B, 'B']]) {
     const d = w.document;
@@ -552,7 +552,7 @@ export async function gunner(s, { poses = ['level', 'ramp', 'side', 'roof'], hea
 }
 
 /**
- * Ordinary driving: every car the host's bots drive (city: setup({ query: '?mute&phys=rapier', bots: 7 })), on the host's
+ * Ordinary driving: every car the host's bots drive (city: setup({ query: '?mute', bots: 7 })), on the host's
  * screen vs its ghost on B's, over secs. Position and rotation errors over all of them.
  */
 export async function follow(s, { secs = 15 } = {}) {
