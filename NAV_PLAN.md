@@ -99,6 +99,13 @@ Also:
   2 min per row, race and battle royale, classic and crew); compare with session 5's numbers in `PHYSICS_PLAN.md`.
 - Keep the README in sync (rivals' behaviour, tuning constants).
 - If port 5173 is busy, add a temporary `.claude/launch.json` entry on another port; revert it before committing.
+- Read the notes of the earlier sessions in [Session notes](#session-notes) first: their "Left for later" items are
+  part of the later sessions' scope.
+- Measuring gotchas (found in session 1): editing any file under `src/` or `tests/` makes Vite reload the page and kills
+  a running test — don't edit while one runs. After a few minutes in a hidden browser pane Chromium throttles
+  `setTimeout(0)` (the tests' tick) to about once a second, so long runs crawl (10 race games: 5+ min instead of 55 s);
+  in the page, replace `setTimeout` for 0 ms with a `MessageChannel` post before starting them. A `javascript_tool`
+  call times out after 45 s: start long runs as a promise stored on `window` and poll it.
 
 ---
 
@@ -147,6 +154,14 @@ Also:
 2. Queries: `cellAt(x, y, z)` (the layer under a point), `nearestFree(x, y, z, r)`, `isFree(x, y, z)`, `randomCell(filter)`.
 3. Port the city-grid helpers to it: `roadPoint`, `roadPointNear`, `spawnPoints`, `reachable`, `zoneCenter` (`zone.js`)
    and session 1's teleport spot. Nothing outside the race route still reads `city.roads`.
+   - The teleport spot is `freeSpotNear()` in `zone.js` (constants `SPOT`, called from `Rival.respawn()` in
+     `racers.js`); today it samples the city grid's lanes and sidewalks, so it doesn't work on the test ground or a 3D
+     map. Port it to `nearestFree` on the grid and keep its rules: 8–30 m from the car (then wider), no solid within
+     2.8 m, no car within 6 m, the cost hooks from `respawn()` (out of the humans' view, inside the zone, not past the
+     next gate), heading along the cell's drivable direction, `y` = the cell's floor + 2 m — the floor of the layer
+     the spot is on (under a deck, in the tube), not `city.groundHeight`.
+   - Check: `traps(game, { names: ['pinned', 'teleport'] })` in `tests/physics.js` still teleports at 20 s, ≥ 6 m
+     from any car, 2 m up, no damage on landing (session 1's table).
 4. `?debug=nav`: draw walkable cells coloured by layer and kind.
 5. Measure: build time and memory, desktop and a phone-sized `?q=low`; the city and the test ground (the tube's floor
    and the street above it must be two layers; the deck reachable from its ramp only; ramps' sides not walkable).
@@ -174,6 +189,14 @@ Also:
 3. Speed planning from the path's curvature (replaces `cornersAhead` for bots).
 4. Local avoidance of cars and wrecks with shape casts ahead; hunters still ram their target.
 5. Session 1's escape re-plans around the trap instead of its sideways offset.
+   - The offset is `Rival._aroundTrap()` with `this.trap` / `this.lastTrap` and `ESCAPE.trap/near/around/out/reach/
+     again/flip` in `racers.js`: replace it by marking the trap's cells expensive for ~10 s and re-planning; keep the
+     many-point turn (`_startEscape`, the legs in `think()`, `_room`/`_roomAlong`/`_canSwing`) — it is what gets the car
+     out, the path only decides where to go after.
+   - Known problem it must fix: with a straight line to the goal, a bot whose goal is behind a building gets out of
+     the trap and then drives into that building's wall somewhere else (in `traps()` it shows as `stillMax` up to
+     8–12 s after `out` in `treeBuilding`, `boxed`, `caged`, `pinned`). Acceptance: `traps()` — every trap but
+     `pinned` out by itself, and after `out` no stay over 5 s away from the goal; `pinned` still teleports at 20 s.
 6. Performance: `game.step` with 19 bots, desktop and phone-sized `?q=low`, before/after.
 
 **Acceptance**
