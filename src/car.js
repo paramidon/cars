@@ -536,13 +536,16 @@ export class Car {
     }
   }
 
-  /** Put the car at sp = { x, z, yaw } on the ground, standing still (respawn, unstuck); damage and parts stay. */
+  /**
+   * Put the car at sp = { x, z, yaw } on the ground, or at height sp.y if given (it drops from there), standing still
+   * (respawn, unstuck); damage and parts stay.
+   */
   teleport(sp) {
     this.warps = (this.warps ?? 0) + 1; // over the network the car's ghosts are put there at once, not slid there
     this.x = sp.x;
     this.z = sp.z;
     this.yaw = sp.yaw;
-    this.y = this.city.groundHeight(sp.x, sp.z);
+    this.y = sp.y ?? this.city.groundHeight(sp.x, sp.z);
     this.vx = this.vz = this.angVel = 0;
     this.rb.place(this.x, this.y, this.z, this.yaw);
     this._syncMesh(0);

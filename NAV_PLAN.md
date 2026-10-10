@@ -15,7 +15,7 @@ below. Run them in order. At the end of every session, tick its checkbox in [Sta
 
 ## Status
 
-- [ ] Session 1: getting out of traps (smart escape, nearby teleport as a last resort)
+- [x] Session 1: getting out of traps (smart escape, nearby teleport as a last resort)
 - [ ] Session 2: navigation data — a layered nav grid built from the map's 3D colliders
 - [ ] Session 3: paths and driving — A*, path following, speed planning, local avoidance, all modes on the nav
 - [ ] Session 4: 3D — ramps, jumps, drops, decks and tunnels; bots on the test ground
@@ -210,3 +210,93 @@ Also:
 ## Session notes
 
 _Each session appends its notes here: decisions, measurements, problems left for later._
+
+### Session 1 (2026-10-10): getting out of traps
+
+**What was done** (`src/racers.js`, `src/zone.js`, `src/physics/rapier.js`, `src/physics/vehicle.js`, `src/car.js`)
+
+- **Looking around:** `Physics.castBox` — a box shape cast against static colliders and cars (ghosts and wrecks too, not
+  the car's own body, not sensors). `Rival._room(end, dx, dz)` casts only one end of the car's lower body (1.2 m of it,
+  raised over curbs): a cast of the whole body stops at once on whatever its other end is wedged against, as Rapier
+  reports a touching shape that slides along it as a hit at 0. Sideways casts are a little shorter, lengthwise ones a
+  little narrower, for the same reason. `Vehicle.wallNormal()` — the sum of the wall-like contact normals the body has
+  now (curbs and floors don't count).
+- **Escape** (`ESCAPE`): stuck pushing on (< 1.5 m/s for 1.4 s, as before) → `_startEscape` finds what it hit (the
+  walls it touches + cars within 5.5 m; nothing — straight ahead), picks a side along it (towards the target, not into
+  a building by the 2D raycast; at the same spot again — the same side for 3 tries, then the other), and the way out
+  (along the obstacle and 0.8 away from it). Then a **many-point turn**: legs back and forward (backing first if there
+  is ≥ 1 m behind), each until the nose points within 0.45 rad of the way out (done), the room that way is down to
+  0.4 m + 0.25 s of speed or the car hasn't moved 0.3 m in 1 s (switch, up to 6 legs), or 3 s. While a side is blocked
+  and there are ≥ 2 m of room along the leg it goes straight first, otherwise it turns the wheel anyway. No shooting
+  during an escape.
+- **Not the same line again:** for 10 s the trap's spot (2 m into the obstacle from the car) is avoided — a target line
+  passing within 4.5 m of it goes through a point 7 m to its side and 2.5 m out, until the bot is within 5 m of that
+  point (closer, it would orbit it inside its turning circle).
+- **Teleport** (`STUCK.time` 8 → 20 s; the `stuckT > 5` rule removed — with the escape it never fired): `respawn()`
+  puts the bot on `freeSpotNear()` (`zone.js`, `SPOT`): the nearest spot on a street lane or sidewalk 8–30 m away (then
+  60, 120, 240 m) with no solid within 2.8 m and no car within 6 m; +25 m of cost if a human car sees it (ahead within
+  60°, ≤ 90 m, no building between), +200 outside the zone in battle royale; in a race ruled out if it is past the next
+  gate or more than 60 m further from it than the car is. Heading along the street the way of the route / the zone
+  centre / its own heading; `y` = floor + 2 m (`Car.teleport` takes an optional `sp.y`). The same for every bot, the
+  autopilot and battle royale. The player's own "unstuck" button still goes to the last gate (not a bot rule).
+- **Tests:** `traps()` in `tests/physics.js` (scripted traps, below); `botBattles()` reports `teleports` instead of
+  `respawns`.
+
+**Scripted traps** (`traps()`: one bot, its target a fixed point behind the trap, other bots wrecked and parked as
+obstacles; 5 starts per trap, each turned and shifted a little; "out" — first 8 m away)
+
+| Trap | Out by itself | Out after, s | Legs back / forward | Teleports |
+| --- | --- | --- | --- | --- |
+| Nose between a building corner and a tree | 5 / 5 | 3.9–5.2 | 1–6 / 1–3 | 0 |
+| Nose against a wreck, a wreck along its side | 5 / 5 | 1.8 | 0–1 / 0 | 0 |
+| Nose against a building, a wreck along each side | 5 / 5 | 3.2–3.3 | 2–3 / 0–2 | 0 |
+| … and a wreck across the tail (it shoves them) | 5 / 5 | 6.4–11.8 | 4–8 / 3–6 | 0 |
+| … the same wrecks pinned in place | 0 / 5 | — | 12–15 / 19–20 | 5, at 20.0 s, 10 m away, nearest car 6.1 m, 2 m up |
+| 6.5 m alley between two buildings, nose to a wall | 5 / 5 | 5.5–7.7 | 2–4 / 1–3 | 0 |
+| Teleport called next to 6 parked cars | — | — | — | spot 14 m away, nearest car 7.1 m, 2 m up, lands with no damage |
+
+The first version on the same traps: tree 7.7 s, the side-wrecks box 7.5–10.4 s, the shoved cage 3 teleports out of 5,
+the alley stuck for good (forward pushes only).
+
+**`botBattles()`** (city, seeded games of 120 s; per game; "stuck" — the longest any bot stayed within 6 m of one spot)
+
+| | Games | Stuck max, s (games > 10 s) | Wrecked | Ped kills | Rams > 4.5 m/s | Shots | Teleports | Back-ups | Tipped > 60° (longest) | Errors |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Race, 7 bots | 10 | 9.0 (0) | 4.0 | 49.0 | 16.3 | 76.4 | 0.1 | 6.8 | 0.3 (3.4 s) | 0 |
+| Royale, 19 bots | 10 | 9.2 (0) | 18.8 | 53.9 | 56.9 | 124 | 0 | 9.7 | 0.3 (3.2 s) | 0 |
+| Race crew, 7 bots | 5 | 5.9 (0) | 6.6 | 33.6 | 15.4 | 115 | 0 | 3.0 | 0.8 (3.2 s) | 0 |
+| Royale crew, 19 bots | 5 | 8.8 (0) | 19.0 | 58.8 | 27.8 | 185 | 0 | 7.4 | 0.2 (0.5 s) | 0 |
+
+Session 5's final rows (stuck / wrecked / kills / rams / shots): race 8.7 / 4.2 / 48.6 / 19.1 / 82.8, royale 8.7 / 18.7 /
+65.6 / 56.7 / 128, race crew 6.1 / 6.0 / 34.8 / 16.7 / 120, royale crew 8.1 / 18.9 / 57.8 / 33 / 189, with 0–0.3
+respawns per game. Now the bots stay as unstuck without being moved (one teleport in 30 games) though they may wait 20 s
+instead of 8. Kills swing ±20 between seeds, as noted there. An intermediate version (before the "held" and "turn
+anyway" rules) had 3 games out of 33 with a bot stuck 10–13.6 s.
+
+**Problems found and fixed during the session**
+
+- The "past the next gate" test first used `race.segmentProgress`, which clamps to 1.05 everywhere beyond the gate
+  before it is passed (at the start of a race): every nearby spot was ruled out, and the first teleport went 112 m away.
+  Now it compares the course distance to the next gate.
+- A whole-body cast behind a car whose nose touches a tree returned 0 (the touching tree counts as a hit), so the bot
+  never backed up far. Fixed by casting only the end that moves.
+- After an escape the bot orbited the detour point, which lay inside its turning circle. Fixed by dropping the detour
+  within 5 m of the point.
+- In a narrow alley there was never 2 m behind, so the bot only pushed forward into the wall, and the side flipped on
+  every try. Fixed by the many-point turn, the 1 m threshold and keeping the side for 3 tries.
+- Wrecks along both sides: backing out on full lock swung the tail into a wreck at once. Fixed by backing straight
+  while a side is blocked.
+- In real games (logs of every bot still for > 9 s) a bot sometimes backed up for 3 s without moving (held by
+  something the casts don't see — hung on a wreck or a curb edge), or rocked straight back and forth 0.5 m beside a
+  wreck. Fixed by the "held" switch and by turning the wheel anyway when there's no room to go straight.
+
+**Left for later**
+
+- The goal is still a straight line: a bot whose target is behind a building gets out of the trap and then drives into
+  that building's wall somewhere else (the scripted traps show it after getting out: still up to 8–12 s near the goal's
+  building). Session 3's paths fix that; its re-plan should replace `_aroundTrap`'s sideways point.
+- `freeSpotNear` reads `city.roads` (the grid's lanes and sidewalks): session 2 ports it to the nav grid, which also
+  makes it work on the test ground and on 3D maps (a floor under a deck, etc.).
+- Gotchas for measuring: editing any file under `src/` or `tests/` makes Vite reload the page mid-run; and after a few
+  minutes in a hidden pane Chromium throttles `setTimeout(0)` (the tests' tick) to about once a second — 10 race games
+  took over 5 min instead of 55 s. Replacing `setTimeout` for 0 ms with a `MessageChannel` post in the page fixes it.

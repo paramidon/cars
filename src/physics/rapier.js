@@ -224,6 +224,20 @@ export class Physics {
   }
 
   /**
+   * Free room for a box of half sizes (hx, hy, hz) centred at (x, y, z), turned by yaw, sliding horizontally in the unit
+   * direction (dx, dz): how far it goes, up to maxT, before it hits a static collider or a car (ghosts and wrecks too;
+   * not body's own colliders, not sensors). Something it already overlaps and moves away from doesn't count. A bot
+   * backing out of a trap looks behind with it.
+   */
+  castBox(x, y, z, yaw, hx, hy, hz, dx, dz, maxT, body = null) {
+    const shape = new RAPIER.Cuboid(hx, hy, hz);
+    const h = yaw / 2;
+    const hit = this.world.castShape({ x, y, z }, { x: 0, y: Math.sin(h), z: 0, w: Math.cos(h) }, { x: dx, y: 0, z: dz }, shape, 0, maxT, false,
+      RAPIER.QueryFilterFlags.EXCLUDE_SENSORS, undefined, undefined, body ?? undefined);
+    return hit ? hit.time_of_impact : maxT;
+  }
+
+  /**
    * Height of the first surface straight below (x, y, z) within maxDist, ignoring body (or any car: staticOnly); null if
    * there is none.
    */

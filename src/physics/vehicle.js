@@ -810,6 +810,27 @@ export class Vehicle {
     if (roof > 0) this._roof(roof, rp);
   }
 
+  /**
+   * The horizontal direction out of the walls, poles, trees… the body touches now (the sum of their contact normals,
+   * pointing into the car), or null if it touches none. Curbs and floors don't count. A stuck bot backs away from it.
+   */
+  wallNormal() {
+    const w = this.phys.world;
+    let sx = 0, sz = 0;
+    for (const [own, other, kind] of this.statics.values()) {
+      if (kind === 'curb') continue;
+      w.contactPair(w.getCollider(own), w.getCollider(other), (m, flipped) => {
+        if (!m.numContacts()) return;
+        const n = m.normal(), sgn = flipped ? 1 : -1;
+        if (n.y * sgn >= VEH.wallNormal) return;
+        sx += n.x * sgn;
+        sz += n.z * sgn;
+      });
+    }
+    const l = Math.hypot(sx, sz);
+    return l > 1e-3 ? { x: sx / l, z: sz / l } : null;
+  }
+
   /** Touched down on the wheels after a flight: dust, sound, sparks, and damage above VEH.landSafe. */
   _land(impact) {
     const car = this.car, { x, y, z } = this.curP;

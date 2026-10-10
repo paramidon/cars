@@ -1,7 +1,8 @@
 import { Car, sameTeam } from './car.js';
 import { ST } from './pedestrians.js';
 import { CarTag } from './tag.js';
-import { ZONE, roadPointNear } from './zone.js';
+import { ZONE, roadPointNear, freeSpotNear } from './zone.js';
+import { VEH } from './physics/vehicle.js';
 import { clamp, lerp, rand } from './utils.js';
 
 /**
@@ -96,10 +97,30 @@ const GORE = {
 const FIRE_MIN = 8; // в упор не стреляют
 // охотник не толкает жертву, а таранит раз за разом: после удара сдаёт назад и разгоняется снова
 const RAM = { back: [1.0, 1.5], charge: 1.5 }; // сколько с сдавать назад; сколько с после этого не отъезжать
-// no way out (wedged between a tree and a building, circling a pedestrian it can't reach…): a bot that hasn't got more
-// than `near` m away from one spot in `time` s respawns. Each back-up resets the stuck timer above, so a bot in a trap
-// could back up and drive into it again for ever. Ramming a target within `ram` m doesn't count
-const STUCK = { near: 8, time: 8, ram: 15 };
+// no way out (wedged between a tree and a building, a wreck against its side…): a bot that hasn't got more than `near`
+// m away from one spot in `time` s is put on a free spot nearby (freeSpotNear), never at a gate. Ramming a target
+// within `ram` m doesn't count
+const STUCK = { near: 8, time: 20, ram: 15 };
+/** Getting out of a trap by itself (NAV_PLAN session 1). */
+const ESCAPE = {
+  stuck: 1.4, // s pushing on at under 1.5 m/s before it backs up
+  room: 1, // m free behind the tail to start by backing up (else forward)
+  stop: 0.4, // m — a leg ends when the room that way is down to this (plus 0.25 s of the speed: room to stop)…
+  leg: [0.4, 3], // s — … or after leg[1] s (but not before leg[0])…
+  held: [1, 0.3], // … or when it has moved less than held[1] m in held[0] s…
+  turned: 0.45, // rad — … or once the nose points this close to the way out: then it drives on
+  side: 0.5, // m free beside the nose and the tail, the ways they'd swing, to turn the wheel during a leg — or less
+  straight: 2, // than this free ahead (behind): no room to go straight first, it turns anyway
+  legs: 6, // legs of a many-point turn at most
+  look: 8, // m the casts look
+  flip: 3, // stuck at the same spot this many times on one side: the other side
+  trap: 10, // s the bot steers around the spot it got stuck at
+  near: 4.5, // m — a line to the target passing this close to the trap goes around it…
+  around: 7, // m — … through a point this far to the side of it…
+  out: 2.5, // m — … and this far out from the obstacle, until the bot is within `reach` m of that point
+  reach: 5,
+  again: 6, // m — stuck again this close to the last trap: try its other side
+};
 const at = (pair, k) => lerp(pair[0], pair[1], k);
 // пара диапазонов [[от, до] при 0, [от, до] при 1] → диапазон при k
 const at2 = (pairs, k) => [at([pairs[0][0], pairs[1][0]], k), at([pairs[0][1], pairs[1][1]], k)];
@@ -208,6 +229,10 @@ export class Rival {
     this.stuckT = 0;
     this.reverseT = 0;
     this.stuckAt = null; // where the bot has been for stuckAt.t s (STUCK)
+    this.esc = null; // getting out of a trap: { back, t, ox, oz, legs, x, z } — a leg (back or forward) of a turn to the way out, from (x, z)
+    this.trap = null; // where it got stuck: { x, z, nx, nz, sx, sz, t, tries } — steered around for ESCAPE.trap s
+    this.lastTrap = null; // … the last one, also once passed: stuck there again — the other side
+    this.teleports = 0;
     this.backT = 0; // отъезд назад для нового тарана
     this.chargeT = 0; // пока > 0, новый отъезд не начинаем — даём разогнаться
     this.boost = 1;
@@ -446,6 +471,7 @@ export class Rival {
    */
   think(dt, ctx) {
     const car = this.car, inp = this.inp, race = this.race, def = this.def;
+    this.cars = ctx.cars;
     inp.fire = false;
     inp.handbrake = false;
     if (!ctx.running || car.wrecked) {
@@ -513,6 +539,15 @@ export class Rival {
       tz = p.z;
     }
 
+    // the spot it just got stuck at: around it, not into it again
+    if (this.trap) {
+      const p = this._aroundTrap(dt, tx, tz);
+      if (p) {
+        tx = p.x;
+        tz = p.z;
+      }
+    }
+
     // руль: угол до цели
     const { ang } = this._bearing(tx, tz);
     let steer = clamp(ang * 2.2, -1, 1);
@@ -530,27 +565,44 @@ export class Rival {
     let throttle = v < target - 0.5 ? 1 : 0;
     let brake = v > target + 1.5 ? 1 : 0;
 
-    // застрял — сдать назад, крутя руль в обратную сторону; совсем застрял — на чекпоинт
-    if (v < 1.5 && throttle > 0) this.stuckT += dt;
+    // stuck: turn out of it (_startEscape: back while there is room behind, forward when that runs out…), then steer
+    // around that spot for a while (_aroundTrap); no way out in STUCK.time s — a free spot nearby (respawn)
+    if (v < 1.5 && throttle > 0 && !this.esc) this.stuckT += dt;
     else this.stuckT = Math.max(0, this.stuckT - dt * 2);
-    if (this.stuckT > 1.4 && this.reverseT <= 0) {
-      this.reverseT = rand(0.9, 1.4);
+    if (this.stuckT > ESCAPE.stuck && !this.esc) {
+      this._startEscape(tx, tz);
       if (this.mode === 'gore') this.preyT += 2; // упёрлись в стену за пешеходом — скоро бросим
     }
-    if (this.reverseT > 0) {
-      this.reverseT -= dt;
-      throttle = 0;
-      brake = 1;
-      steer = -Math.sign(ang || 1);
-      if (this.reverseT <= 0) this.stuckT = 0.6;
+    const e = this.esc;
+    if (e) {
+      // a leg of a many-point turn: back (the wheel turned the other way swings the nose the same way) or forward,
+      // until the nose points the way out, the room that way runs out or time is up; blocked — the other way
+      e.t += dt;
+      const o = this._bearing(car.x + e.ox, car.z + e.oz).ang; // the way out, from the nose
+      throttle = e.back ? 0 : 1;
+      brake = e.back ? 1 : 0;
+      const room = this._roomAlong(e.back ? -1 : 1);
+      // no room for the ends to swing (cars or a wall along its sides) but room that way: straight out first
+      const straight = room > ESCAPE.straight && !this._canSwing(Math.sign(o) || 1);
+      steer = straight ? 0 : (e.back ? -1 : 1) * clamp(o * 3, -1, 1);
+      if (e.t > ESCAPE.leg[0]) {
+        // blocked that way: by the cast, or it just doesn't move (held by something the cast doesn't see)
+        const held = e.t > ESCAPE.held[0] && Math.hypot(car.x - e.x, car.z - e.z) < ESCAPE.held[1];
+        if (Math.abs(o) < ESCAPE.turned || e.t > ESCAPE.leg[1]) this._endEscape();
+        else if (held || room < ESCAPE.stop + v * 0.25) {
+          if (++e.legs > ESCAPE.legs) this._endEscape();
+          else Object.assign(e, { back: !e.back, t: 0, x: car.x, z: car.z });
+        }
+      }
     }
+    this.reverseT = this.esc?.back ? ESCAPE.leg[1] - this.esc.t : 0; // backing up (tests count these)
     const a = this.stuckAt;
     if (!a || Math.hypot(car.x - a.x, car.z - a.z) > STUCK.near) this.stuckAt = { x: car.x, z: car.z, t: 0 };
     else if (!finished && !(this.mode === 'hunt' && Math.hypot(this.target.x - car.x, this.target.z - car.z) < STUCK.ram)) a.t += dt;
-    if (this.stuckT > 5 || this.stuckAt.t > STUCK.time) this.respawn();
+    if (this.stuckAt.t > STUCK.time) this.respawn();
     // протаранил жертву — сдать назад, держа её в прицеле (задним ходом руль наоборот), и ударить снова
     this.chargeT -= dt;
-    if (this.backT > 0) {
+    if (this.backT > 0 && !this.esc) {
       this.backT -= dt;
       throttle = 0;
       brake = 1;
@@ -564,7 +616,7 @@ export class Rival {
     // пушка бьёт только по курсу — стреляем, когда кто-то прямо перед носом
     this.fireCD -= dt;
     this.goreCD -= dt;
-    if (car.reload <= 0 && this.reverseT <= 0) {
+    if (car.reload <= 0 && !this.esc) {
       if ((this.mode === 'hunt' || this.fireCD <= 0) && this._shouldFire(ctx.cars, ctx.shellSpeed)) {
         inp.fire = true;
         if (this.mode !== 'hunt') this.fireCD = rand(...at2(HUNT.firePause, def.aggr));
@@ -583,13 +635,159 @@ export class Rival {
     this.chargeT = this.backT + RAM.charge;
   }
 
-  respawn() {
+  /**
+   * Free room, m (up to ESCAPE.look), for one end of the car's lower body (end 1 — the nose's 1.2 m, −1 — the tail's)
+   * moving along the unit (dx, dz), lengthwise or sideways: raised over curbs; just that end, as the whole body would
+   * stop at once on whatever its other end is wedged against; and a little narrower across the way it moves, as a box
+   * touching a wall it slides along would stop at once too.
+   */
+  _room(end, dx, dz, sideways = false) {
+    const car = this.car, L = VEH.lower, hz = sideways ? 0.45 : 0.6, hx = L.half[0] - (sideways ? 0.05 : 0.2);
+    const s = Math.sin(car.yaw), c = Math.cos(car.yaw), off = (L.half[2] - 0.2 - hz) * end;
+    return car.rb.phys.castBox(car.x + s * off, car.y + L.at[1] + 0.12, car.z + c * off, car.yaw, hx, L.half[1] - 0.1, hz + (sideways ? 0 : 0.2),
+      dx, dz, ESCAPE.look, car.rb.body);
+  }
+
+  /** Free room ahead of the nose (way 1) or behind the tail (−1), m. */
+  _roomAlong(way) {
     const car = this.car;
-    const z = this.zone;
-    car.teleport(z ? roadPointNear(this.city, z.cx, z.cz, Math.max(12, z.radius * 0.6)) : this.race.respawnPoint(this.tr.lastCp, this.startPoint()));
+    return this._room(way, Math.sin(car.yaw) * way, Math.cos(car.yaw) * way);
+  }
+
+  /** Room for the nose to swing to the right (side 1) or the left (−1) — and so the tail the other way. */
+  _canSwing(side) {
+    const car = this.car, rx = -Math.cos(car.yaw) * side, rz = Math.sin(car.yaw) * side;
+    return this._room(1, rx, rz, true) > ESCAPE.side && this._room(-1, -rx, -rz, true) > ESCAPE.side;
+  }
+
+  /**
+   * Stuck pushing on towards (tx, tz): find what it hit (the walls it touches, cars against it; nothing — straight
+   * ahead), pick the side to get past it (towards the target and not into a building; stuck at the same spot again
+   * and again — the other side every ESCAPE.flip tries) and turn towards there: back first if there's room behind.
+   */
+  _startEscape(tx, tz) {
+    const car = this.car;
+    const s = Math.sin(car.yaw), c = Math.cos(car.yaw);
+    const w = car.rb.wallNormal();
+    let nx = w ? w.x : 0, nz = w ? w.z : 0;
+    for (const o of this.cars ?? []) {
+      if (o === car) continue;
+      const dx = car.x - o.x, dz = car.z - o.z, d = Math.hypot(dx, dz);
+      if (d > 0.1 && d < 5.5) {
+        nx += (dx / d) * (5.5 - d) / 2;
+        nz += (dz / d) * (5.5 - d) / 2;
+      }
+    }
+    let l = Math.hypot(nx, nz);
+    if (l < 1e-3) [nx, nz, l] = [-s, -c, 1];
+    nx /= l;
+    nz /= l;
+    // the trap: on the obstacle's side of the car
+    const px = car.x - nx * 2, pz = car.z - nz * 2;
+    const last = this.lastTrap;
+    const old = last && Math.hypot(last.x - px, last.z - pz) < ESCAPE.again ? last : null;
+    const tries = old ? old.tries + 1 : 0;
+    let best = null, bs = -Infinity;
+    for (const k of [1, -1]) {
+      const sx = -nz * k, sz = nx * k; // along the obstacle, one way or the other
+      const ax = px + sx * ESCAPE.around + nx * ESCAPE.out, az = pz + sz * ESCAPE.around + nz * ESCAPE.out;
+      let sc = sx * (tx - car.x) + sz * (tz - car.z);
+      if (!this._clearLine(ax, az)) sc -= 1000;
+      // the side tried last time: kept for a few tries, then the other one
+      if (old && old.sx * sx + old.sz * sz > 0) sc += tries % ESCAPE.flip ? 2000 : -2000;
+      if (sc > bs) {
+        bs = sc;
+        best = { sx, sz };
+      }
+    }
+    this.trap = this.lastTrap = { x: px, z: pz, nx, nz, sx: best.sx, sz: best.sz, t: ESCAPE.trap, tries };
+    // the way out: along the obstacle and away from it
+    let ox = best.sx + nx * 0.8, oz = best.sz + nz * 0.8;
+    l = Math.hypot(ox, oz);
+    ox /= l;
+    oz /= l;
+    const o = this._bearing(car.x + ox, car.z + oz).ang;
+    const back = Math.abs(o) > ESCAPE.turned && this._roomAlong(-1) >= ESCAPE.room;
+    this.esc = { back, t: 0, ox, oz, legs: 0, x: car.x, z: car.z };
+  }
+
+  _endEscape() {
+    this.esc = null;
+    this.stuckT = 0.6; // still stuck — the next try comes sooner
+  }
+
+  /** Heading for (tx, tz) past the trap's spot: a point to its side instead; null — the line doesn't pass near it. */
+  _aroundTrap(dt, tx, tz) {
+    const T = this.trap, car = this.car;
+    T.t -= dt;
+    if (T.t <= 0) {
+      this.trap = null;
+      return null;
+    }
+    // ramming a target close by is not a trap
+    if (this.mode === 'hunt' && Math.hypot(this.target.x - car.x, this.target.z - car.z) < STUCK.ram) return null;
+    const dx = tx - car.x, dz = tz - car.z, L = Math.hypot(dx, dz) || 1;
+    const rx = T.x - car.x, rz = T.z - car.z;
+    const along = (rx * dx + rz * dz) / L;
+    if (along < 0 || along > L + ESCAPE.near || Math.abs(rx * dz - rz * dx) / L > ESCAPE.near) return null;
+    const ax = T.x + T.sx * ESCAPE.around + T.nx * ESCAPE.out, az = T.z + T.sz * ESCAPE.around + T.nz * ESCAPE.out;
+    // got there (or it's inside the turning circle: it would orbit it) — on to the target
+    if (Math.hypot(ax - car.x, az - car.z) < ESCAPE.reach) {
+      this.trap = null;
+      return null;
+    }
+    return { x: ax, z: az };
+  }
+
+  /** (x, z) is in human car h's view: ahead of it (or close), not far, not behind a building. */
+  _inView(h, x, z) {
+    const dx = x - h.x, dz = z - h.z, d = Math.hypot(dx, dz);
+    if (d > 90) return false;
+    if (d > 15 && (dx * Math.sin(h.yaw) + dz * Math.cos(h.yaw)) / d < 0.5) return false;
+    return !this.city.world.raycast(h.x, h.z, dx / d, dz / d, d, losFilter);
+  }
+
+  /**
+   * No way out (STUCK): put the car on the nearest free street or sidewalk spot (freeSpotNear) — out of the humans'
+   * view if it can, inside the zone in a battle, not past the next gate in a race — 2 m above the floor, heading along
+   * the street the way it was going. Never at a gate.
+   */
+  respawn() {
+    const car = this.car, z = this.zone, race = this.race, cars = this.cars ?? [];
+    const humans = cars.filter((c) => c.human && c !== car && !c.wrecked);
+    const racing = !z && race.enabled && !this.tr.finished;
+    // along the course to the next gate, m: a spot past it (or about to be) would miss it, one far back loses the place
+    const gateS = racing ? race.cps[this.autopilot ? race.next : this.tr.next].s : 0, L = race.length;
+    const toGate = (px, pz) => (((gateS - race.project(px, pz).s) % L) + L) % L;
+    const mine = racing ? toGate(car.x, car.z) : 0;
+    const cost = (px, pz) => {
+      let k = 0;
+      if (z && z.unsafe(px, pz, ZONE_SAFE.ahead, ZONE_SAFE.margin)) k += 200;
+      for (const h of humans) if (this._inView(h, px, pz)) k += 25;
+      if (racing) {
+        const g = toGate(px, pz);
+        if (g < 6 || g > mine + 60) return Infinity;
+        k += race.project(px, pz).dist * 0.5; // on the course rather than a side street
+      }
+      return k;
+    };
+    const dir = (px, pz) => {
+      if (racing) {
+        const pr = race.project(px, pz);
+        return { x: pr.dx, z: pr.dz };
+      }
+      if (z) return { x: z.cx - px, z: z.cz - pz };
+      return { x: Math.sin(car.yaw), z: Math.cos(car.yaw) };
+    };
+    const sp = freeSpotNear(this.city, car.x, car.z, { cars, self: car, cost, dir })
+      ?? roadPointNear(this.city, car.x, car.z, 80);
+    car.teleport(sp);
+    this.teleports++;
     this.stuckT = 0;
     this.reverseT = 0;
     this.stuckAt = null;
+    this.esc = null;
+    this.trap = this.lastTrap = null;
     this.mode = 'race';
     this.target = null;
     this.prey = null;

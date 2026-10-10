@@ -8,6 +8,7 @@
  *   await t.botLaps(game, { runs: 6 });   // city: bots' average speed, 6 seeded runs of 25 s
  *   await t.wallDamage(game);           // test ground: hull lost nose first into a wall / a pole 
  *   await t.botBattles(game, { type: 'royale', bots: 19 }); // city: 10 bot games of 2 min — stuck bots, wrecks, kills
+ *   await t.traps(game);                // city: scripted traps — does a stuck bot get out, when is it teleported (NAV_PLAN 1)
  *   // also: landings, carCrashes, blasts, pedJumps, props, muzzle (session 3), sideHit, obstacle, wallScrape, rollovers,
  *   // gunnerTilt (session 5), pedShots, rocking, molotovs, tyreMarks (the open problems' fixes)
  *
@@ -544,7 +545,8 @@ export async function rollovers(game, { races = 20, secs = 75, seed0 = 100 } = {
  * City (session 5): `runs` seeded games of `secs` s with `bots` bots — a race (`game: 'race'`, up to 7 bots) or a battle
  * royale (`'royale'`, up to 19), classic or crew (`mode: 'crew'`: bot gunners in every turret). My car runs on the
  * autopilot and can't be wrecked. Per run: the longest time any bot spent within 6 m of one spot while the game was on
- * (not wrecked, not finished), bots wrecked, pedestrians killed by bots, rams, shots, bot respawns and back-ups, tips
+ * (not wrecked, not finished), bots wrecked, pedestrians killed by bots, rams, shots, bot teleports (Rival.respawn) and
+ * back-ups, tips
  * past 60° and how long the longest one lasted. A run stops early when the game ends (a bot wins or everyone is wrecked).
  * `each(t, rivals)` is called every step (for tracing one bot).
  */
@@ -562,12 +564,12 @@ export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type =
     while (game.countdown > 0) game.step(DT);
     const rivals = game.rivals;
     const st = rivals.map((r) => ({ ax: r.car.x, az: r.car.z, still: 0, max: 0, at: null, tipT: 0, maxTip: 0, tips: 0 }));
-    let respawns = 0, reverses = 0, rams = 0, shots = 0, t = 0;
+    let teleports = 0, reverses = 0, rams = 0, shots = 0, t = 0;
     const wasRev = rivals.map(() => false);
     for (const r of rivals) {
       const orig = r.respawn;
       r.respawn = function () {
-        respawns++;
+        teleports++;
         return orig.call(this);
       };
     }
@@ -618,7 +620,7 @@ export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type =
       run: k, secs: r1(t), state: game.state, stuckMax: r1(worst.max), stuckAt: worst.at,
       wrecked: rivals.filter((r) => r.car.wrecked).length,
       kills: rivals.reduce((a, r) => a + r.car.kills, 0) - kills0,
-      rams, shots, respawns, reverses,
+      rams, shots, teleports, reverses,
       tips: st.reduce((a, s) => a + s.tips, 0), longestTip: r1(Math.max(...st.map((s) => s.maxTip))),
     });
   }
@@ -628,11 +630,121 @@ export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type =
     type, mode, bots, secs: mean((r) => r.secs),
     stuckMax: Math.max(...res.map((r) => r.stuckMax)), stuckOver10: res.filter((r) => r.stuckMax > 10).length,
     wrecked: mean((r) => r.wrecked), kills: mean((r) => r.kills), rams: mean((r) => r.rams), shots: mean((r) => r.shots),
-    respawns: mean((r) => r.respawns), reverses: mean((r) => r.reverses), tips: mean((r) => r.tips),
+    teleports: mean((r) => r.teleports), reverses: mean((r) => r.reverses), tips: mean((r) => r.tips),
     longestTip: Math.max(...res.map((r) => r.longestTip)), crashes: window.crash?.entries?.length ?? 0, runs: res,
   };
 }
 const CAR_HIT_MIN = 4.5; // CAR_HIT.threshold: a ram that does damage
+
+// ---------------------------------------------------------------- NAV_PLAN session 1: getting out of traps
+
+/**
+ * Scripted traps (city, NAV_PLAN session 1). One bot, its race target swapped for a fixed `goal` behind the trap, and
+ * other bots wrecked and parked as obstacles (`wrecks`: [x, z, yaw]). Per trap and seed: when it first got 8 m
+ * from where it started (`out`, s; null — never), the legs of its escapes backwards and forwards, teleports, the longest it then stayed
+ * within 6 m of one spot (not at the goal), and for a teleport where it went: distance, the nearest car there, the drop height.
+ * `teleport` — not a trap: the bot's teleport called directly next to a crowd of parked cars.
+ */
+export const TRAPS = {
+  // nose between a building's corner (x ≤ 44.7, z ≤ 165) and a tree (46.5, 166.5); the goal straight on past them
+  treeBuilding: { at: [45.2, 169.6, Math.PI], goal: [45.5, 120], wrecks: [] },
+  // on a street, nose against a wreck, another wreck along its left side: out the right way
+  wreckSide: { at: [60, 150, Math.PI], goal: [60, 80], wrecks: [[60, 145.2, Math.PI / 2], [62.6, 150.5, Math.PI]] },
+  // nose against a building (north face z = 165), a wreck along each side: back out, then around
+  boxed: { at: [40, 167.6, Math.PI], goal: [40, 120], wrecks: [[37.6, 167.8, Math.PI], [42.4, 167.8, Math.PI]] },
+  // … and a wreck across its tail too: pushing the wrecks or the 20 s teleport
+  caged: { at: [40, 167.6, Math.PI], goal: [40, 120], wrecks: [[37.6, 167.8, Math.PI], [42.4, 167.8, Math.PI], [40, 172.4, Math.PI / 2]] },
+  // caged by wrecks that can't be pushed (pinned in place): only the 20 s teleport gets it out
+  pinned: { at: [40, 167.6, Math.PI], goal: [40, 120], pin: true, wrecks: [[37.7, 167.8, Math.PI], [42.3, 167.8, Math.PI], [40, 171.5, Math.PI / 2]] },
+  // in a 6.5 m alley between two buildings (z 146.5…153), nose against the south one: a many-point turn
+  alley: { at: [37.5, 148.6, Math.PI], goal: [30, 125], wrecks: [] },
+  teleport: { at: [0, 100, 0], goal: [0, 160], wrecks: [[0, 108, 0], [6, 100, 0], [-6, 100, 0], [0, 92, 0], [3, 120, 0], [-3, 82, 0]] },
+};
+
+export async function traps(game, { names = Object.keys(TRAPS), seeds = [0, 1, 2, 3, 4], secs = 30 } = {}) {
+  if (game.test) throw new Error('open the city (no ?map=test)');
+  const random = Math.random;
+  const out = [];
+  for (const name of names) {
+    for (const seed of seeds) {
+      const T = TRAPS[name];
+      const inp = takeOver(game);
+      Math.random = seeded(seed);
+      Object.assign(game.solo, { game: 'race', mode: 'classic', seat: 'driver', bots: Math.max(1, T.wrecks.length + 1) });
+      game.restart();
+      game.car.applyDamage = () => {};
+      Object.assign(inp, idle(), { brake: 1 });
+      while (game.countdown > 0) game.step(DT);
+      game.car.teleport({ x: -150, z: -175, yaw: 0 }); // me: parked out of the way
+      const [bot, ...rest] = game.rivals;
+      bot.def = { ...bot.def, aggr: 0, gore: 0 }; // only drives
+      const goal = { x: T.goal[0], z: T.goal[1] };
+      bot.race = Object.create(game.race, { pointAt: { value: () => goal }, cornersAhead: { value: () => [] } });
+      T.wrecks.forEach(([x, z, yaw], i) => {
+        const c = rest[i].car;
+        c.explode();
+        c.teleport({ x, z, yaw });
+      });
+      game.step(DT);
+      if (T.pin) T.wrecks.forEach((_, i) => {
+        const b = rest[i].car.rb.body;
+        b.lockTranslations(true, true);
+        b.lockRotations(true, true);
+      });
+      for (const r of rest.slice(T.wrecks.length)) r.car.teleport({ x: 150, z: -175 + 8 * r.index, yaw: 0 });
+      for (let i = 0; i < 30; i++) game.step(DT); // the wrecks settle
+      const c = bot.car;
+      const j = (seed % 5) - 2; // each seed turns and shifts the start a little: −2…2 × (0.15 rad, 0.3 m)
+      c.teleport({ x: T.at[0] + j * 0.3, z: T.at[1], yaw: T.at[2] + j * 0.15 });
+      bot._clear();
+      const x0 = c.x, z0 = c.z;
+      const row = { trap: name, seed, out: null, backs: 0, pushes: 0, teleports: 0, stillMax: 0, spot: null };
+      if (name === 'teleport') {
+        for (let i = 0; i < 10; i++) game.step(DT);
+        bot.cars = game.cars;
+        const y0 = c.y;
+        bot.respawn();
+        const near = Math.min(...game.cars.filter((o) => o !== c).map((o) => Math.hypot(o.x - c.x, o.z - c.z)));
+        row.spot = { d: r1(Math.hypot(c.x - x0, c.z - z0)), nearestCar: r1(near), lift: r1(c.y - game.city.groundHeight(c.x, c.z)), y0: r1(y0) };
+        let maxDrop = 0;
+        await run(game, 2, () => void (maxDrop = Math.max(maxDrop, c.y - game.city.groundHeight(c.x, c.z))));
+        row.spot.landedHull = r1(c.health);
+        row.teleports = bot.teleports;
+        out.push(row);
+        continue;
+      }
+      let t = 0, ax = c.x, az = c.z, still = 0, wasEsc = null, wasLeg = null, tp = 0;
+      await run(game, secs, () => {
+        const e = bot.esc, leg = e && `${e.back}${e.legs}`;
+        if (e && (e !== wasEsc || leg !== wasLeg)) e.back ? row.backs++ : row.pushes++;
+        wasEsc = e;
+        wasLeg = leg;
+        if (bot.teleports > tp) {
+          tp = bot.teleports;
+          const near = Math.min(...game.cars.filter((o) => o !== c).map((o) => Math.hypot(o.x - c.x, o.z - c.z)));
+          row.spot = { t: r1(t), d: r1(Math.hypot(c.x - x0, c.z - z0)), nearestCar: r1(near), lift: r1(c.y - game.city.groundHeight(c.x, c.z)) };
+        }
+        if (row.out == null && Math.hypot(c.x - x0, c.z - z0) > 8) row.out = r1(t);
+        if (Math.hypot(c.x - ax, c.z - az) > 6) {
+          ax = c.x;
+          az = c.z;
+          still = 0;
+        } else if (row.out != null && Math.hypot(c.x - goal.x, c.z - goal.z) > 12) row.stillMax = Math.max(row.stillMax, (still += DT));
+        t += DT;
+      });
+      row.teleports = bot.teleports;
+      if (T.pin) T.wrecks.forEach((_, i) => {
+        const b = rest[i].car.rb.body;
+        b.lockTranslations(false, true);
+        b.lockRotations(false, true);
+      });
+      row.end = { x: r1(c.x), z: r1(c.z), toGoal: r1(Math.hypot(c.x - goal.x, c.z - goal.z)) };
+      out.push(row);
+    }
+  }
+  Math.random = random;
+  return out;
+}
 
 // ---------------------------------------------------------------- session 3: damage, pedestrians, props, weapons
 

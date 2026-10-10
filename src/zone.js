@@ -32,6 +32,56 @@ export function roadPointNear(city, cx, cz, r, rnd = Math.random) {
   return { x: near(cx), z: near(cz), yaw: rnd() * Math.PI * 2 };
 }
 
+/** Where a stuck bot is put (NAV_PLAN session 1): see freeSpotNear. */
+export const SPOT = {
+  r: 30, // m — searched this far around the car first (then 2×, 4×… if nothing is free)
+  min: 8, // m — at least this far, out of the trap
+  step: 3, // m between the spots tried along a street
+  lanes: [-5, -2.5, 2.5, 5, -9, 9], // m off a street's centre line: the lanes, then the sidewalks (CITY.road 14, sidewalk 4)
+  clear: 2.8, // m — no solid (a building, a tree, a pole, a wreck's spot…) this close
+  cars: 6, // m — no car this close
+  lift: 2, // m above the floor: it drops onto it, so a car that drives in meanwhile isn't hit from inside
+};
+const spotFilter = (c) => c.kind !== 'breakable';
+
+/**
+ * The nearest free spot on a street or a sidewalk to (x, z), at least SPOT.min and preferably within SPOT.r away: no
+ * solid within SPOT.clear, no car of `cars` within SPOT.cars. cost(px, pz) adds metres to a spot's distance (out of the
+ * zone, in a human's view, past the next gate…; Infinity rules it out). Heading along the street, the way of
+ * dir(px, pz) → { x, z } if given. Returns { x, y, z, yaw } with y SPOT.lift above the floor, or null.
+ */
+export function freeSpotNear(city, x, z, { cars = [], self = null, cost = null, dir = null } = {}) {
+  const R = city.roads, N = R.length - 1, lo = R[0] - 9, hi = R[N] + 9;
+  for (let r = SPOT.r; r <= 8 * SPOT.r; r *= 2) {
+    let best = null, bs = Infinity;
+    const tryAt = (px, pz, alongX) => {
+      if (px < lo || px > hi || pz < lo || pz > hi) return;
+      const d = Math.hypot(px - x, pz - z);
+      if (d > r || d < SPOT.min || d >= bs) return;
+      for (const c of cars) if (c !== self && Math.hypot(c.x - px, c.z - pz) < SPOT.cars) return;
+      for (const c of city.world.queryCircle(px, pz, SPOT.clear)) if (spotFilter(c) && distTo(c, px, pz) < SPOT.clear) return;
+      const sc = d + (cost ? cost(px, pz) : 0);
+      if (!(sc < bs)) return;
+      bs = sc;
+      best = { x: px, z: pz, alongX };
+    };
+    for (const line of R) {
+      if (Math.abs(line - x) <= r + 9) {
+        // a street along Z at x = line
+        for (const off of SPOT.lanes) for (let pz = Math.ceil((z - r) / SPOT.step) * SPOT.step; pz <= z + r; pz += SPOT.step) tryAt(line + off, pz, false);
+      }
+      if (Math.abs(line - z) <= r + 9) {
+        for (const off of SPOT.lanes) for (let px = Math.ceil((x - r) / SPOT.step) * SPOT.step; px <= x + r; px += SPOT.step) tryAt(px, line + off, true);
+      }
+    }
+    if (!best) continue;
+    const want = dir ? dir(best.x, best.z) : { x: 0, z: 1 };
+    const yaw = best.alongX ? (want.x >= 0 ? Math.PI / 2 : -Math.PI / 2) : want.z >= 0 ? 0 : Math.PI;
+    return { x: best.x, y: city.groundHeight(best.x, best.z) + SPOT.lift, z: best.z, yaw };
+  }
+  return null;
+}
+
 /** n мест для старта вразброс по городу. */
 export function spawnPoints(city, n, rnd = Math.random) {
   const pts = [];

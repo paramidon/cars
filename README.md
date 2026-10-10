@@ -43,10 +43,18 @@ lose by wrecking your own car or running out of time.
   Racers are rubber-banded: if they fall far behind they ease off a little, if they get ahead they press a little. For the first ~10 s
   everyone drives together. So that two cars don't circle forever firing and missing, hunting has patience: every hit resets it,
   and without hits the bot gives up the victim after a few seconds and follows the track for a while (if the victim is hunting
-  it back, patience runs out faster). Everyone backs up when stuck and runs over pedestrians (it repairs their hull too).
-  A bot that can't get more than 8 m away from one spot for 8 s (wedged between a tree and a building, circling a
-  pedestrian it can't hit) respawns at its last gate (in battle royale — inside the zone; ramming a target within 15 m
-  doesn't count), and a pedestrian a bot gave up on isn't picked again for 6 s (`STUCK`, `GORE.skip`). Bots also don't
+  it back, patience runs out faster). Everyone runs over pedestrians (it repairs their hull too). A bot stuck pushing on
+  (under 1.5 m/s for 1.4 s) gets itself out: it looks behind (a cast of its box against walls and cars) and, if there is
+  at least 1 m of room, backs up, the nose swinging away from what it hit towards the side that leads to its target;
+  with no room behind it pulls forward instead, and when that way runs out too it switches — a many-point turn of up to
+  6 legs, each until there is 0.4 m left (plus 0.25 s of its speed) or it hasn't moved 0.3 m in 1 s, 3 s pass or the
+  nose points the way out; while cars or a wall are along its sides and there are 2 m that way it goes straight first. Then for 10 s it steers through a point 7 m to the side
+  of that spot instead of driving into it again (stuck there again 3 times, it tries the other side). Only a bot that
+  hasn't got more than 8 m away from one spot for 20 s (ramming a target within 15 m doesn't count) is put on the
+  nearest free street or sidewalk spot 8–30 m away (no solid within 2.8 m, no car within 6 m; out of the players' view
+  if it can, inside the zone in battle royale, not past its next gate in a race), 2 m above the ground so it drops onto
+  it, heading along the street — never back at a gate (`ESCAPE`, `STUCK`, `SPOT` in `src/zone.js`). A pedestrian a bot
+  gave up on isn't picked again for 6 s (`GORE.skip`). Bots also don't
   fire when a shell would miss because their car is tilted — into the ground, over the target, or from under the car on
   its roof (`Car.shotReaches`); a tipped bot rolls back onto its wheels like any car. Your place is shown at the top of the screen,
   along with how many enemies are left; on desktop the left side shows a table of participants with their pedestrian counts (a rival
@@ -375,7 +383,7 @@ src/
 server/server.js      server: serves dist/, lobby and rooms, relaying, who was first
 tests/physics.js      in-browser measurements of the physics: handling numbers, lean in a race, bots' pace, side hits,
                       damage (walls, landings, rams), blasts, pedestrians and props against the car's box, the muzzle,
-                      bot games (stuck bots, wrecks, kills), the bot gunner on a tilted car
+                      bot games (stuck bots, wrecks, kills), scripted traps for bots, the bot gunner on a tilted car
 tests/net.html, net.js  two games side by side in one page, joined in a room through the server: a car vs its ghost
                       in jumps, rollovers and ordinary driving, rams, the gunner on a tilted car, reconnecting, bytes
 ```
@@ -387,6 +395,7 @@ Pedestrians (all body parts) are drawn in ~6 draw calls via
 Main tuning numbers: `PHYS` in `src/physics/rapier.js` (gravity, the step and `maxSteps` per frame, ground and wall friction) and `VEH` in `src/physics/vehicle.js` (`mass`, centre of mass — `com`, `inertia`, chassis shape — `lower`/`cabin`, its `friction`/`restitution`, `angularDamping`, suspension — `wheelRadius`/`rest`/`travel`/`stiffness`/`compression`/`relaxation`, the arcade layer's fade with lean — `upFull`/`upNone`, grip against obstacles — `leanGrip`, the flip rule — `flipUp`/`flipAfter`/`flipStill`/`flipSlow`/`flipSlowRate`/`rightRate`/`rightLift`/`rightTime`, tripping — `tripAccel`/`trip`/`tripTime`, wall hits — `wallNormal`, landing and roof damage — `landAir`/`landSafe`/`landScale`/`roofSafe`/`roofScale`, blasts — `blastLift`/`blastSpin`, pads — `boost`/`launch`; `GHOST` — other players' cars over the network: the spring's `rate`, how far a snapshot is carried forward — `ahead`, `sink`, `snap`, passing through — `deep`/`loose`, easing two overlapping cars apart — `ease`, a just-hit ghost — `holdShow`/`hold`, reconciling knocks — `knockWindow`), `SNAP_HZ`/`LEAD_MAX` in `src/net/netplay.js` (snapshots a second, the most a snapshot is carried forward for the network's delay), `P` in `src/car.js` (thrust, grip, steering at speed — the `yawCap` table and `hardFrom`/`hardTo`/`steerTime`/`yawResp`, steering return — `steerReturn`/`yawUnwind`, damage threshold and multiplier),
 `HEAL` in `src/main.js` (repair for kills), `RACE` in `src/race.js` (laps, pace, time bonuses),
 `CANNON` in `src/cannon.js` (reload, damage, blast radius), `MG` in `src/mg.js` (machine gun), `MOLOTOV` in `src/molotov.js` (cocktails), `RIVALS` (personality `aggr`/`gore`, speed; battle bots beyond seven reuse the same personalities under names from `EXTRA`), `MAX_CARS`/`MAX_CARS_ROYALE` (cars in a race / in battle),
-`HUNT`/`GORE`/`PREY_WEIGHT`/`HUNT_DELAY`, `STUCK` and `CAR_HIT` in `src/racers.js` (how personality scales turn into behavior,
-whom hunters go after, when a stuck bot respawns, ram damage), `RACE.goreWin` (how many pedestrians to win), `KNOCK_SPEED`/`KILL_SPEED` and pedestrian reactions in `_panic()`
+`HUNT`/`GORE`/`PREY_WEIGHT`/`HUNT_DELAY`, `ESCAPE`, `STUCK` and `CAR_HIT` in `src/racers.js` (how personality scales turn into behavior,
+whom hunters go after, how a stuck bot gets out and when it is put elsewhere, ram damage), `SPOT` in `src/zone.js` (where
+it is put), `RACE.goreWin` (how many pedestrians to win), `KNOCK_SPEED`/`KILL_SPEED` and pedestrian reactions in `_panic()`
 in `src/pedestrians.js`, `QUALITY`/`CITY` in `src/config.js`.
