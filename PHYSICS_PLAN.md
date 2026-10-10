@@ -804,7 +804,8 @@ handling, and `sideHit()` 24 / 32 / 43 / 59 / 67 km/h.
 
 - Spin carried forward through an impact overshoots: the ghost of a car falling onto its side rolls ~7–13° too far for a
   moment, and with the delay compensation rotation p95 is ~14° in rollovers. Fading the tipping part of the spin made
-  the ghost lag ~0.1 s through every roll instead (tried, reverted).
+  the ghost lag ~0.1 s through every roll instead (tried, reverted). Decided with the user: leave it as it is (it shows
+  for a moment only); letting ghosts collide with the ground is the fallback if it ever bothers players.
 - On the old physics online, a remote car is immovable. The rammer stops dead against it and the victim's own screen
   sees a stopped rammer's ghost, so the victim is hardly knocked (it existed before; it goes with the old physics in
   session 6).
