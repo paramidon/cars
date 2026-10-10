@@ -16,7 +16,7 @@ below. Run them in order. At the end of every session, tick its checkbox in [Sta
 ## Status
 
 - [x] Session 1: getting out of traps (smart escape, nearby teleport as a last resort)
-- [ ] Session 2: navigation data — a layered nav grid built from the map's 3D colliders
+- [x] Session 2: navigation data — a layered nav grid built from the map's 3D colliders
 - [ ] Session 3: paths and driving — A*, path following, speed planning, local avoidance, all modes on the nav
 - [ ] Session 4: 3D — ramps, jumps, drops, decks and tunnels; bots on the test ground
 
@@ -323,3 +323,115 @@ anyway" rules) had 3 games out of 33 with a bot stuck 10–13.6 s.
 - Gotchas for measuring: editing any file under `src/` or `tests/` makes Vite reload the page mid-run; and after a few
   minutes in a hidden pane Chromium throttles `setTimeout(0)` (the tests' tick) to about once a second — 10 race games
   took over 5 min instead of 55 s. Replacing `setTimeout` for 0 ms with a `MessageChannel` post in the page fixes it.
+
+### Session 2 (2026-10-10): navigation data
+
+**What was done** (`src/nav/grid.js`, `src/nav/debug.js`, `src/zone.js`, `src/main.js`, `src/racers.js`,
+`src/physics/rapier.js`, `src/world/city.js`, `src/car.js`, `src/net/netplay.js`, `src/config.js`)
+
+- **`NavGrid`** (`NAV`: `cell` 1.5 m, `step` 0.4 m, `slope` 32°, `clear` 2 m, `inflate` 1.1 m, `open` 6 m), built in
+  `Game` right after the Rapier world and the prop sensors, before any car: `game.nav`, also `city.nav` (the bots and
+  `makeStart` reach it through their city). Input: the Rapier world (static colliders only — sensors and bodies are
+  filtered out) and `city.bounds` (the fence's inner face; the height range from the solids). Nothing else from the
+  map.
+  - **Floors:** per column, one downward `intersectionsWithRay` gives every collider's top (and normal); the bottoms
+    of upright boxes and cylinders come from the collider itself; an upward ray (hull bottoms) is cast only where a
+    hull has something ≥ `clear` below its top (ramps, the trenches). The colliders are merged into solid intervals;
+    a floor is the top of an interval with ≥ 2 m to the next one, a normal within 32° of up, and not the top of an
+    `OBSTACLES` kind (roofs, tree tops, wall tops, rails are dropped). Stored CSR by column: `y`, `kind`, slope.
+  - **Links:** to the nearest floor in each of the 8 neighbour columns whose step, measured off either floor's slope
+    plane, is ≤ `step` (a ramp rises along itself; across it, its side is a step). The first version allowed
+    `step + dist·tan(slope)` in any direction and linked 6 of the 113 ramp-side floors to the ground.
+  - **Walkable:** linked all round (not at a drop, the deck's edge, a ramp's side) and no static collider within
+    `inflate` of the centre — an upright cylinder from `step` (more on a slope) to `clear` above the floor, so curbs
+    and ramps under it don't count; breakables are sensors, never obstacles. **Areas:** the biggest connected set of
+    walkable floors is `main`, its floors `free`. **Room:** Dijkstra distance to the nearest unwalkable floor, 0.1 m.
+  - **Queries:** `cellAt(x, y, z)` (the highest floor ≤ y + 1 m in the column), `isFree`, `nearestFree(x, y, z, r,
+    { min, filter, cost })` (candidates sorted by distance, a floor on another level counts its height difference
+    twice; `cost` only called while a floor could still win), `randomCell(filter)`, `solidNear(i, r)`, `axis(i)` (the
+    floor's way: of 4 lines through it, the longest run of walkable floors), `pos`, `layer`, `kindOf`, `roomAt`, `next`.
+  - Rapier's scene queries see nothing before the first step: `Physics` now steps the empty world once after adding
+    the solids.
+- **Ported to the grid** (`zone.js`): `navSpot` (a floor → `{ x, y, z, yaw }` along `axis`), `randomSpot` (was
+  `roadPoint`), `spotNear` (was `roadPointNear`; the zone waypoints and the royale `R` unstuck), `spawnPoints`,
+  `reachable` (a reachable floor in the column with no solid within `ZONE.centerFree` 4 m — connectivity replaces the
+  "a way to the street" raycasts), `zoneCenter` (within `ZONE.centerIn` 0.62 of the map's half size — 120 m in the
+  city, as before), `freeSpotNear(nav, x, y, z, …)` (same rules: 8–30 m then ×2, no solid within 2.8 m — the exact
+  cylinder test, ≥ 1.5 m of walkable floor round it — `SPOT.edge`, no car within 6 m on its level, the same cost
+  hooks, heading along `axis` the way of `dir`, `y` = that floor + 2 m). Spawns and waypoints use "open" floors (room
+  ≥ 6 m, then 3, then any): with room ≥ 3, 21% of waypoints fell in yards and parks, which today's straight-line
+  steering can't reach; at 6 m it's ~6%, mostly squares. Spawn points carry `y` (`Car.reset` takes `sp.y`, the
+  network start sends it). `findRoadSpawn` in `city.js` was dead code and is gone.
+- `?debug=nav` (`DEBUG_NAV`) draws every floor: road green, sidewalk blue, ramp yellow, deck grey, upper layers
+  lighter; unwalkable small dark red, walkable off the main area purple (none on either map). `game.debugState().nav`.
+- `navGrid(game)` in `tests/physics.js`: build time (median of 5 rebuilds), size, floors per layer and kind, and on the
+  test ground the 3D checks below.
+
+**Grids** (screenshots: [city block](docs/nav/city-block.jpg), [deck and its ramp](docs/nav/test-deck.jpg),
+[tube's trench and roof](docs/nav/test-tube.jpg))
+
+| | Columns | Floors (layer 0 / 1) | Walkable | Not walkable | Kinds (walkable) | KB |
+| --- | --- | --- | --- | --- | --- | --- |
+| City | 66 564 | 59 055 / 0 | 52 736 | 6 319 | road 27 189, sidewalk 25 547 | 1 677 |
+| Test ground | 66 564 | 65 653 / 318 | 64 047 | 1 924 | ground 60 227 (306 on layer 1), sidewalk 3 157, ramp 332, deck 331 | 1 863 |
+
+Test ground checks: the column at (−130, 10) has two walkable floors, the tube at −5.5 and the street over it at 0;
+flooding the walkable floors from the deck without entering ramps reaches only the deck's 331 floors (from the deck
+with ramps: everything); 0 of the 113 ramp floors along a side are walkable; `freeSpotNear` from inside the tube puts
+the car on the tube's floor (y −3.5, 8.8 m away), from the deck on the deck (y 8), from the street over the tube on the
+street (y 2).
+
+**Build time** (desktop; the page's own build at load, then rebuilds — noisy by ±30% between pages)
+
+| | Load, ms | Rebuilds, ms | Phases at load: floors / links / walkable / areas / room |
+| --- | --- | --- | --- |
+| City, desktop window | 195–201 | 244–306 | 137 / 7 / 34 / 5 / 12 |
+| City, 375 × 812 `?q=low` | 199 | 191–214 | 140 / 7 / 35 / 4 / 12 |
+| Test ground, desktop window | 127 | 127–143 | 79 / 6 / 27 / 4 / 10 |
+| Test ground, 375 × 812 `?q=low` | 159 | 205–234 | 98 / 7 / 37 / 5 / 13 |
+
+A Rapier ray call costs ~1.3–2 µs from JS (66 564 single rays: 89 ms; multi-hit: 125 ms), so the rays are most of it;
+the first version cast an upward ray in every column and took 210–470 ms. `?q=low` changes nothing for the CPU — no
+real phone was available; at 3–5× slower than this desktop a phone would take ~0.6–1 s at load.
+
+**Checks**
+
+- `traps(game, { names: ['pinned', 'teleport'] })`: `pinned` 5 / 5 teleported at 20.0 s, 9.5–9.9 m away, nearest car
+  6.2 m, 2 m up; `teleport` 12.5–13.7 m away, nearest car 6.1–6.8 m, 2 m up, landed with full hull — as in session 1.
+- Network (`tests/net.html`, royale with 5 bots): both clients start with the same zone centre and spawn points.
+- `botBattles()` (city, seeded games of 120 s; per game). Rows are statistics only (the same seed gives a different
+  game, and a page that has run other games gives different numbers), so the session-1 code was rerun in the same
+  conditions as a baseline:
+
+| | Games | Stuck max, s (games > 10 s) | Wrecked | Ped kills | Rams > 4.5 m/s | Shots | Teleports | Back-ups | Tipped > 60° (longest) | Errors |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Royale, 19 bots — run 1 | 10 | 7.8 (0) | 18.9 | 67.8 | 55 | 127 | 0 | 12.5 | 1.0 (11.4 s) | 0 |
+| … run 2 | 10 | 9.7 (0) | 18.9 | 61.1 | 53.7 | 117 | 0 | 14.2 | 0.7 (5.1 s) | 0 |
+| … baseline (session 1 code) | 10 | 10.8 (1) | 18.6 | 56.1 | 55.5 | 121 | 0 | 13.7 | 0.8 (3.6 s) | 0 |
+| Royale crew, 19 bots | 5 | 8.2 (0) | 19.0 | 38.6 | 29.8 | 169 | 0 | 8.6 | 0.8 (4.4 s) | 0 |
+| … baseline | 5 | 6.7 (0) | 19.0 | 44.2 | 25 | 186 | 0 | 5.6 | 1.6 (4.6 s) | 0 |
+| Race, 7 bots (fresh page) | 10 | 9.0 (0) | 3.8 | 56.3 | 14.1 | 78.5 | 0 | 8.0 | 0.1 (0.2 s) | 0 |
+| Race crew, 7 bots (after other rows) | 5 | 4.6 (0) | 6.4 | 37.4 | 11 | 125 | 0 | 1.4 | 0.4 (4.8 s) | 0 |
+
+Royale rows are within the baseline's spread (kills swing 17–92 per game; crew games end in 45–101 s when every bot is
+wrecked). Session 1's royale crew row (58.8 kills) and its back-ups (9.7) aren't reproduced by its own code today
+either. A race run after the royale rows in the same page gave 38 kills; in a fresh page 56.
+
+**Left for later**
+
+- `Rival._navPoint` still reads `city.roads` (the only reader outside the race route); session 3 replaces it with A*
+  on this grid, as its scope says.
+- Spawns and zone waypoints avoid yards (`NAV.open` 6 m) only because the bots can't find their way into them yet;
+  with session 3's paths `open` can go down to ~3 m.
+- One bot lay tipped for 11.4 s in one game of 20 logged royale games (the others: ≤ 5.1 s; earlier sessions up to
+  5.5 s). Not reproduced: a car put on its roof on a wreck rights itself in 2–2.3 s, and the logged tips were cars
+  rocking on their side at ~2 m/s (the flip rule's slow rate, 3 s). Unrelated to navigation (it only moved spawns and
+  waypoints). Options: (a) log every tip over 6 s in `botBattles()` (speed, spin, righting, contacts) and catch it —
+  recommended first; (b) count `tippedT` at the slow rate also above `flipSlow` while the car is tipped and on the
+  ground, so a car pushed along on its side still rights itself; (c) a hard cap: tipped for 8 s → `right()` whatever.
+- Build time on a real phone isn't measured. If it is over ~1 s there: bake the grid at build time per map (the data
+  is a few typed arrays, ~1.7 MB raw, much less compressed) or build it in slices over the menu's first frames.
+- Floors are sampled at column centres: a drivable strip narrower than ~1.5 m (a plank, a thin bridge) may be missed
+  or broken; session 4 may need a finer cell on such maps or links for them.
+- Session 4's links (jumps off ramp lips, drops off the deck, pads) aren't in the grid yet: the ramps' lips and the
+  deck's edges are plain edges (unwalkable floors).

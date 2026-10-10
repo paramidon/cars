@@ -1,7 +1,7 @@
 import { Car, sameTeam } from './car.js';
 import { ST } from './pedestrians.js';
 import { CarTag } from './tag.js';
-import { ZONE, roadPointNear, freeSpotNear } from './zone.js';
+import { ZONE, spotNear, freeSpotNear } from './zone.js';
 import { VEH } from './physics/vehicle.js';
 import { clamp, lerp, rand } from './utils.js';
 
@@ -198,7 +198,7 @@ export class Rival {
     }
     const wp = this.wp;
     if (!wp || Math.hypot(wp.x - car.x, wp.z - car.z) < 10 || Math.hypot(wp.x - z.cx, wp.z - z.cz) > z.radius * 0.75) {
-      this.wp = roadPointNear(this.city, z.cx, z.cz, Math.max(12, z.radius * 0.6));
+      this.wp = spotNear(this.city.nav, z.cx, z.cz, Math.max(12, z.radius * 0.6));
     }
     return this._clearLine(this.wp.x, this.wp.z) ? this.wp : this._navPoint(this.wp);
   }
@@ -748,9 +748,9 @@ export class Rival {
   }
 
   /**
-   * No way out (STUCK): put the car on the nearest free street or sidewalk spot (freeSpotNear) — out of the humans'
+   * No way out (STUCK): put the car on the nearest free nav floor (freeSpotNear) — out of the humans'
    * view if it can, inside the zone in a battle, not past the next gate in a race — 2 m above the floor, heading along
-   * the street the way it was going. Never at a gate.
+   * the floor's way, the way it was going. Never at a gate.
    */
   respawn() {
     const car = this.car, z = this.zone, race = this.race, cars = this.cars ?? [];
@@ -779,8 +779,8 @@ export class Rival {
       if (z) return { x: z.cx - px, z: z.cz - pz };
       return { x: Math.sin(car.yaw), z: Math.cos(car.yaw) };
     };
-    const sp = freeSpotNear(this.city, car.x, car.z, { cars, self: car, cost, dir })
-      ?? roadPointNear(this.city, car.x, car.z, 80);
+    const nav = this.city.nav;
+    const sp = freeSpotNear(nav, car.x, car.y, car.z, { cars, self: car, cost, dir }) ?? spotNear(nav, car.x, car.z, 80);
     car.teleport(sp);
     this.teleports++;
     this.stuckT = 0;

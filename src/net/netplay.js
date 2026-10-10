@@ -137,9 +137,9 @@ export function botCount(room) {
 export function makeStart(room, city) {
   const ids = [...crewsOf(room).map((c) => c.id), ...Array.from({ length: botCount(room) }, (_, i) => `r${i}`)];
   if (room.settings?.game !== 'royale') return { t: 'start', slots: makeSlots(ids) };
-  const pts = spawnPoints(city, ids.length);
-  const r2p = (p) => ({ x: Math.round(p.x * 10) / 10, z: Math.round(p.z * 10) / 10, yaw: Math.round(p.yaw * 1000) / 1000 });
-  return { t: 'start', slots: Object.fromEntries(ids.map((id, i) => [id, r2p(pts[i])])), zone: zoneCenter(city) };
+  const pts = spawnPoints(city.nav, ids.length);
+  const r2p = (p) => ({ x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 100) / 100, z: Math.round(p.z * 10) / 10, yaw: Math.round(p.yaw * 1000) / 1000 });
+  return { t: 'start', slots: Object.fromEntries(ids.map((id, i) => [id, r2p(pts[i])])), zone: zoneCenter(city.nav) };
 }
 
 export class Netplay {

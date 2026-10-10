@@ -29,6 +29,8 @@ export const CITY = {
 };
 
 export const DEBUG = params.has('debug');
+/** `?debug=nav` — draw the bots' nav grid (and the FPS counter, as any ?debug). */
+export const DEBUG_NAV = params.get('debug') === 'nav';
 /** `?mute` — начать без звука, не меняя сохранённых настроек (удобно для автотестов). */
 export const MUTE = params.has('mute');
 /** `?map=test` — тестовый полигон: пустая площадка с парой домов, неподвижные пешеходы, без соперников и победы. */

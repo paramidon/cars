@@ -65,6 +65,8 @@ export class Physics {
     this.steps = 0;
     this.time = 0; // simulated time, s (ghosts carry their snapshots forward on this clock)
     for (const s of solids) this.addSolid(s);
+    // scene queries (rays, shape casts) only see colliders the broad phase has seen: one step of the empty world
+    this.world.step();
     this._ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
   }
 

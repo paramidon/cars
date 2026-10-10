@@ -9,6 +9,7 @@
  *   await t.wallDamage(game);           // test ground: hull lost nose first into a wall / a pole 
  *   await t.botBattles(game, { type: 'royale', bots: 19 }); // city: 10 bot games of 2 min — stuck bots, wrecks, kills
  *   await t.traps(game);                // city: scripted traps — does a stuck bot get out, when is it teleported (NAV_PLAN 1)
+ *   await t.navGrid(game);              // city or test ground: the nav grid's build time, size, layers; 3D checks (NAV_PLAN 2)
  *   // also: landings, carCrashes, blasts, pedJumps, props, muzzle (session 3), sideHit, obstacle, wallScrape, rollovers,
  *   // gunnerTilt (session 5), pedShots, rocking, molotovs, tyreMarks (the open problems' fixes)
  *
@@ -744,6 +745,76 @@ export async function traps(game, { names = Object.keys(TRAPS), seeds = [0, 1, 2
   }
   Math.random = random;
   return out;
+}
+
+// ---------------------------------------------------------------- NAV_PLAN session 2: the nav grid
+
+/**
+ * The nav grid (NAV_PLAN session 2), city or test ground: build time (median of `builds` rebuilds), size, floors per
+ * layer and kind (walkable / not), and on the test ground the 3D checks — the tube's floor and the street over it are
+ * two layers, the deck is reachable from its ramp only, the ramps' sides aren't walkable, a stuck bot's spot in the
+ * tube / on the deck stays on that level.
+ */
+export async function navGrid(game, { builds = 5 } = {}) {
+  const { NavGrid } = await import('/src/nav/grid.js');
+  const { freeSpotNear } = await import('/src/zone.js');
+  const ms = [];
+  for (let k = 0; k < builds; k++) ms.push(new NavGrid(game.phys, game.city.bounds).stats.ms);
+  ms.sort((a, b) => a - b);
+  const n = game.nav, kinds = {};
+  for (let i = 0; i < n.y.length; i++) {
+    const key = `${n.kindOf(i)} L${n.layer(i)}`;
+    const e = (kinds[key] ??= { walkable: 0, not: 0 });
+    n.reachable(i) ? e.walkable++ : e.not++;
+  }
+  const res = { buildMs: ms[ms.length >> 1], buildMsAll: ms, ...n.stats, kinds };
+  if (!game.test) return res;
+  const column = (x, z) => {
+    const col = n.col(x, z), out = [];
+    for (let i = n.start[col]; i < n.start[col + 1]; i++) out.push({ kind: n.kindOf(i), y: r1(n.y[i]), walkable: n.reachable(i) });
+    return out;
+  };
+  // flood the walkable floors from i, not entering floors skip(j) rules out
+  const flood = (i, skip) => {
+    const seen = new Set([i]), q = [i], by = {};
+    while (q.length) {
+      const k = q.pop();
+      by[n.kindOf(k)] = (by[n.kindOf(k)] ?? 0) + 1;
+      for (let d = 0; d < 8; d++) {
+        const j = n.next(k, d);
+        if (j >= 0 && !seen.has(j) && n.reachable(j) && !skip(j)) seen.add(j), q.push(j);
+      }
+    }
+    return by;
+  };
+  const deck = n.cellAt(115, 6, 95);
+  let sides = 0, sideCells = 0;
+  for (let i = 0; i < n.y.length; i++) {
+    if (n.kindOf(i) !== 'ramp') continue;
+    // a ramp floor beside a ground floor more than a step lower: its side
+    for (let d = 0; d < 8; d += 2) {
+      const p = n.pos(i), c = n.cellAt(p.x + [1, 0, -1, 0][d / 2] * n.cell, p.y, p.z + [0, 1, 0, -1][d / 2] * n.cell);
+      if (c >= 0 && n.kindOf(c) !== 'ramp' && n.y[i] - n.y[c] > 0.6) {
+        sideCells++;
+        if (n.reachable(i)) sides++;
+        break;
+      }
+    }
+  }
+  const spot = (x, y, z) => {
+    const sp = freeSpotNear(n, x, y, z, { cars: [] });
+    return sp && { x: r1(sp.x), y: r1(sp.y), z: r1(sp.z), d: r1(Math.hypot(sp.x - x, sp.z - z)) };
+  };
+  Object.assign(res, {
+    tube: column(-130, 10),
+    deckWithoutRamps: flood(deck, (j) => n.kindOf(j) === 'ramp'), // only the deck itself: no way off it but its ramp
+    deckReach: flood(deck, () => false),
+    rampSides: { floors: sideCells, walkable: sides },
+    spotInTube: spot(-130, -5.5, 10),
+    spotOnDeck: spot(115, 6, 95),
+    spotUnderTubeRoof: spot(-130, 0, 10),
+  });
+  return res;
 }
 
 // ---------------------------------------------------------------- session 3: damage, pedestrians, props, weapons

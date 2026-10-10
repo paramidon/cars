@@ -890,6 +890,15 @@ export function buildCity(scene, quality, test = false) {
     else solidBox(c.minX, 0, c.minZ, c.maxX, top, c.maxZ, c.kind);
   }
 
+  // the area cars can be in (inside the fence) and the height range of the static colliders: the nav grid's bounds
+  let y0 = Infinity, y1 = -Infinity;
+  for (const s of solids) {
+    if (s.box) (y0 = Math.min(y0, s.box[1] - s.box[4])), (y1 = Math.max(y1, s.box[1] + s.box[4]));
+    else if (s.cyl) (y0 = Math.min(y0, s.cyl[1] - s.cyl[3])), (y1 = Math.max(y1, s.cyl[1] + s.cyl[3]));
+    else for (let k = 1; k < s.hull.length; k += 3) (y0 = Math.min(y0, s.hull[k])), (y1 = Math.max(y1, s.hull[k]));
+  }
+  const bounds = { x0: -outer, z0: -outer, x1: outer, z1: outer, y0, y1 };
+
   // ---------------------------------------------------------------- миникарта
   const MM = 512;
   const ext = outer + 2;
@@ -952,19 +961,6 @@ export function buildCity(scene, quality, test = false) {
     return CURB;
   }
 
-  function findRoadSpawn(x, z, yaw = 0) {
-    const ix = clamp(Math.round((x + half) / cell), 0, N);
-    const iz = clamp(Math.round((z + half) / cell), 0, N);
-    const rx = roads[ix], rz = roads[iz];
-    const lim = edge - 6;
-    if (Math.abs(x - rx) <= Math.abs(z - rz)) {
-      const fwd = Math.cos(yaw) >= 0;
-      return { x: rx + (fwd ? -3.5 : 3.5), z: clamp(z, -lim, lim), yaw: fwd ? 0 : Math.PI };
-    }
-    const fwd = Math.sin(yaw) >= 0;
-    return { x: clamp(x, -lim, lim), z: rz + (fwd ? 3.5 : -3.5), yaw: fwd ? Math.PI / 2 : -Math.PI / 2 };
-  }
-
   return {
     world,
     nodes,
@@ -976,10 +972,10 @@ export function buildCity(scene, quality, test = false) {
     edge,
     outer,
     groundHeight,
-    findRoadSpawn,
     test,
     pedLayout,
     solids,
+    bounds,
     /** Pad (boost / launch) under a car at (x, z) standing at height y, or null. */
     padAt: (x, z, y) => triggers.find((t) => x >= t.x0 && x <= t.x1 && z >= t.z0 && z <= t.z1 && Math.abs(y - t.y) < 0.5) || null,
     /** Under the tube's ceiling (or by its portals) at height y: the tube (for the camera), else null. */

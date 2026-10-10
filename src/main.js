@@ -1,16 +1,18 @@
 import * as THREE from 'three';
 import './style.css';
-import { QUALITY, IS_TOUCH, DEBUG, MUTE, TEST_MAP } from './config.js';
+import { QUALITY, IS_TOUCH, DEBUG, DEBUG_NAV, MUTE, TEST_MAP } from './config.js';
 import { Physics, initRapier, rapierStats } from './physics/rapier.js';
 import { Vehicle } from './physics/vehicle.js';
 import { buildCity } from './world/city.js';
+import { buildNav } from './nav/grid.js';
+import { navMesh } from './nav/debug.js';
 import { Breakables } from './world/props.js';
 import { FX } from './effects/fx.js';
 import { Debris } from './effects/debris.js';
 import { AudioFX } from './audio.js';
 import { Car, sameTeam } from './car.js';
 import { BotGunner } from './gunner.js';
-import { Zone, spawnPoints, zoneCenter, roadPointNear } from './zone.js';
+import { Zone, spawnPoints, zoneCenter, spotNear } from './zone.js';
 import { wrapAngle } from './utils.js';
 import { Pedestrians } from './pedestrians.js';
 import { Artillery, CANNON } from './cannon.js';
@@ -106,6 +108,9 @@ class Game {
     // every car is a rigid body in a Rapier world (PHYSICS_PLAN.md)
     this.phys = new Physics(this.city.solids);
     this.phys.addProps(this.breakables.items);
+    // the bots' navigation grid, from the static colliders (NAV_PLAN.md); before any car joins the world
+    this.nav = this.city.nav = buildNav(this.phys, this.city.bounds);
+    if (DEBUG_NAV) scene.add(navMesh(this.nav));
     this.mainCar = new Car(scene, this.city, this.fx, this.audio, this.debris, QUALITY);
     this._addBody(this.mainCar);
     this.car = this.mainCar; // машина, в которой я сижу (по сети может быть чужая — если я в её пушке)
@@ -708,7 +713,7 @@ class Game {
     // места на старте — каждый заезд случайно: в гонке — на решётке, в битве — вразброс по городу
     let pointOf;
     if (this.royale) {
-      const pts = slots ? null : spawnPoints(this.city, this.cars.length);
+      const pts = slots ? null : spawnPoints(this.nav, this.cars.length);
       pointOf = (c) => (slots ? slots[c.netId] : pts[this.cars.indexOf(c)]) || this.city.spawn;
     } else if (slots) pointOf = (c) => gridPoint(this.city, GRID[slots[c.netId] ?? 0]);
     else {
@@ -726,7 +731,7 @@ class Game {
       else c.reset(pointOf(c));
     }
     if (this.royale) {
-      const zc = zoneAt || zoneCenter(this.city);
+      const zc = zoneAt || zoneCenter(this.nav);
       this.zone.start(zc.cx, zc.cz, this.city);
     } else this.zone.stop();
     this.zoneHurtT = 0;
@@ -824,7 +829,7 @@ class Game {
     }
     // в заезде — к последнему пройденному чекпоинту, лицом по маршруту; в битве — на дорогу внутри зоны
     const z = this.zone;
-    car.teleport(this.royale ? roadPointNear(this.city, z.cx, z.cz, Math.max(12, z.radius * 0.6)) : this.race.respawnPoint(undefined, this.startPoint));
+    car.teleport(this.royale ? spotNear(this.nav, z.cx, z.cz, Math.max(12, z.radius * 0.6)) : this.race.respawnPoint(undefined, this.startPoint));
     this.cam.snap(car);
     this.hud.popup(this.royale ? 'В ЗОНУ' : this.test ? 'НА СТАРТ' : 'К ЧЕКПОИНТУ', 'info');
   }
@@ -1187,6 +1192,7 @@ class Game {
         righting: !!car.rb.righting, stepMs: Math.round(this.phys.stepMs * 1000) / 1000, steps: this.phys.steps,
         bodies: this.phys.vehicles.length, initMs: Math.round(rapierStats.initMs),
       },
+      nav: { cells: this.nav.stats.cells, walkable: this.nav.stats.walkable, ms: this.nav.stats.ms },
     };
   }
 

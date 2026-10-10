@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { clamp, lerp } from './utils.js';
+import { NAV } from './nav/grid.js';
 
 /** Королевская битва: смертельная зона. Крутить здесь. */
 export const ZONE = {
@@ -9,86 +10,104 @@ export const ZONE = {
   height: 160, // м — стена видна из любой точки города
   spawnGap: 45, // м — машины на старте не ближе друг к другу
   hunt: 3, // с после старта боты уже охотятся
+  centerIn: 0.62, // центр зоны — не дальше этой доли полуширины карты от её середины (в городе — до предпоследней улицы)
+  centerFree: 4, // м — вокруг центра зоны ни дома, ни памятника: машина должна туда доехать
 };
 
-/** Случайная точка на дороге (на полосе, курс вдоль улицы). */
-export function roadPoint(city, rnd = Math.random) {
-  const R = city.roads, N = R.length - 1;
-  const line = R[Math.floor(rnd() * (N + 1))];
-  const t = R[0] + rnd() * (R[N] - R[0]);
-  const lane = rnd() < 0.5 ? -3 : 3;
-  if (rnd() < 0.5) return { x: t, z: line + lane, yaw: lane > 0 ? -Math.PI / 2 : Math.PI / 2 };
-  return { x: line + lane, z: t, yaw: lane > 0 ? Math.PI : 0 };
+/**
+ * A car's spot on nav floor i: { x, y, z, yaw } on the floor, heading along the floor's way (NavGrid.axis) — the way
+ * of `want` ({ x, z }) if given, else either way.
+ */
+export function navSpot(nav, i, want = null, rnd = Math.random) {
+  const p = nav.pos(i), a = nav.axis(i);
+  const s = want ? (a.x * want.x + a.z * want.z >= 0 ? 1 : -1) : rnd() < 0.5 ? 1 : -1;
+  return { x: p.x, y: p.y, z: p.z, yaw: Math.atan2(a.x * s, a.z * s) };
 }
 
-/** Точка на дороге не дальше r от (cx, cz); если такой не нашлось — ближайший к центру перекрёсток. */
-export function roadPointNear(city, cx, cz, r, rnd = Math.random) {
-  for (let i = 0; i < 40; i++) {
-    const p = roadPoint(city, rnd);
-    if (Math.hypot(p.x - cx, p.z - cz) <= r) return p;
+/**
+ * An open floor: reachable, with `room` m of walkable floor all round — a street or a square rather than a gap between
+ * a wall and a tree or a yard (today's bots steer straight at their waypoints). A map without such room gets less.
+ */
+const OPEN = [NAV.open, NAV.open / 2, 0];
+const open = (nav, i, room) => nav.reachable(i) && nav.roomAt(i) >= room;
+
+/** A random open spot on the map (heading along the way). */
+export function randomSpot(nav, rnd = Math.random) {
+  for (const room of OPEN) {
+    const i = nav.randomCell((k) => open(nav, k, room), rnd);
+    if (i >= 0) return navSpot(nav, i, null, rnd);
   }
-  const R = city.roads;
-  const near = (v) => R.reduce((a, b) => (Math.abs(b - v) < Math.abs(a - v) ? b : a));
-  return { x: near(cx), z: near(cz), yaw: rnd() * Math.PI * 2 };
+  return navSpot(nav, nav.free[0], null, rnd);
+}
+
+/** A random open spot within r of (cx, cz); if there is none, the nearest open one. */
+export function spotNear(nav, cx, cz, r, rnd = Math.random) {
+  for (let k = 0; k < 60; k++) {
+    const a = rnd() * Math.PI * 2, d = Math.sqrt(rnd()) * r;
+    const col = nav.col(cx + Math.cos(a) * d, cz + Math.sin(a) * d);
+    if (col < 0) continue;
+    const s = nav.start[col], n = nav.start[col + 1] - s;
+    if (!n) continue;
+    const i = s + Math.floor(rnd() * n);
+    if (open(nav, i, OPEN[0])) return navSpot(nav, i, null, rnd);
+  }
+  const far = Math.hypot(nav.nx, nav.nz) * nav.cell;
+  for (const room of OPEN) {
+    for (let d = Math.max(20, r); d < 2 * far; d *= 2) {
+      const i = nav.nearestFree(cx, null, cz, d, { filter: (k) => open(nav, k, room) });
+      if (i >= 0) return navSpot(nav, i, null, rnd);
+    }
+  }
+  return navSpot(nav, nav.free[0], null, rnd);
 }
 
 /** Where a stuck bot is put (NAV_PLAN session 1): see freeSpotNear. */
 export const SPOT = {
   r: 30, // m — searched this far around the car first (then 2×, 4×… if nothing is free)
   min: 8, // m — at least this far, out of the trap
-  step: 3, // m between the spots tried along a street
-  lanes: [-5, -2.5, 2.5, 5, -9, 9], // m off a street's centre line: the lanes, then the sidewalks (CITY.road 14, sidewalk 4)
-  clear: 2.8, // m — no solid (a building, a tree, a pole, a wreck's spot…) this close
-  cars: 6, // m — no car this close
+  clear: 2.8, // m — no solid (a building, a tree, a pole, a wall…) this close
+  edge: 1.5, // m of walkable floor all round: not at a drop or a ramp's side
+  cars: 6, // m — no car this close (on the same level: within `level` m up or down)
+  level: 4,
   lift: 2, // m above the floor: it drops onto it, so a car that drives in meanwhile isn't hit from inside
 };
-const spotFilter = (c) => c.kind !== 'breakable';
 
 /**
- * The nearest free spot on a street or a sidewalk to (x, z), at least SPOT.min and preferably within SPOT.r away: no
- * solid within SPOT.clear, no car of `cars` within SPOT.cars. cost(px, pz) adds metres to a spot's distance (out of the
- * zone, in a human's view, past the next gate…; Infinity rules it out). Heading along the street, the way of
- * dir(px, pz) → { x, z } if given. Returns { x, y, z, yaw } with y SPOT.lift above the floor, or null.
+ * The nearest free nav floor to (x, y, z), at least SPOT.min and preferably within SPOT.r away: no solid within
+ * SPOT.clear, no car of `cars` within SPOT.cars. cost(px, pz) adds metres to a spot's distance (out of the zone, in a
+ * human's view, past the next gate…; Infinity rules it out). Heading along the floor's way, the way of dir(px, pz) →
+ * { x, z } if given. Returns { x, y, z, yaw } with y SPOT.lift above the floor (of the level the spot is on: under a
+ * deck, in a tunnel), or null.
  */
-export function freeSpotNear(city, x, z, { cars = [], self = null, cost = null, dir = null } = {}) {
-  const R = city.roads, N = R.length - 1, lo = R[0] - 9, hi = R[N] + 9;
+export function freeSpotNear(nav, x, y, z, { cars = [], self = null, cost = null, dir = null } = {}) {
+  const filter = (i) => {
+    if (nav.roomAt(i) < SPOT.edge) return false;
+    const p = nav.pos(i);
+    for (const c of cars) if (c !== self && Math.hypot(c.x - p.x, c.z - p.z) < SPOT.cars && Math.abs(c.y - p.y) < SPOT.level) return false;
+    return !nav.solidNear(i, SPOT.clear);
+  };
+  const costAt = cost && ((i) => {
+    const p = nav.pos(i);
+    return cost(p.x, p.z);
+  });
   for (let r = SPOT.r; r <= 8 * SPOT.r; r *= 2) {
-    let best = null, bs = Infinity;
-    const tryAt = (px, pz, alongX) => {
-      if (px < lo || px > hi || pz < lo || pz > hi) return;
-      const d = Math.hypot(px - x, pz - z);
-      if (d > r || d < SPOT.min || d >= bs) return;
-      for (const c of cars) if (c !== self && Math.hypot(c.x - px, c.z - pz) < SPOT.cars) return;
-      for (const c of city.world.queryCircle(px, pz, SPOT.clear)) if (spotFilter(c) && distTo(c, px, pz) < SPOT.clear) return;
-      const sc = d + (cost ? cost(px, pz) : 0);
-      if (!(sc < bs)) return;
-      bs = sc;
-      best = { x: px, z: pz, alongX };
-    };
-    for (const line of R) {
-      if (Math.abs(line - x) <= r + 9) {
-        // a street along Z at x = line
-        for (const off of SPOT.lanes) for (let pz = Math.ceil((z - r) / SPOT.step) * SPOT.step; pz <= z + r; pz += SPOT.step) tryAt(line + off, pz, false);
-      }
-      if (Math.abs(line - z) <= r + 9) {
-        for (const off of SPOT.lanes) for (let px = Math.ceil((x - r) / SPOT.step) * SPOT.step; px <= x + r; px += SPOT.step) tryAt(px, line + off, true);
-      }
-    }
-    if (!best) continue;
-    const want = dir ? dir(best.x, best.z) : { x: 0, z: 1 };
-    const yaw = best.alongX ? (want.x >= 0 ? Math.PI / 2 : -Math.PI / 2) : want.z >= 0 ? 0 : Math.PI;
-    return { x: best.x, y: city.groundHeight(best.x, best.z) + SPOT.lift, z: best.z, yaw };
+    const i = nav.nearestFree(x, y, z, r, { min: SPOT.min, filter, cost: costAt });
+    if (i < 0) continue;
+    const p = nav.pos(i);
+    const sp = navSpot(nav, i, dir ? dir(p.x, p.z) : null);
+    sp.y += SPOT.lift;
+    return sp;
   }
   return null;
 }
 
-/** n мест для старта вразброс по городу. */
-export function spawnPoints(city, n, rnd = Math.random) {
+/** n мест для старта вразброс по карте. */
+export function spawnPoints(nav, n, rnd = Math.random) {
   const pts = [];
   for (let k = 0; k < n; k++) {
     let best = null, bd = -1;
     for (let i = 0; i < 30; i++) {
-      const p = roadPoint(city, rnd);
+      const p = randomSpot(nav, rnd);
       const d = Math.min(Infinity, ...pts.map((q) => Math.hypot(q.x - p.x, q.z - p.z)));
       if (d >= ZONE.spawnGap) {
         best = p;
@@ -104,43 +123,30 @@ export function spawnPoints(city, n, rnd = Math.random) {
   return pts;
 }
 
-const CENTER_FREE = 4; // м — вокруг центра зоны ни дома, ни памятника: машина должна туда доехать
-const solidFilter = (c) => c.kind !== 'breakable' && c.kind !== 'tree' && c.kind !== 'pole';
-const wallFilter = (c) => c.kind === 'building' || c.kind === 'wall';
-
-/** Расстояние от точки до коллайдера (0 — внутри). */
-function distTo(c, x, z) {
-  if (c.r != null) return Math.max(0, Math.hypot(x - c.x, z - c.z) - c.r);
-  const dx = Math.max(c.minX - x, 0, x - c.maxX), dz = Math.max(c.minZ - z, 0, z - c.maxZ);
-  return Math.hypot(dx, dz);
+/**
+ * До точки можно доехать: под ней пол, связанный с остальной картой (не двор-колодец и не щель между домами), и
+ * вокруг на ZONE.centerFree м нет ничего твёрдого.
+ */
+export function reachable(nav, x, z) {
+  const col = nav.col(x, z);
+  if (col < 0) return false;
+  for (let i = nav.start[col]; i < nav.start[col + 1]; i++) if (nav.reachable(i) && !nav.solidNear(i, ZONE.centerFree)) return true;
+  return false;
 }
 
 /**
- * До точки можно доехать: рядом нет ничего твёрдого, и хоть в одну из четырёх сторон до улицы
- * (края квартала) не мешает ни один дом — не двор-колодец и не щель между домами.
+ * Где сожмётся зона: где угодно на карте, но не ближе ZONE.centerIn её полуширины к краю, и не в доме — на дороге,
+ * тротуаре, площади или во дворе, куда можно доехать.
  */
-export function reachable(city, x, z) {
-  for (const c of city.world.queryCircle(x, z, CENTER_FREE)) if (solidFilter(c) && distTo(c, x, z) < CENTER_FREE) return false;
-  const b = city.blocks.find((q) => x > q.x0 && x < q.x1 && z > q.z0 && z < q.z1);
-  if (!b) return true; // на дороге
-  const L = b.lot;
-  if (x < L.x0 || x > L.x1 || z < L.z0 || z > L.z1) return true; // на тротуаре
-  const ways = [[1, 0, b.x1 - x], [-1, 0, x - b.x0], [0, 1, b.z1 - z], [0, -1, z - b.z0]];
-  return ways.some(([dx, dz, d]) => !city.world.raycast(x, z, dx, dz, d, wallFilter));
-}
-
-/**
- * Где сожмётся зона: где угодно в городе, но не ближе квартала к забору (до предпоследней улицы)
- * и не в доме — на дороге, тротуаре, площади или во дворе, куда можно доехать.
- */
-export function zoneCenter(city, rnd = Math.random) {
-  const lim = city.roads[city.roads.length - 2];
-  for (let i = 0; i < 200; i++) {
-    const cx = (rnd() * 2 - 1) * lim, cz = (rnd() * 2 - 1) * lim;
-    if (reachable(city, cx, cz)) return { cx, cz };
+export function zoneCenter(nav, rnd = Math.random) {
+  const hx = (nav.nx * nav.cell) / 2, hz = (nav.nz * nav.cell) / 2, mx = nav.x0 + hx, mz = nav.z0 + hz;
+  const lx = hx * ZONE.centerIn, lz = hz * ZONE.centerIn;
+  for (let k = 0; k < 200; k++) {
+    const cx = mx + (rnd() * 2 - 1) * lx, cz = mz + (rnd() * 2 - 1) * lz;
+    if (reachable(nav, cx, cz)) return { cx, cz };
   }
-  const p = roadPoint(city, rnd); // не нашлось — на дорогу (почти не бывает)
-  return { cx: Math.max(-lim, Math.min(lim, p.x)), cz: Math.max(-lim, Math.min(lim, p.z)) };
+  const p = spotNear(nav, mx, mz, Math.min(lx, lz), rnd); // не нашлось (почти не бывает)
+  return { cx: p.x, cz: p.z };
 }
 
 const vert = `

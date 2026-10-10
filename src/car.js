@@ -477,7 +477,7 @@ export class Car {
   reset(sp) {
     this.x = sp.x;
     this.z = sp.z;
-    this.y = this.city.groundHeight(sp.x, sp.z);
+    this.y = sp.y ?? this.city.groundHeight(sp.x, sp.z); // a spot from the nav grid knows its floor (a deck, a tunnel)
     this.yaw = sp.yaw;
     this.vx = 0;
     this.vz = 0;

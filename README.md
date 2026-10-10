@@ -11,12 +11,13 @@ lose by wrecking your own car or running out of time.
 **Games** (the menu sets the game, the mode, your seat and the number of rivals: 1–7 in a race, at most 8 cars in total; battle royale also offers 10, 15 or 19 — up to 20 cars):
 
 - **Race** — 3 laps through checkpoints, as described above.
-- **Battle royale** — all cars are scattered around the city (at least 45 m apart), every man for himself.
-  There is no track and no timer; instead there is a red cylindrical zone visible from anywhere in the city (and on the minimap). Its center is a random point in the city, but at least one block away from the wall and not inside a building: on a road, sidewalk, plaza or courtyard that can be driven to (nothing solid within 4 m, and at least one direction reaches a street without a building in the way). After 5 s it
+- **Battle royale** — all cars are scattered around the city (at least 45 m apart, on open spots of the bots' nav grid —
+  streets and squares, heading along them), every man for himself.
+  There is no track and no timer; instead there is a red cylindrical zone visible from anywhere in the city (and on the minimap). Its center is a random point in the city, but at most 0.62 of the map's half width from its middle (in the city: at least one block away from the wall — `ZONE.centerIn`) and not inside a building: on a floor of the nav grid that can be driven to from the rest of the map (a road, sidewalk, plaza or courtyard, not a closed yard) with nothing solid within 4 m (`ZONE.centerFree`). After 5 s it
   starts to shrink and collapses to a point in about 2 minutes; outside it the car's hull melts — 2.5 per second at first,
-  up to 8 at the end. The last survivor wins, or whoever first runs down 50 pedestrians. In the battle, bots cruise the streets
+  up to 8 at the end. The last survivor wins, or whoever first runs down 50 pedestrians. In the battle, bots cruise between open spots of the nav grid
   inside the zone, don't chase a victim out of it, and don't single out humans; racers turn into "survivors" —
-  more aggressive (aggression at least 0.5). `R` puts you back on a road inside the zone. Works in crew mode and online.
+  more aggressive (aggression at least 0.5). `R` puts you back on an open spot inside the zone. Works in crew mode and online.
 
 **Modes**:
 
@@ -51,9 +52,11 @@ lose by wrecking your own car or running out of time.
   nose points the way out; while cars or a wall are along its sides and there are 2 m that way it goes straight first. Then for 10 s it steers through a point 7 m to the side
   of that spot instead of driving into it again (stuck there again 3 times, it tries the other side). Only a bot that
   hasn't got more than 8 m away from one spot for 20 s (ramming a target within 15 m doesn't count) is put on the
-  nearest free street or sidewalk spot 8–30 m away (no solid within 2.8 m, no car within 6 m; out of the players' view
-  if it can, inside the zone in battle royale, not past its next gate in a race), 2 m above the ground so it drops onto
-  it, heading along the street — never back at a gate (`ESCAPE`, `STUCK`, `SPOT` in `src/zone.js`). A pedestrian a bot
+  nearest free floor of the nav grid 8–30 m away (no solid within 2.8 m, 1.5 m of walkable floor all round, no car
+  within 6 m on its level; out of the players' view if it can, inside the zone in battle royale, not past its next gate
+  in a race), 2 m above that floor so it drops onto it — the floor of its own level, under a deck or in a tunnel —
+  heading along the floor's way (the longest free line through it) — never back at a gate (`ESCAPE`, `STUCK`, `SPOT` in
+  `src/zone.js`). A pedestrian a bot
   gave up on isn't picked again for 6 s (`GORE.skip`). Bots also don't
   fire when a shell would miss because their car is tilted — into the ground, over the target, or from under the car on
   its roof (`Car.shotReaches`); a tipped bot rolls back onto its wheels like any car. Your place is shown at the top of the screen,
@@ -205,9 +208,25 @@ the arcade handling, damage, tripping and self-righting. How it was built and me
   one landing on them hits as hard as it falls. Street props are sensors: they break when the body touches them faster
   than 2.5 m/s (a car flying over a bin misses it) and slow the car a little (at 40 km/h a lamp or a bench takes off
   ~12%, a bin ~6%).
-- **Everything else is 2D.** Pedestrians, debris, the camera and the bots' navigation and line of sight use a 2D world
+- **Everything else is 2D.** Pedestrians, debris, the camera and the bots' steering and line of sight use a 2D world
   on the XZ plane (buildings are AABBs, poles are circles, a spatial grid, DDA ray casts), with heights from the car's
   real pose — enough for an arcade game and cheap on phones.
+- **The bots' nav grid** (`src/nav/grid.js`, `NAV_PLAN.md`) is built at load from the Rapier world's static colliders
+  and the map's bounds, nothing map-specific: columns of 1.5 m (`NAV.cell`) over the map; in each column two vertical
+  rays through the world find every collider's top and bottom, and the top of each solid stack is a floor if its
+  normal is within 32° of up (`NAV.slope`), there are 2 m of room above it (`NAV.clear`) and it isn't the top of an
+  obstacle (a roof, a tree, a wall) — so the tube's floor and the street over it are two layers of one column.
+  Neighbouring floors are linked if the step between them, off either floor's slope, is at most 0.4 m (`NAV.step`;
+  curbs are 0.15) — a ramp rises along itself, so its side is a step; a floor is walkable if it is linked all round (not at a drop, the deck's edge or a ramp's side)
+  and no solid stands within 1.1 m of its centre (`NAV.inflate`, the car's half width and a margin; an upright
+  cylinder test above the floor, so curbs and ramps under it don't count, and breakable props never do). The biggest
+  connected set of walkable floors is where cars can go; each floor also keeps its kind (the collider under it: road,
+  sidewalk, ramp, deck) and its room — the distance to the nearest unwalkable floor. Spawns, the zone's centre and
+  waypoints and a stuck bot's teleport spot come from it (spawns and waypoints on "open" floors: 6 m of walkable floor
+  all round, `NAV.open`); the bots still steer the old way until `NAV_PLAN.md` session 3. Building it takes 0.13–0.3 s
+  on a desktop (city: 59 055 floors; test ground: 65 971, 318 of them on a second layer — the street over the tube)
+  and 1.7–1.9 MB. `?debug=nav` draws it: a square per floor, coloured by kind (road green, sidewalk blue, ramp
+  yellow, deck grey), upper layers lighter; unwalkable floors small dark red.
 - **Cost** (a desktop PC, a phone-sized 375 × 812 window, `?q=low`): a battle royale of 20 cars takes ~3.3 ms a frame
   — the simulation 1.6 ms (of it the physics 0.7: Rapier's world 0.37, the cars' controls and suspension 0.24), the
   rendering 1.8 ms; with 2 cars 2.2 ms. Rapier adds ~2.2 MB to the bundle (0.85 MB gzipped) and 10–60 ms to the boot.
@@ -332,7 +351,7 @@ URL parameters:
   (default: phone — low, desktop — high);
 - `?peds=100` — how many live pedestrians to keep in the city (default 84 on desktop, 54 on a phone);
 - `?map=test` — the test ground instead of the city;
-- `?debug` — FPS counter;
+- `?debug` — FPS counter; `?debug=nav` — also draws the bots' nav grid (see [Physics](#physics));
 - `?mute` — start muted without touching saved settings (automated tests run this way, together with Chromium's `--mute-audio`).
 
 ## If the game crashes
@@ -370,7 +389,11 @@ src/
   racers.js           rivals: personalities (RIVALS), AI — track, hunting cars and pedestrians, car hits (CAR_HIT)
   tag.js              label above a car: name and hull bar
   gunner.js           bot gunner in the turret (crew mode): target choice, turning, firing (settings — GUNNER)
-  zone.js             battle royale: cylindrical zone, spawn points (settings — ZONE)
+  zone.js             battle royale: cylindrical zone, spawn points, zone centre, a stuck bot's teleport spot
+                      (settings — ZONE, SPOT)
+  nav/grid.js         the bots' nav grid: layered floors from the static colliders, links, walkable floors,
+                      queries — cellAt, isFree, nearestFree, randomCell, axis (settings — NAV)
+  nav/debug.js        ?debug=nav: the grid drawn over the map
   net/client.js       server connection, game version for rooms, the round trip to the server
   net/lobby.js        the multiplayer screen: connecting, rooms, start
   net/netplay.js      network race: own/remote cars, snapshots (full pose, packed rotation), events, victory claims
@@ -397,5 +420,5 @@ Main tuning numbers: `PHYS` in `src/physics/rapier.js` (gravity, the step and `m
 `CANNON` in `src/cannon.js` (reload, damage, blast radius), `MG` in `src/mg.js` (machine gun), `MOLOTOV` in `src/molotov.js` (cocktails), `RIVALS` (personality `aggr`/`gore`, speed; battle bots beyond seven reuse the same personalities under names from `EXTRA`), `MAX_CARS`/`MAX_CARS_ROYALE` (cars in a race / in battle),
 `HUNT`/`GORE`/`PREY_WEIGHT`/`HUNT_DELAY`, `ESCAPE`, `STUCK` and `CAR_HIT` in `src/racers.js` (how personality scales turn into behavior,
 whom hunters go after, how a stuck bot gets out and when it is put elsewhere, ram damage), `SPOT` in `src/zone.js` (where
-it is put), `RACE.goreWin` (how many pedestrians to win), `KNOCK_SPEED`/`KILL_SPEED` and pedestrian reactions in `_panic()`
+it is put), `NAV` in `src/nav/grid.js` (the nav grid: cell size, step, slope, clearance, inflation, open spots), `RACE.goreWin` (how many pedestrians to win), `KNOCK_SPEED`/`KILL_SPEED` and pedestrian reactions in `_panic()`
 in `src/pedestrians.js`, `QUALITY`/`CITY` in `src/config.js`.
