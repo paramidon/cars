@@ -60,7 +60,23 @@ lose by wrecking your own car or running out of time.
   after it already planned (and racers keep their lanes where there's room); a hunter, a butcher or a survivor whose
   goal (the car, the pedestrian, the waypoint) is within 45 m with a straight drivable line to it goes straight at it.
   Searches run from a queue (once a frame's searches have looked at 3000 floors, the rest wait for the next frame); a bot
-  gets a new path when its goal moves, when it is 7 m off its path, after an escape or when it's held up by a car. Cars and wrecks the grid doesn't know: one in the way (ahead within 6 m + 1.1 s of the
+  gets a new path when its goal moves, when it is 7 m off its path, after an escape or when it's held up by a car.
+  A goal on another level (more than 1.5 m up or down, or under another floor — a gate in a tunnel) is searched with a
+  better guess of the way left: a Dijkstra back from the goal over 4000 floors first. A metre of slope costs
+  150 × (grade − 0.15)² more (the big ramp +1; the deck's ramp and curbs nothing). Paths also take the nav grid's
+  jumps — off a ramp's lip, off a deck's edge or a tunnel's portal, over a catapult (see [Physics](#physics)): the run-up
+  costs its length, the flight and the run-out after it half their length, plus 4 per jump, 1.5 per m/s the lip needs
+  over 14 (a gap: too slow, it falls in) and 2 per m/s of landing harder than 13 m/s; a jump is entered only roughly
+  along its way (a run-up shorter than 18 m straight along it, a longer one also from the side, never against it), and
+  only by a bot whose top speed is 2 m/s over the middle of the jump's band of speeds. On the run-up the bot holds that
+  middle speed; from 14 m before the lip to the end of the run-out it searches for no new path and avoids no car; it
+  doesn't brake for 6 m past the lip (braking with the back wheels still on it would pitch the nose down) and holds the
+  wheel straight in the air. If it won't make the band's slowest speed by the lip at full throttle (the car's thrust
+  against the climb), or within 6 m of the lip it's slower than that or more than 0.45 rad off the jump's way, it gives
+  the jump up — it brakes if it can still stop before the lip (else it goes) and takes no jump off that lip (within 6 m)
+  for 15 s. It slows down before a crest (the grade dropping by 0.06 or more) to fly at most 8 m off it (the deck's top:
+  23 m/s), and brakes in time to stop 3 m short of a drop it isn't taking (a deck's edge while chasing someone across
+  it); held there it gets out as below, and the escape's legs and a hunter's back-up see drops too. Cars and wrecks the grid doesn't know: one in the way (ahead within 6 m + 1.1 s of the
   speed, its centre within 3 m of the line; a moving car only if the bot closes in on it at 2 m/s or more) is passed
   0.25, 0.5 or 0.8 rad to one side where the grid has 10 m of room; with no way past, the bot slows down to its speed,
   but not below 4 m/s — it nudges a wreck aside or gets stuck against it and out as below, rather than waiting behind it
@@ -119,7 +135,9 @@ lose by wrecking your own car or running out of time.
   owner. Settings — `MOLOTOV` in `src/molotov.js`.
 
 - **Start**: grid slots (5 slots in 2 rows) are dealt randomly every race — to the player and the rivals alike.
-- **Race**: 3 laps through the streets via yellow checkpoint gates, before time runs out. Each gate
+- **Race**: 3 laps through the streets via yellow checkpoint gates, before time runs out (the map's course,
+  `city.course`: a gate has a floor height — one in a tunnel or on a deck counts only for a car from 3 m below its floor
+  to 1 m under its top, `RACE.below`). Each gate
   adds as many seconds as the next leg takes at an average speed of ~58 km/h, plus +5 s per lap.
   Pedestrians add a little time (killed +2 s, gibbed +3, crushed +2,
   blown up +1), but the main thing is to reach the finish. A light beam shines above the next gate, the top of the screen shows an
@@ -180,6 +198,9 @@ lose by wrecking your own car or running out of time.
   No rivals, no track, no timer and no win condition — only
   your own car; if it gets wrecked — «ЕЩЁ ЗАЕЗД». Single player only (online only from a test script). New mechanics
   should be added here too. Layout — `testGround()` and `verticals()` in `src/world/city.js`.
+  With `?map=test&bots=N` it's a playable map instead, to exercise the bots' 3D navigation: the menu's race or battle
+  royale with N bots. The race's gates: before the big ramp, after its landing, on the deck, north of the deck (the
+  way there is off its edge), in the tunnel, and the finish after the tube (`course` in `buildCity()`).
 - **Back to menu** in single player is available from pause and from the results screen (online, the same place has «ВЫЙТИ ИЗ КОМНАТЫ»): the race is reset and cars return to the start.
 
 ## Physics
@@ -240,17 +261,37 @@ the arcade handling, damage, tripping and self-righting. How it was built and me
   rays through the world find every collider's top and bottom, and the top of each solid stack is a floor if its
   normal is within 32° of up (`NAV.slope`), there are 2 m of room above it (`NAV.clear`) and it isn't the top of an
   obstacle (a roof, a tree, a wall) — so the tube's floor and the street over it are two layers of one column.
-  Neighbouring floors are linked if the step between them, off either floor's slope, is at most 0.4 m (`NAV.step`;
+  Neighbouring floors are linked if the step between them, off either floor's slope, is at most 0.25 m (`NAV.step`;
   curbs are 0.15) — a ramp rises along itself, so its side is a step; a floor is walkable if it is linked all round (not at a drop, the deck's edge or a ramp's side)
   and no solid stands within 1.1 m of its centre (`NAV.inflate`, the car's half width and a margin; an upright
   cylinder test above the floor, so curbs and ramps under it don't count, and breakable props never do). The biggest
   connected set of walkable floors is where cars can go; each floor also keeps its kind (the collider under it: road,
   sidewalk, ramp, deck) and its room — the distance to the nearest unwalkable floor. Spawns, the zone's centre and
   waypoints and a stuck bot's teleport spot come from it (spawns and waypoints on "open" floors: 3 m of walkable floor
-  all round, `NAV.open`), and the bots drive paths on it (see Rivals). Building it takes 0.13–0.3 s
-  on a desktop (city: 59 055 floors; test ground: 65 971, 318 of them on a second layer — the street over the tube)
-  and 1.7–1.9 MB. `?debug=nav` draws it: a square per floor, coloured by kind (road green, sidewalk blue, ramp
-  yellow, deck grey), upper layers lighter; unwalkable floors small dark red; and every bot's current path in magenta.
+  all round, `NAV.open`), and the bots drive paths on it (see Rivals). A catapult's floors aren't walkable (a car
+  driving over one is thrown; only its jumps lead over it). **Jumps** (`src/nav/links.js`, `JUMP`): from every edge
+  floor with a lower floor beyond it — a ramp's lip (along the ramp only, not off its side), a deck's edge, a tunnel's
+  portal — and onto every catapult, the car's lower body is flown (a shape cast every 0.05 s, no spin) at 14–36 m/s
+  at the lip (a catapult: from 6 m/s, thrown up at 18): a flight lands well on a reachable floor with 1.5 m of room, at
+  most 19 m/s into it, with straight walkable floor after it for 6 m plus the way to stop from that speed at 15 m/s²
+  (it can't turn or brake in the air). Slower than 14 m/s a car tips over an edge nose first (off the deck: 10 m/s
+  and less roll it over, 13 pitch it 60°). The speeds that land well are cut into bands of 6 m/s every 4 m/s; each band
+  is a jump per entry to the straight run-up before the lip — every 3 floors from 10 m (off a ramp) or 9 m (off an
+  edge, onto a catapult) to 40 m — if a car entering there at 8 m/s reaches the band's middle speed by the lip at full
+  throttle. A jump lands at the end of its run-out (where the path goes on). City: none; test ground: 655 — 68 off the
+  ramps (the big one, the kickers), 465 off the deck's edges and the tube's portals, 122 onto the catapult (the ramp over
+  the tube's exit trench needs ~25 m/s at its lip, more than a car gets there: no jump), found in ~30 ms. Building the grid takes 0.13–0.3 s on a
+  desktop (city: 59 055 floors; test ground: 65 971, 318 of them on a second layer — the street over the tube) and
+  1.7–2.2 MB. `?debug=nav` draws it: a square per floor, coloured by kind (road green, sidewalk blue, ramp yellow,
+  deck grey), upper layers lighter; unwalkable floors small dark red; the jumps — the run-up white, the flights at the
+  band's slowest and fastest speed orange (off a ramp), cyan (off an edge) or red (a catapult); and every bot's current
+  path in magenta.
+- **What a map gives the bots' navigation**: static colliders in the Rapier world, each with a kind (`solids`; the tops
+  of `OBSTACLES` kinds are never floors, breakable props are sensors, never obstacles); `bounds` — where cars can be
+  (`x0, z0, x1, z1`) and the colliders' height range (`y0, y1`); `pads` — boost and catapult rectangles with their
+  floor height; for a race `course` — a closed route (progress, standings, the minimap) and gates `{ x, z, y, w, h }`
+  (the last one the finish); `spawn` — the race's grid (battle royale spawns, its zone and waypoints come from the
+  grid). Nothing else: the grid, its jumps, the paths and every bot rule are built from these.
 - **Cost** (a desktop PC, a phone-sized 375 × 812 window, `?q=low`): a battle royale of 20 cars takes ~3.3 ms a frame
   — the simulation 1.6 ms (of it the physics 0.7: Rapier's world 0.37, the cars' controls and suspension 0.24), the
   rendering 1.8 ms; with 2 cars 2.2 ms. Rapier adds ~2.2 MB to the bundle (0.85 MB gzipped) and 10–60 ms to the boot.
@@ -376,7 +417,8 @@ URL parameters:
 - `?q=low` / `?q=high` — force low (no shadows, fewer pedestrians) or high graphics
   (default: phone — low, desktop — high);
 - `?peds=100` — how many live pedestrians to keep in the city (default 84 on desktop, 54 on a phone);
-- `?map=test` — the test ground instead of the city;
+- `?map=test` — the test ground instead of the city; `?map=test&bots=7` — a race (or battle royale, as chosen in the
+  menu) on it with 7 bots;
 - `?debug` — FPS counter; `?debug=nav` — also draws the bots' nav grid and their paths (magenta lines; see [Physics](#physics));
 - `?mute` — start muted without touching saved settings (automated tests run this way, together with Chromium's `--mute-audio`).
 
@@ -420,9 +462,11 @@ src/
                       (settings — ZONE, SPOT)
   nav/grid.js         the bots' nav grid: layered floors from the static colliders, links, walkable floors,
                       queries — cellAt, isFree, nearestFree, randomCell, axis (settings — NAV)
-  nav/path.js         the bots' paths: A* over the nav grid (costs, a search budget per frame), straight legs,
-                      following a path (settings — PATH)
-  nav/debug.js        ?debug=nav: the grid and the bots' paths drawn over the map
+  nav/links.js        the nav grid's jumps: off ramps' lips and edges, over catapults, found by flying the car's
+                      box through the colliders (settings — JUMP)
+  nav/path.js         the bots' paths: A* over the nav grid and its jumps (costs, a search budget per frame),
+                      straight legs, jumps and crests on a path (settings — PATH)
+  nav/debug.js        ?debug=nav: the grid, its jumps and the bots' paths drawn over the map
   net/client.js       server connection, game version for rooms, the round trip to the server
   net/lobby.js        the multiplayer screen: connecting, rooms, start
   net/netplay.js      network race: own/remote cars, snapshots (full pose, packed rotation), events, victory claims
@@ -445,9 +489,9 @@ Pedestrians (all body parts) are drawn in ~6 draw calls via
 `InstancedMesh`. On a weak device the render resolution drops automatically if the FPS sags.
 
 Main tuning numbers: `PHYS` in `src/physics/rapier.js` (gravity, the step and `maxSteps` per frame, ground and wall friction) and `VEH` in `src/physics/vehicle.js` (`mass`, centre of mass — `com`, `inertia`, chassis shape — `lower`/`cabin`, its `friction`/`restitution`, `angularDamping`, suspension — `wheelRadius`/`rest`/`travel`/`stiffness`/`compression`/`relaxation`, the arcade layer's fade with lean — `upFull`/`upNone`, grip against obstacles — `leanGrip`, the flip rule — `flipUp`/`flipAfter`/`flipStill`/`flipSlow`/`flipSlowRate`/`flipMax`/`rightRate`/`rightLift`/`rightTime`, tripping — `tripAccel`/`trip`/`tripTime`, wall hits — `wallNormal`, landing and roof damage — `landAir`/`landSafe`/`landScale`/`roofSafe`/`roofScale`, blasts — `blastLift`/`blastSpin`, pads — `boost`/`launch`; `GHOST` — other players' cars over the network: the spring's `rate`, how far a snapshot is carried forward — `ahead`, `sink`, `snap`, passing through — `deep`/`loose`, easing two overlapping cars apart — `ease`, a just-hit ghost — `holdShow`/`hold`, reconciling knocks — `knockWindow`), `SNAP_HZ`/`LEAD_MAX` in `src/net/netplay.js` (snapshots a second, the most a snapshot is carried forward for the network's delay), `P` in `src/car.js` (thrust, grip, steering at speed — the `yawCap` table and `hardFrom`/`hardTo`/`steerTime`/`yawResp`, steering return — `steerReturn`/`yawUnwind`, damage threshold and multiplier),
-`HEAL` in `src/main.js` (repair for kills), `RACE` in `src/race.js` (laps, pace, time bonuses),
+`HEAL` in `src/main.js` (repair for kills), `RACE` in `src/race.js` (laps, pace, time bonuses, how far under or over a gate counts),
 `CANNON` in `src/cannon.js` (reload, damage, blast radius), `MG` in `src/mg.js` (machine gun), `MOLOTOV` in `src/molotov.js` (cocktails), `RIVALS` (personality `aggr`/`gore`, speed; battle bots beyond seven reuse the same personalities under names from `EXTRA`), `MAX_CARS`/`MAX_CARS_ROYALE` (cars in a race / in battle),
 `HUNT`/`GORE`/`PREY_WEIGHT`/`HUNT_DELAY`, `DRIVE`, `AVOID`, `ESCAPE`, `STUCK` and `CAR_HIT` in `src/racers.js` (how personality scales turn into behavior,
-whom hunters go after, how a bot drives a path and brakes for its corners, passes cars and wrecks, how a stuck bot gets out and when it is put elsewhere, ram damage), `SPOT` in `src/zone.js` (where
-it is put), `NAV` in `src/nav/grid.js` (the nav grid: cell size, step, slope, clearance, inflation, open spots), `PATH` in `src/nav/path.js` (path costs — room, alleys, wrecks, traps, crowds, turning back —, the search budget, straight legs, corners), `RACE.goreWin` (how many pedestrians to win), `KNOCK_SPEED`/`KILL_SPEED` and pedestrian reactions in `_panic()`
+whom hunters go after, how a bot drives a path and brakes for its corners and crests, holds a jump's speed and gives it up, stops before an edge, passes cars and wrecks, how a stuck bot gets out and when it is put elsewhere, ram damage), `SPOT` in `src/zone.js` (where
+it is put), `NAV` in `src/nav/grid.js` (the nav grid: cell size, step, slope, clearance, inflation, open spots), `JUMP` in `src/nav/links.js` (the jumps: speeds tried, the flight's step and box, run-ups and their entries, run-outs, landings, bands), `PATH` in `src/nav/path.js` (path costs — room, alleys, wrecks, traps, crowds, turning back, slopes, jumps —, the search budget, the goal's field for another level, straight legs, corners, crests), `RACE.goreWin` (how many pedestrians to win), `KNOCK_SPEED`/`KILL_SPEED` and pedestrian reactions in `_panic()`
 in `src/pedestrians.js`, `QUALITY`/`CITY` in `src/config.js`.

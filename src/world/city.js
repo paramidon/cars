@@ -899,6 +899,35 @@ export function buildCity(scene, quality, test = false) {
   }
   const bounds = { x0: -outer, z0: -outer, x1: outer, z1: outer, y0, y1 };
 
+  // the race course (Race): a closed route through the streets (progress, standings, the minimap) and the gates on it,
+  // the last one the finish; a gate's y is its floor (a gate in a tunnel or on a deck), w and h its half width and
+  // height where the default 15 m × 7 m gate doesn't fit
+  const spawn = { x: roads[3] - 3.5, z: roads[1] + RD / 2 + 12, yaw: 0 };
+  const mid = (a, b) => (a + b) / 2;
+  const r = roads; // [-180, -120, -60, 0, 60, 120, 180]
+  const course = test
+    ? {
+        // the test ground: over the big ramp, up onto the deck and off its north edge, through the tube southbound
+        route: [[-15, -95], [-15, 14], [115, 14], [115, 95], [115, 150], [-130, 150], [-130, -95]],
+        gates: [
+          { x: -15, z: -72, y: 0 }, // before the big ramp: the way to the next gate goes over it
+          { x: -15, z: 14, y: 0 },
+          { x: 115, z: 95, y: DECK.h },
+          { x: -60, z: 150, y: 0 },
+          { x: (TUBE.x0 + TUBE.x1) / 2, z: 10, y: TUBE.floor, w: 3.6, h: 4.4 },
+          { x: (TUBE.x0 + TUBE.x1) / 2, z: -88, y: 0 },
+        ],
+      }
+    : {
+        // по часовой стрелке, если смотреть сверху на карту; чекпоинты посередине кварталов, последний — старт/финиш
+        route: [[r[3], r[0]], [r[3], r[4]], [r[5], r[4]], [r[5], r[6]], [r[1], r[6]], [r[1], r[2]], [r[2], r[2]], [r[2], r[0]]],
+        gates: [
+          [r[3], mid(r[2], r[3])], [mid(r[4], r[5]), r[4]], [r[5], mid(r[5], r[6])], [mid(r[2], r[3]), r[6]],
+          [r[1], mid(r[4], r[5])], [mid(r[1], r[2]), r[2]], [r[2], mid(r[0], r[1])],
+          [r[3], spawn.z + 16], // старт/финиш — линия перед стартовой решёткой
+        ].map(([x, z]) => ({ x, z, y: 0 })),
+      };
+
   // ---------------------------------------------------------------- миникарта
   const MM = 512;
   const ext = outer + 2;
@@ -976,11 +1005,14 @@ export function buildCity(scene, quality, test = false) {
     pedLayout,
     solids,
     bounds,
+    course,
+    /** Pads (test ground): { type: 'boost' | 'launch', x0, z0, x1, z1, y } — a boost holds VEH.boost, a catapult throws the car up. */
+    pads: triggers,
     /** Pad (boost / launch) under a car at (x, z) standing at height y, or null. */
     padAt: (x, z, y) => triggers.find((t) => x >= t.x0 && x <= t.x1 && z >= t.z0 && z <= t.z1 && Math.abs(y - t.y) < 0.5) || null,
     /** Under the tube's ceiling (or by its portals) at height y: the tube (for the camera), else null. */
     roofOver: (x, z, y) => (vert && x > TUBE.x0 && x < TUBE.x1 && z > TUBE.z[1] - 6 && z < TUBE.z[2] + 6 && y < TUBE.ceil - 0.5 ? TUBE : null),
-    spawn: { x: roads[3] - 3.5, z: roads[1] + RD / 2 + 12, yaw: 0 },
+    spawn,
     minimap: { canvas: mm, ext, k },
   };
 }

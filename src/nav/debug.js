@@ -1,9 +1,10 @@
 /**
  * `?debug=nav`: the nav grid drawn over the map — a small square on every floor, coloured by its kind and layer;
  * unwalkable floors (a solid within NAV.inflate, an edge) dark red, walkable ones cut off from the main area purple;
- * and the bots' paths.
+ * the jumps; and the bots' paths.
  */
 import * as THREE from 'three';
+import { PHYS } from '../physics/rapier.js';
 
 const KIND = { ground: '#3fa34d', curb: '#3f7fd1', ramp: '#e0a020', deck: '#d0d0d0' };
 const OTHER = '#9a7a5a', BLOCKED = '#6a1010', ISLAND = '#a040c0';
@@ -37,6 +38,46 @@ export function navMesh(nav) {
   mesh.renderOrder = 5;
   mesh.frustumCulled = false;
   return mesh;
+}
+
+const JUMP_COLOR = { jump: '#ff8a00', drop: '#20d0ff', launch: '#ff2030' };
+
+/**
+ * `?debug=nav`: the grid's jumps — the run-up (from the take-off floor to the lip) white, the flights at the slowest
+ * and the fastest speed that land well coloured by kind (off a ramp orange, off an edge cyan, a catapult red), then the
+ * run-out to where the path goes on.
+ */
+export function jumpLines(nav) {
+  const pts = [], cols = [];
+  const c = new THREE.Color(), white = new THREE.Color('#ffffff');
+  const seg = (a, b, col) => {
+    pts.push(a.x, a.y + 0.3, a.z, b.x, b.y + 0.3, b.z);
+    cols.push(col.r, col.g, col.b, col.r, col.g, col.b);
+  };
+  for (const J of nav.jumps) {
+    seg(nav.pos(J.from), J.lip, white);
+    c.set(JUMP_COLOR[J.kind]);
+    for (const v of [J.lo, J.hi]) {
+      // the flight's arc off the lip (the box's own start offset left out)
+      const cs = 1 / Math.sqrt(1 + J.grade * J.grade), vh = v * cs, vy = J.kind === 'launch' ? 18 : v * J.grade * cs;
+      const L = J.land[Math.round((v - J.lo) / J.step)], T = L / vh;
+      let p = J.lip;
+      for (let k = 1; k <= 12; k++) {
+        const t = (k / 12) * T, q = { x: J.lip.x + J.dx * vh * t, y: J.lip.y + vy * t - 0.5 * PHYS.gravity * t * t, z: J.lip.z + J.dz * vh * t };
+        seg(p, q, c);
+        p = q;
+      }
+      if (v === J.hi) seg(p, nav.pos(J.to), white);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pts), 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(cols), 3));
+  const lines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false, transparent: true, fog: false }));
+  lines.name = 'nav-jumps';
+  lines.renderOrder = 6;
+  lines.frustumCulled = false;
+  return lines;
 }
 
 /** `?debug=nav`: every bot's current path, a magenta line; update(bots) once a frame. */

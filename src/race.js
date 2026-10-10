@@ -8,12 +8,16 @@ export const RACE = {
   startBuffer: 20, // запас на старте, с
   lapBonus: 5, // доп. секунды за пройденный круг
   radius: 11, // радиус засчитывания чекпоинта, м
+  below: 3, // m: a car this far below a gate's floor, or above its top less 1 m, doesn't pass it (a gate in a tunnel under a street)
   countdown: 3, // обратный отсчёт перед стартом, с
   // секунды за убийства
   killTime: { car: 2, gib: 3, crush: 2, explosion: 1, gun: 1 },
   wreckTime: 12, // секунды за разбитую машину соперника — стимул охотиться
   cpHeal: 6, // корпус за каждые ворота (и игроку, и соперникам) — стимул ехать по кругу
 };
+
+/** The car is passing gate cp: within RACE.radius of it, from RACE.below under its floor to 1 m under its top. */
+export const atGate = (cp, car) => (car.x - cp.x) ** 2 + (car.z - cp.z) ** 2 < RACE.radius * RACE.radius && car.y > cp.y - RACE.below && car.y < cp.y + cp.h - 1;
 
 const GATE_HALF = 7.6; // полуширина ворот (дорога 14 м)
 const GATE_H = 7;
@@ -111,26 +115,11 @@ export class Race {
     this.audio = audio;
     this.onEvent = null; // (type, data)
 
-    const r = city.roads; // [-180, -120, -60, 0, 60, 120, 180]
-    // замкнутый маршрут по улицам (по часовой стрелке, если смотреть сверху на карту)
-    this.route = [
-      [r[3], r[0]], [r[3], r[4]], [r[5], r[4]], [r[5], r[6]],
-      [r[1], r[6]], [r[1], r[2]], [r[2], r[2]], [r[2], r[0]],
-    ];
-    // чекпоинты: посередине кварталов; последний — старт/финиш
-    const mid = (a, b) => (a + b) / 2;
-    const pts = [
-      [r[3], mid(r[2], r[3])],
-      [mid(r[4], r[5]), r[4]],
-      [r[5], mid(r[5], r[6])],
-      [mid(r[2], r[3]), r[6]],
-      [r[1], mid(r[4], r[5])],
-      [mid(r[1], r[2]), r[2]],
-      [r[2], mid(r[0], r[1])],
-      [r[3], city.spawn.z + 16], // старт/финиш — линия перед стартовой решёткой
-    ];
+    // the map's course (city.course): a closed route and the gates on it, the last one the start / finish
+    const { route, gates } = city.course;
+    this.route = route;
     this._buildRoute();
-    this.cps = pts.map(([x, z], i) => this._makeCheckpoint(x, z, i === pts.length - 1));
+    this.cps = gates.map((g, i) => this._makeCheckpoint(g, i === gates.length - 1));
     const L = this.length;
     for (let i = 0; i < this.cps.length; i++) {
       const a = this.cps[i], b = this.cps[(i + 1) % this.cps.length];
@@ -227,32 +216,33 @@ export class Race {
     return Math.min(1.05, 1 - rem / (prev.toNext || 1));
   }
 
-  _makeCheckpoint(x, z, finish) {
+  /** A gate { x, z, y, w, h } of the course (y — its floor; w, h — half width and height, if not the default). */
+  _makeCheckpoint({ x, z, y = 0, w = GATE_HALF, h = GATE_H }, finish) {
     const pr = this._project(x, z);
     const yaw = Math.atan2(pr.dx, pr.dz);
     const group = new THREE.Group();
-    group.position.set(x, 0, z);
+    group.position.set(x, y, z);
     group.rotation.y = yaw;
 
     const postMat = new THREE.MeshBasicMaterial({ color: finish ? 0xf4f4f4 : 0xffd23f, transparent: true });
-    const postGeo = new THREE.CylinderGeometry(0.3, 0.4, GATE_H, 10);
-    for (const sx of [-GATE_HALF, GATE_HALF]) {
+    const postGeo = new THREE.CylinderGeometry(0.3, 0.4, h, 10);
+    for (const sx of [-w, w]) {
       const p = new THREE.Mesh(postGeo, postMat);
-      p.position.set(sx, GATE_H / 2, 0);
+      p.position.set(sx, h / 2, 0);
       group.add(p);
     }
     const plain = new THREE.MeshBasicMaterial({ color: finish ? 0x222222 : 0x1a1a1a, transparent: true });
     const bannerMat = new THREE.MeshBasicMaterial({ map: bannerTex(finish ? 'ФИНИШ' : 'ЧЕКПОИНТ', finish), transparent: true });
-    const banner = new THREE.Mesh(new THREE.BoxGeometry(GATE_HALF * 2 + 0.8, 1.5, 0.3), [plain, plain, plain, plain, bannerMat, bannerMat]);
-    banner.position.y = GATE_H - 0.3;
+    const banner = new THREE.Mesh(new THREE.BoxGeometry(w * 2 + 0.8, 1.5, 0.3), [plain, plain, plain, plain, bannerMat, bannerMat]);
+    banner.position.y = h - 0.3;
     group.add(banner);
 
     const curtainMat = new THREE.MeshBasicMaterial({
       map: curtainTex(), color: finish ? 0xffffff : 0xffd23f, transparent: true, opacity: 0.4,
       blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
     });
-    const curtain = new THREE.Mesh(new THREE.PlaneGeometry(GATE_HALF * 2, GATE_H - 1.1), curtainMat);
-    curtain.position.y = (GATE_H - 1.1) / 2;
+    const curtain = new THREE.Mesh(new THREE.PlaneGeometry(w * 2, h - 1.1), curtainMat);
+    curtain.position.y = (h - 1.1) / 2;
     curtain.renderOrder = 3;
     group.add(curtain);
 
@@ -269,7 +259,7 @@ export class Race {
           g.fillRect(0, 0, w, h);
         });
     const line = new THREE.Mesh(
-      new THREE.PlaneGeometry(GATE_HALF * 2, 1.6),
+      new THREE.PlaneGeometry(w * 2, 1.6),
       new THREE.MeshLambertMaterial({ map: lineTex, transparent: true, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
     );
     line.rotation.x = -Math.PI / 2;
@@ -277,7 +267,7 @@ export class Race {
     group.add(line);
 
     this.scene.add(group);
-    return { x, z, s: pr.s, yaw, dx: pr.dx, dz: pr.dz, finish, group, postMat, plain, bannerMat, curtainMat, curtain, line, flash: 0, toNext: 0 };
+    return { x, y, z, w, h, s: pr.s, yaw, dx: pr.dx, dz: pr.dz, finish, group, postMat, plain, bannerMat, curtainMat, curtain, line, flash: 0, toNext: 0 };
   }
 
   _drawMinimapRoute() {
@@ -368,8 +358,8 @@ export class Race {
     if (lastCp < 0) return { ...start };
     const cp = this.cps[lastCp];
     // правая полоса, чуть дальше ворот
-    const rx = -cp.dz, rz = cp.dx;
-    return { x: cp.x + cp.dx * 4 + rx * 3.5, z: cp.z + cp.dz * 4 + rz * 3.5, yaw: cp.yaw };
+    const rx = -cp.dz, rz = cp.dx, side = Math.min(3.5, cp.w - 3.5);
+    return { x: cp.x + cp.dx * 4 + rx * side, z: cp.z + cp.dz * 4 + rz * side, yaw: cp.yaw, ...(cp.y ? { y: cp.y + 0.5 } : null) };
   }
 
   /** Подсветка: активные ворота яркие, следующие тусклые, остальные спрятаны (финиш видно всегда). */
@@ -428,7 +418,7 @@ export class Race {
     this.lastTick = sec;
 
     const cp = this.cps[this.next];
-    if ((car.x - cp.x) ** 2 + (car.z - cp.z) ** 2 < RACE.radius * RACE.radius) this._pass(cp, car);
+    if (atGate(cp, car)) this._pass(cp, car);
     else if (this.timeLeft <= 0) {
       this.done = true;
       this._style();
@@ -445,7 +435,7 @@ export class Race {
   track(tr, car) {
     if (!this.started || tr.finished) return null;
     const cp = this.cps[tr.next];
-    if ((car.x - cp.x) ** 2 + (car.z - cp.z) ** 2 >= RACE.radius * RACE.radius) return null;
+    if (!atGate(cp, car)) return null;
     tr.lastCp = tr.next;
     tr.passed++;
     if (cp.finish) {
@@ -468,9 +458,9 @@ export class Race {
     this.lastCp = idx;
     this.passed++;
     cp.flash = 1;
-    for (const sx of [-GATE_HALF, GATE_HALF]) {
+    for (const sx of [-cp.w, cp.w]) {
       const px = cp.x + Math.cos(cp.yaw) * sx, pz = cp.z - Math.sin(cp.yaw) * sx;
-      this.fx.sparks(px, 4, pz, 0, 0, 18);
+      this.fx.sparks(px, cp.y + 4, pz, 0, 0, 18);
     }
     if (cp.finish) {
       this.lapTimes.push(this.lapTime);

@@ -18,7 +18,7 @@ below. Run them in order. At the end of every session, tick its checkbox in [Sta
 - [x] Session 1: getting out of traps (smart escape, nearby teleport as a last resort)
 - [x] Session 2: navigation data — a layered nav grid built from the map's 3D colliders
 - [x] Session 3: paths and driving — A*, path following, speed planning, local avoidance, all modes on the nav
-- [ ] Session 4: 3D — ramps, jumps, drops, decks and tunnels; bots on the test ground
+- [x] Session 4: 3D — ramps, jumps, drops, decks and tunnels; bots on the test ground
 
 ## Decisions already made (with the user, 2026-10-10)
 
@@ -625,3 +625,204 @@ searches hit the 12 000 cap.
   race 9.9 (0), wrecked 3.8, kills 45.8, back-ups 12.7 (6.6 turns), teleports 0; royale crew 7.9 (0), kills 52.8;
   race crew 4.6 (0), kills 42.2. `botLaps()` 55.1 km/h, 16 gates per run (within the range above). `frameCost()`:
   step 1.08 ms, the bots 0.079 ms — unchanged.
+
+### Session 4 (2026-10-10): 3D — ramps, jumps, drops, decks and tunnels
+
+**What was done** (`src/nav/links.js` — new, `src/nav/grid.js`, `src/nav/path.js`, `src/nav/debug.js`, `src/racers.js`,
+`src/race.js`, `src/world/city.js`, `src/main.js`, `src/config.js`, `src/car.js`, `tests/physics.js`)
+
+- **Jumps** (`buildLinks` in `src/nav/links.js`, constants `JUMP`; `nav.jumps`, CSR by the take-off floor
+  `nav.jumpStart`/`jumpTo`). Candidates: an edge floor with a lower floor (> 0.4 m) beyond it in a direction where it
+  has no link — off a slope only along the slope (a ramp's lip, not its side), off a flat edge straight out (a deck, a
+  tunnel's portal) — and the lip going on sideways; plus every catapult's border floor driven onto straight. The car's
+  lower body (a box, no spin) is flown from the lip, starting as the tail leaves it, a shape cast against the static
+  colliders every 0.05 s, at 14–36 m/s (a catapult from 6, thrown up at `VEH.launch`). A flight lands well on a
+  reachable floor with 1.5 m of room, at most 19 m/s into it, with straight walkable floor (room ≥ 1.5) after it for
+  6 m + the way to stop from the lip speed at 15 m/s². The widest range of speeds that land well is cut into bands of
+  6 m/s every 4 m/s; a jump per band per entry to the run-up (the straight walkable floors before the lip with walkable
+  floors on both sides; an entry every 3 floors from 10 m before a ramp's lip / 9 m before an edge or a catapult up to
+  40 m) where a car entering at 8 m/s reaches the band's middle speed by the lip at full throttle (`thrustAt`, new in
+  `car.js`, against the climb). A jump keeps its kind (`jump` off a ramp, `drop` off an edge, `launch`), lip, way,
+  grade, run-up length, band (`lo`…`hi`), landing distances per speed, the hardest landing (`vin`) and `to` — the
+  floor at the end of the run-out after its farthest landing (where A* goes on).
+- **Pads:** the map's pads (`city.pads`: boost and catapult rectangles with their floor height) go into `buildNav`;
+  `nav.pad[i]` (`PAD`); a catapult's floors aren't walkable (driving over one throws the car: only its jumps lead
+  over it). Boost pads are only marked (see Left for later).
+- **A\*** (`NavPaths.find`): a jump is an edge from its take-off floor to `to`, costing the run-up's length, half the
+  flight and run-out's, +4, +1.5 per m/s its `lo` is over 14 (a gap), +2 per m/s of `vin` over `VEH.landSafe`
+  (`PATH.fly/jump/gap/hurt`). Not taken against its way (the last step into the take-off floor; a run-up shorter than
+  18 m only straight along it, `PATH.longRun`), by a bot whose top speed is under the band's middle + 2 m/s
+  (`speed`), or off a lip within 6 m of one the bot gave up lately (`banned`). The path comes with `cells.jumps`.
+  Slopes cost 150 × (grade − 0.15)² more per metre, the grade from the neighbours' heights (the big ramp +1; the deck's
+  ramp, curbs and curbs' bevels nothing — a floor normal shows a bevel's 27°). **A goal on another level** (more than
+  1.5 m up or down, or under another floor): a Dijkstra back from it over 4000 floors (base costs, jumps backwards,
+  `_field`) gives the heuristic (× 0.7 where it got, its radius beyond) — with the plain 2D heuristic the tunnel's gate
+  looked a few metres from the street over it, and the search flooded that street until `PATH.max` (12 000) and
+  returned a path to the street.
+- **Path smoothing:** a leg never passes a take-off floor; a jump adds its lip and the end of its run-out as vertices,
+  in a straight line. The polyline carries `jumps` (`k0/k1/k2`, `s0/s1/s2`, `q`), `crests` (the grade over two floors
+  dropping by ≥ 0.06 → a speed `√(8 m · g / (2 · drop))`: the deck's top 23 m/s) and `fly` (legs off a lip);
+  `joinPaths` and the new `sliceFrom` (the race's splice at a gate) keep them. `projectOn` counts the height off a
+  leg's line beyond 2.5 m (×3), except on legs off a lip.
+- **Driving** (`Rival`; `DRIVE.commit/onRun/ban/last/offLip/stop/edge`): before a jump the look-ahead stops at the
+  take-off floor + 2 m (onto the run-up at its start, not cutting in); on the run-up and over the jump the bot steers
+  along the path, holds the band's middle speed (the lip is a "corner" at `hi` − 1), from 14 m before the lip to the
+  end of the run-out takes no new path (a search already queued waits) and avoids no car; past the lip it doesn't brake
+  for 6 m nor in the air; in the air the wheel is straight. Crossing a run-up's line with the nose more than 1 rad off
+  its way isn't being on it: it steers for the take-off floor and asks for a new path. `_jumpCheck`: if at full
+  throttle it won't make the band's `lo` by the lip, or within 6 m of the lip it's slower than `lo` − 0.5 or more than
+  0.45 rad off the way, it gives the jump up — brakes (only while it can still stop before the lip at 18 m/s², else it
+  goes), bans jumps off that lip for 15 s, searches again. `_edgeAhead`: a drop along its heading (a floor more than
+  1.45 m lower than the one it follows; a wall or a step up isn't one) within its stopping distance limits its speed to
+  stop 3 m short (not on a run-up); held there counts as stuck, and the escape's legs (`_roomAlong`) and a hunter's
+  back-up see drops (`_dropDist`).
+- **Race course from the map** (`city.course`: a closed route and gates `{ x, z, y, w, h }`; the city's moved out of
+  `race.js` unchanged). A gate counts from 3 m below its floor to 1 m under its top (`atGate`, `RACE.below`); a bot's
+  goal and gate legs use its `y`. The test ground's course: a gate before the big ramp, one after its landing, one on
+  the deck, one north of it (off the deck's edge), one in the tunnel (narrower: `w` 3.6, `h` 4.4), the finish after the
+  tube southbound.
+- **`?map=test&bots=N`** (`TEST_BOTS`): the test ground as a playable map — the menu's race or battle royale with N
+  bots (`game.test` is the free ride only, `game.testMap` the map).
+- **`NAV.step` 0.4 → 0.25 m:** the deck ramp's foot had walkable floors on its side (a 0.15–0.4 m vertical face; curbs
+  are bevelled), cars cut over it and hit it. No link in the city has a step over 0.25: its grid is unchanged (59 055
+  floors, 52 736 walkable).
+- `?debug=nav` also draws the jumps (`jumpLines`): the run-up white, the flights at the band's slowest and fastest
+  speed orange (off a ramp), cyan (off an edge), red (catapult).
+- **Tests:** `testGround()` (test ground with bots: N seeded games, how often bots use each feature — `FEATURES` —,
+  hard hits on ramps' and the deck's sides, tips with where and how, given-up jumps, stuck, teleports, gates),
+  `featureRuns()` (one bot from before each feature to a goal past it, `FEATURE_RUNS`, 5 starts each), `botTrace()`
+  (one bot's drive frame by frame — speed, input, its place on its path, the jump ahead).
+
+**What a map must provide for navigation** (also in the README, Physics): static colliders in the Rapier world with a
+kind each (`solids`; tops of `OBSTACLES` kinds are never floors; breakable props are sensors, never obstacles; upright
+boxes and cylinders are cheapest — their bottom needs no ray); `bounds` (`x0, z0, x1, z1` — where cars can be — and
+`y0, y1` — the colliders' height range); `pads` (boost / catapult rectangles with their floor height); for a race,
+`course` (a closed route for progress, standings and the minimap; gates with their floor `y`, and `w`/`h` where the
+default 15 × 7 m gate doesn't fit); `spawn` (the race's grid). Spawns, zones and waypoints of a battle royale, the
+teleport spots, the jumps and every bot rule come from these.
+
+**Measured.** Rows are statistics: the same seed gives a different game, and pages differ. The session-3 code ran
+alongside as a baseline (a git worktree on a second dev server, same tests).
+
+Real car off the test ground's features (the player's car, held at a speed by hand, before the jumps existed): off the
+deck at 4–10 m/s it rolls over (8–30 hull lost), 13 m/s pitches it to 59° (`upY` 0.51), 16 to 49°, 20 to 40°, all land
+on the wheels; off the big ramp 12–24 m/s at the lip all land well (from a standstill 30 m before it a car gets 23.6 m/s
+at the lip); the ramp over the exit trench: 21.7–22.3 m/s at the lip at most (lands just past the far rail). Hence
+`JUMP.speeds` from 14, and no jump over the trench (its bands need ~25 m/s).
+
+Jumps: test ground 655 (68 off ramps, 465 off edges, 122 onto the catapult), the phase ~30 ms of a 173–294 ms grid
+build (desktop); city none (the phase 3 ms; the grid +290 KB for the pad and jump index arrays).
+
+`featureRuns()` (5 starts each; final code)
+
+| Run | Used the feature | Reached the goal, s | Jumps | Given up | Tips | Side hits | Stuck max, s |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Big ramp | 5 / 5 | 5 / 5, 5.7 | 5 | 0 | 0 | 0 | 0.5 |
+| Boost pad and kickers | 5 / 5 | 5 / 5, 10.3–10.4 | 10 (2 kickers each) | 0 | 0 | 0 | 1.1 |
+| Over the exit trench | 0 / 5 (no jump: too fast for a car) | 5 / 5, 4.6 (round its end) | 0 | 0 | 0 | 0 | 0.6 |
+| Up the deck's ramp | 5 / 5 | 5 / 5, 4.0 | 0 | 0 | 0 | 0 | 0.5 |
+| Off the deck north | 5 / 5 | 5 / 5, 3.6 | 5 | 0 | 0 | 0 | 0.6 |
+| Off the deck west | 5 / 5 | 5 / 5, 3.1–3.2 | 5 | 0 | 0 | 0 | 0.6 |
+| Through the tube (free route) | 0 / 5 — over its roof, off the south portal | 5 / 5, 8.7–8.8 | 5 | 0 | 0 | 0 | 0.6 |
+| Catapult over the wall | 5 / 5 | 5 / 5, 4.7 | 5 | 0 | 0 | 0 | 0.5 |
+
+`testGround()` — the test ground's race, 7 bots and my car on the autopilot, seeded games of 120 s (a butcher's carnage
+win is switched off: the big ramp lands in the line of 50 pedestrians, a butcher got 40 in 47 s). Per 6 games:
+
+| | Big ramp | Up the deck | Off the deck | Through the tube | Jumps | Given up | Tips > 60° | Side hits > 4 m/s | Stuck max, s | Teleports | Gates |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Final | 40 | 50 | 48 | 33 | 74 | 6 | 20 | 9 (6 hunting) | 9.6 | 0 | 281 |
+| Before `NAV.step` 0.25 | 39 | 49 | 47 | 33 | 75 | 3 | 18 | 14 (10 hunting) | 11 (1 game) | 0 | 286 |
+
+The first version (one jump per lip) in the same race: big ramp 0, tube 0 (stuck 10 s in the entrance trench), deck 3;
+with bands but before the run-up fixes: 22 / 31 / 30 / 17 per 3 games with 28 tips and 18 give-ups. The tips left: 5
+at the start (seven cars reach the big ramp together in the first 8 s), ~6 slow ones at the deck's west edge after a
+give-up or in a fight, 3 slow falls off the big ramp's west side, the rest hunters and butchers fighting on the deck.
+
+Battle royale on the test ground (4 games of 120 s): the bots fight (26 of 28 wrecked) and rarely get to a feature
+(deck 1, the rest 0); one bot 13.1 s at the top of the tube's entrance trench. Not a navigation problem as such.
+
+City, against the session-3 code (`botBattles()`, per game):
+
+| | Games | Stuck max, s (> 10) | Without rams | Wrecked | Ped kills | Rams | Shots | Teleports | Back-ups | Turns |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Royale, 19 bots | 10 | 9.5 (0) | 8.9 | 18 | 67.5 | 58.9 | 157 | 0 | 27.2 | 14.8 |
+| … baseline | 10 | 9.8 (0) | 9.7 | 18.4 | 66.4 | 62.3 | 169 | 0 | 28.9 | 14.5 |
+| Race, 7 bots, seeds 500… | 10 | 12.9 (2) | 12.9 (1) | 3.2 | 45.4 | 22.5 | 84.7 | 0 | 17.7 | 9.4 |
+| … baseline | 10 | 12 (1) | 7.1 | 3.4 | 51.4 | 26.8 | 84 | 0 | 12.2 | 6.2 |
+| Race, seeds 600… | 10 | 7.4 (0) | 6.8 | 3.4 | 45.9 | 20 | 78.3 | 0 | 13.5 | 7.5 |
+| … baseline | 10 | 9.2 (0) | 8.2 | 3.5 | 47.3 | 26.6 | 88.8 | 0 | 14.5 | 7.7 |
+| Royale crew | 5 | 8 (0) | 5.6 | 19 | 44.6 | 31.8 | 210 | 0 | 13.6 | 7.8 |
+| … baseline | 5 | 6.8 (0) | 6.8 | 19 | 41.8 | 28.2 | 196 | 0 | 13.4 | 10 |
+| Race crew | 5 | 20 (1) | 20 (1) | 5.6 | 36.4 | 8.8 | 133 | 0.2 | 3.6 | 2 |
+| … the same seeds again / seeds 520… | 5 + 5 | 6.2 (0) / 6.2 (0) | 6.2 / 6.2 | 6.2 / 6.2 | 35.2 / 29.4 | 11 / 9.4 | 124 / 121 | 0 / 0 | 5.6 / 5.8 | 2.6 / 3.2 |
+| … baseline | 5 | 5.6 (0) | 5.6 | 5.8 | 45.8 | 7.2 | 142 | 0 | 5.2 | 2 |
+
+The one crew game with a bot stuck 20 s (teleported) had an 8.8 s tip in it (the `VEH.flipMax` net); it didn't come
+back in 10 more crew games, and its trace wasn't kept. `traps()`: as in session 3 (tree and building out after
+1.8–4.1 s, wreck beside 1.4–1.6, building with wrecks both sides 1.5–9.2, caged 8.3–10.8, alley 2.9–6.1 with at most
+4.3 s after out; pinned teleported at 20.0 s, 8–9.8 m away, nearest car 6.2 m, 2 m up; the teleport by 6 parked cars
+12.5–13.7 m away, nearest car 6.1–6.8 m, 2 m up, full hull). `botLaps()` (5 runs, twice): 54.5 / 60.2 km/h, 15.2 /
+18.4 gates per run; baseline 57.7 / 60.0, 16.8 / 17.4 (runs of one code differ by up to 5 km/h). `frameCost()`
+(royale, 19 bots, 3 × 30 s, the codes alternated): step 1.114 / 1.14 ms against 1.126 / 1.091 (+1.5%), the bots
+0.094 / 0.095 ms against 0.083 / 0.079 (+0.013 ms: the edge and drop looks).
+
+**Problems found and fixed during the session**
+
+- One jump per lip with the run-out after its fastest landing (36 m/s: 90 m past the big ramp's lip): it ended far
+  past the next gate, A* never took the big ramp. Bands, each with its own run-out.
+- The tunnel's gate: searches capped at 12 000 floors, flooding the street over it (the 2D heuristic), and returned a
+  path to the street. The goal's field.
+- A racer's lane shifted its steering point 1.5 m from the deck ramp's side (a line's end needs no room): the shifted
+  point must have room.
+- Drops off the deck at ~10 m/s rolled cars over: they came onto a 24 m run-up through a hairpin, still turning
+  (`DRIVE.sharp` capped them at 10 m/s), and A* picked bands no run-up could reach (24–30 m/s from a 9 m one). Entries
+  along the run-up (a car on the deck near its edge takes the drop from there, not from 24 m back), the reach filter,
+  the way rule, the 14 m/s floor and the last check.
+- Right past the lip the bot braked for the corner after the landing while its back wheels were still on the deck: the
+  nose dropped and it landed on its roof. No braking for 6 m past the lip.
+- A search queued before the run-up replaced the path in the air (no jump ahead any more: steering, braking). No
+  searches while committed.
+- The bot crossed a run-up's line facing elsewhere (going back to a take-off floor behind it), snapped onto the run-up
+  and drove off the deck's side. The heading rule and a new path.
+- Giving a jump up at the lip, then rolling over it slowly; a many-point turn's forward leg off the deck's edge (the
+  casts don't see a drop). Give up only while it can stop; legs, back-ups and an edge look see drops.
+- Slopes from floor normals would have taxed curbs' bevels (27°) in the city: grade from the neighbours, over 0.15.
+- The deck ramp's foot was walkable from the side (`NAV.step` 0.4): 0.25.
+
+**Left for later** (no later session in this plan yet; options, the recommended one first)
+
+- **The start at a ramp:** a quarter of the test ground's tips are its first 8 s — seven cars take the big ramp's four
+  run-up columns at once and collide on it. (a) A lip reservation: a bot on a run-up claims its lip for the time it
+  needs; another one whose path goes off the same lip (within 4 m) and would reach it within ~1 s of it slows down or
+  takes another band or entry. (b) Spread the start (only the test ground's layout). (c) Accept it (it's a
+  Carmageddon start). Recommended (a).
+- **Hunters and butchers on ramps and the deck:** most side hits (6 of 9) and a third of the tips are bots fighting on
+  the deck and the ramps — driving straight at a target (the direct line only checks floors it samples, a ramp's side
+  between two samples or at its foot slips through) and ramming. (a) In direct mode also refuse a line whose
+  successive samples differ by more than `NAV.step` (a side crossed between samples), and stop a ram's charge at an
+  edge (`_dropDist`). (b) Leave fights as they are (they are the game). Recommended (a).
+- **Slow falls at the deck's west edge and the big ramp's west side** (~9 per 6 games, 5–20 km/h): after a give-up the
+  bot stops near the lip and the new path or a push takes it over; on the big ramp a bot turned or pushed on it falls
+  off its side. (a) After a give-up, back off straight before the new path starts (an escape leg backwards). (b) Make
+  the flip rule right a car that fell off a ledge faster. Recommended (a).
+- **Boost pads on a run-up aren't modelled:** the trench jump needs ~25 m/s and a car gets ~22 there; a boost pad on
+  its run-up would make it usable. (a) Count a boost pad crossed along the run-up in the reach filter (`VEH.boost`) and
+  let the bot hold the band's speed after it. (b) Nothing until a map puts a boost before a gap. Recommended (b) — the
+  test ground has no boost there.
+- **No spin in the flight model:** off an edge at 13–16 m/s a real car pitches 45–60° (covered by `JUMP.speeds` from
+  14); a higher ledge may need more. (a) A speed floor growing with the drop's height. (b) Fly a real car body in a
+  scratch Rapier world at build time (exact, ~100× the cost). Recommended (a) when a map shows it.
+- **The tube is avoided on free routes:** its 8 m width (room 3) costs ~2.8× a metre, so bots go over its roof and
+  drop through a portal; the race's gate in it makes them go through. (a) Measure room across a long straight corridor
+  only. (b) Leave it (session 3's costs keep fast cars on wide streets). Recommended (b).
+- **One-way areas** (reachable only by a drop, no way back) are left out of `main`: never a goal, never a landing.
+  Directed reachability over the jumps when a map has such a pit.
+- **Thin strips** (session 2's item, unchanged): a drivable strip narrower than a column (1.5 m — a plank, a thin
+  bridge) may be missed or broken. A finer `NAV.cell` for such a map, or a link along the strip.
+- **Lips only along the grid's 8 directions:** a ramp at 30° to them gets no jump (within ~25° it gets one along the
+  grid). Fly along the floor's own gradient when a map has such a ramp.
+- **Phone:** the grid's build time and the frame cost are still unmeasured on a real phone (sessions 2–3); the jumps
+  add ~30 ms on the desktop.
+- **Battle royale on the test ground** turns into a brawl before the bots reach the features (a zone waypoint is a
+  random floor). Not needed for navigation.

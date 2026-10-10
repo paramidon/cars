@@ -35,3 +35,8 @@ export const DEBUG_NAV = params.get('debug') === 'nav';
 export const MUTE = params.has('mute');
 /** `?map=test` — тестовый полигон: пустая площадка с парой домов, неподвижные пешеходы, без соперников и победы. */
 export const TEST_MAP = params.get('map') === 'test';
+/**
+ * `?map=test&bots=N` — the test ground as a playable map: a race over its ramps, deck and tube (or a battle royale, as
+ * chosen in the menu) with N bots, to exercise the bots' 3D navigation. Without it the test ground is a free ride.
+ */
+export const TEST_BOTS = TEST_MAP ? Math.max(0, Math.floor(Number(params.get('bots')) || 0)) : 0;

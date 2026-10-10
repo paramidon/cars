@@ -57,6 +57,8 @@ const P = {
 };
 
 export const CAR_GRIP = P.grip;
+/** Forward acceleration at full throttle on the flat at speed v, m/s² (a bot plans its run-up to a jump with it). */
+export const thrustAt = (v) => P.engine * Math.max(0, 1 - (v / P.speedCurve) ** 2) - P.roll - P.drag * v * v;
 // лоб с кенгурятником держит удар: урон по передней части при ударе о столб/стену
 const FRONT_ARMOR_WALL = 0.75;
 export const CAR_HALF_W = 1.05;

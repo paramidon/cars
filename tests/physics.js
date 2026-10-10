@@ -12,6 +12,9 @@
  *   await t.navGrid(game);              // city or test ground: the nav grid's build time, size, layers; 3D checks (NAV_PLAN 2)
  *   await t.frameCost(game);            // city: game.step's cost with 19 bots, the bots' share, path searches (NAV_PLAN 3)
  *   await t.waypoints(game);            // city: battle royale waypoints in yards — do bots get there (NAV_PLAN 3)
+ *   await t.testGround(game);           // test ground with bots (?map=test&bots=7): ramps, deck, tube used (NAV_PLAN 4)
+ *   await t.featureRuns(game);          // test ground with bots: one bot over each feature, 5 starts (NAV_PLAN 4)
+ *   await t.botTrace(game, { start: [115, 6.3, 82, 0, 15], goal: [-60, 0, 150] }); // one bot's drive, frame by frame
  *   // also: landings, carCrashes, blasts, pedJumps, props, muzzle (session 3), sideHit, obstacle, wallScrape, rollovers,
  *   // gunnerTilt (session 5), pedShots, rocking, molotovs, tyreMarks (the open problems' fixes)
  *
@@ -955,6 +958,242 @@ export async function waypoints(game, { runs = 5, secs = 120, bots = 19, seed0 =
     return { n: a.length, reached: done.length, share: a.length ? r1((done.length / a.length) * 100) : 0, meanSecs: done.length ? r1(done.reduce((s, w) => s + w.secs, 0) / done.length) : null, maxSecs: done.length ? Math.max(...done.map((w) => w.secs)) : null };
   };
   return { open: sum((w) => w.room >= 6), yards: sum((w) => w.room < 6), stuckMax: res.stuckMax, stuckOver10: res.stuckOver10, teleports: res.teleports, notReachedYards: rows.filter((w) => w.room < 6 && w.reached == null).slice(0, 20) };
+}
+
+// ---------------------------------------------------------------- NAV_PLAN session 4: 3D
+
+// the test ground's features (src/world/city.js: the ramps, the tube, the deck, the catapult) — where a car uses them
+const FEATURES = {
+  bigRamp: (c, p) => p.z < -29.5 && c.z >= -29.5 && c.x > -21 && c.x < -9 && c.y > 2.5, // off its lip (z −30, 3.5 m)
+  kicker: (c, p) => c.x > 70 && c.x < 78 && c.y > 0.8 && [-104, -64, -24].some((z) => p.z < z && c.z >= z),
+  trenchJump: (c, p) => p.x < -140 && c.x >= -140 && c.z > 64 && c.z < 74 && c.y > 2, // over the tube's exit trench
+  deckUp: (c, p) => !onDeck(p) && onDeck(c),
+  // off the deck's edge (not down its ramp: x 108…122 at z 80)
+  deckDrop: (c, p) => onDeck(p) && !onDeck(c) && !(c.x > 108 && c.x < 122 && c.z < 81),
+  tube: (c, p) => !inTube(p) && inTube(c),
+  catapult: (c, p, car) => car.rb.body.linvel().y > 14 && c.x > 140 && c.x < 152 && c.z > -40 && c.z < -25 && !(p.vy > 14),
+};
+const onDeck = (c) => c.x > 100 && c.x < 130 && c.z > 80 && c.z < 110 && c.y > 5;
+const inTube = (c) => c.x > -134 && c.x < -126 && c.z > -30 && c.z < 50 && c.y < -3;
+
+/**
+ * Test ground with bots (NAV_PLAN session 4; open `/?mute&map=test&bots=7`): `runs` seeded games of `secs` s (the
+ * menu's race over the big ramp, the deck and the tube, or `type: 'royale'`), my car on the autopilot. Per game: how
+ * many times bots used each feature (FEATURES), hard hits (over 4 m/s) on a ramp's or the deck's side, the longest any
+ * bot stayed within 6 m of one spot, teleports, tips, wrecks, jumps driven off / given up, gates passed.
+ */
+export async function testGround(game, { runs = 5, secs = 120, type = 'race', mode = 'classic', seed0 = 1100 } = {}) {
+  if (!game.testMap || game.test) throw new Error('open the test ground with bots (?map=test&bots=7)');
+  const random = Math.random;
+  const res = [];
+  for (let k = 0; k < runs; k++) {
+    takeOver(game);
+    Math.random = seeded(seed0 + k);
+    Object.assign(game.solo, { game: type, mode, seat: 'driver' });
+    game.restart();
+    game.autoDriver = autopilot(game);
+    game.car.applyDamage = () => {};
+    // a butcher's 40 kills (the line of 50 pedestrians is where the big ramp lands) would end the game early
+    const victory = game._victory;
+    game._victory = function (kind, car) {
+      if (kind !== 'carnage') return victory.call(this, kind, car);
+    };
+    while (game.countdown > 0) game.step(DT);
+    const rivals = game.rivals;
+    const used = Object.fromEntries(Object.keys(FEATURES).map((f) => [f, 0]));
+    const tipLog = [], abortLog = [];
+    const sides = [], walls = {};
+    let teleports = 0, t = 0;
+    const st = rivals.map((r) => ({ p: { x: r.car.x, y: r.car.y, z: r.car.z, vy: 0 }, ax: r.car.x, az: r.car.z, still: 0, max: 0, at: null, tipT: 0, tips: 0 }));
+    for (const r of rivals) {
+      const orig = r.respawn;
+      r.respawn = function () {
+        teleports++;
+        return orig.call(this);
+      };
+      const imp = r.car._impact;
+      r.car._impact = function (into, nx, nz, x, z, kind, y) {
+        if (into > 4) {
+          walls[kind] = (walls[kind] ?? 0) + 1;
+          if (kind === 'ramp' || kind === 'deck') sides.push({ t: r1(t), name: r.name, kind, kmh: r1(into * KMH), x: r1(x), y: r1(y), z: r1(z), mode: r.mode });
+        }
+        return imp.call(this, into, nx, nz, x, z, kind, y);
+      };
+    }
+    const j0 = rivals.map((r) => [r.jumpsTaken, r.aborts]);
+    await run(game, secs, () => {
+      if (game.state !== 'play') return false;
+      rivals.forEach((r, i) => {
+        const c = r.car, s = st[i];
+        if (c.wrecked) return;
+        const cur = { x: c.x, y: c.y, z: c.z, vy: c.rb.body.linvel().y };
+        for (const [f, test] of Object.entries(FEATURES)) if (test(cur, s.p, c)) used[f]++;
+        s.p = cur;
+        const lean = Math.acos(Math.max(-1, Math.min(1, c.upY))) * DEG;
+        if (lean > 60) {
+          if (s.tipT === 0) {
+            s.tips++;
+            tipLog.push({ t: r1(t), name: r.name, x: r1(c.x), y: r1(c.y), z: r1(c.z), kmh: r1(c.speed * KMH), air: r1(c.rb.airT), mode: r.mode, jump: !!r._jumpAhead() });
+          }
+          s.tipT += DT;
+        } else s.tipT = 0;
+        if (r.aborts > (s.ab ?? 0)) {
+          const J = r._jumpAhead(), jd = J && game.nav.jumps[J.q];
+          abortLog.push({ t: r1(t), name: r.name, x: r1(c.x), z: r1(c.z), kmh: r1(c.speed * KMH), kind: jd?.kind, lo: jd?.lo, hi: jd?.hi, toLip: J && r1(J.s1 - r.pathS) });
+        }
+        s.ab = r.aborts;
+        if (r.tr.finished || Math.hypot(c.x - s.ax, c.z - s.az) > 6) {
+          s.ax = c.x;
+          s.az = c.z;
+          s.still = 0;
+          return;
+        }
+        s.still += DT;
+        if (s.still > s.max) {
+          s.max = s.still;
+          s.at = { name: r.name, x: r1(c.x), y: r1(c.y), z: r1(c.z), mode: r.mode, t: r1(t) };
+        }
+      });
+      t += DT;
+    });
+    for (const r of rivals) {
+      delete r.respawn;
+      delete r.car._impact;
+    }
+    delete game._victory;
+    const worst = st.reduce((a, s) => (s.max > a.max ? s : a), st[0]);
+    res.push({
+      tipLog, abortLog,
+      run: k, secs: r1(t), used, sideHits: sides.length, sides: sides.slice(0, 10), walls, stuckMax: r1(worst.max), stuckAt: worst.at, teleports,
+      tips: st.reduce((a, s) => a + s.tips, 0), wrecked: rivals.filter((r) => r.car.wrecked).length,
+      jumps: rivals.reduce((a, r, i) => a + r.jumpsTaken - j0[i][0], 0), aborts: rivals.reduce((a, r, i) => a + r.aborts - j0[i][1], 0),
+      gates: rivals.reduce((a, r) => a + r.tr.passed, 0), laps: rivals.map((r) => r.tr.lap - 1 + (r.tr.finished ? 1 : 0)),
+      kills: rivals.reduce((a, r) => a + r.car.kills, 0),
+    });
+  }
+  Math.random = random;
+  const sum = (f) => res.reduce((a, r) => a + f(r), 0);
+  return {
+    type, bots: game.rivals.length, runs, used: Object.fromEntries(Object.keys(FEATURES).map((f) => [f, sum((r) => r.used[f])])),
+    sideHits: sum((r) => r.sideHits), stuckMax: Math.max(...res.map((r) => r.stuckMax)), stuckOver10: res.filter((r) => r.stuckMax > 10).length,
+    teleports: sum((r) => r.teleports), tips: sum((r) => r.tips), wrecked: sum((r) => r.wrecked), jumps: sum((r) => r.jumps), aborts: sum((r) => r.aborts),
+    gates: sum((r) => r.gates), crashes: window.crash?.entries?.length ?? 0, runs: res,
+  };
+}
+
+// scripted runs over the test ground's features: start [x, y, z, yaw, speed], goal [x, y, z], the feature expected
+export const FEATURE_RUNS = {
+  bigRamp: { start: [-15, 0, -95, 0, 10], goal: [-15, 0, 30], expect: 'bigRamp' },
+  kickers: { start: [74, 0, -165, 0, 10], goal: [74, 0, -5], expect: 'kicker' }, // the boost pad, then 3 kickers
+  trenchJump: { start: [-178, 0, 69, Math.PI / 2, 10], goal: [-95, 0, 69], expect: 'trenchJump' },
+  deckUp: { start: [115, 0, -10, 0, 10], goal: [115, 6, 100], expect: 'deckUp' },
+  dropNorth: { start: [115, 6, 84, 0, 8], goal: [115, 0, 150], expect: 'deckDrop' },
+  dropWest: { start: [115, 6, 95, -Math.PI / 2, 8], goal: [55, 0, 95], expect: 'deckDrop' },
+  tube: { start: [-130, 0, 125, Math.PI, 10], goal: [-130, 0, -100], expect: 'tube' },
+  catapult: { start: [146, 0, -75, 0, 10], goal: [146, 0, 25], expect: 'catapult' },
+};
+
+/**
+ * Test ground (NAV_PLAN session 4): one bot per run from before a feature to a goal past it (FEATURE_RUNS), `seeds`
+ * starts each, shifted ±1 m and turned ±0.1 rad. Per run: whether it used the feature (FEATURES), reached the goal
+ * (within 12 m) and when, its jumps and give-ups, tips past 60°, hard hits on a ramp's or the deck's side, the longest
+ * stay within 6 m of one spot, teleports.
+ */
+export async function featureRuns(game, { names = Object.keys(FEATURE_RUNS), seeds = [0, 1, 2, 3, 4], secs = 25 } = {}) {
+  if (!game.testMap || game.test) throw new Error('open the test ground with bots (?map=test&bots=7)');
+  const random = Math.random;
+  const rows = [];
+  for (const name of names) {
+    const F = FEATURE_RUNS[name];
+    for (const seed of seeds) {
+      takeOver(game);
+      Math.random = seeded(seed);
+      game.restart();
+      game.car.applyDamage = () => {};
+      while (game.countdown > 0) game.step(DT);
+      game.car.teleport({ x: 150, z: -175, yaw: 0 });
+      const [bot, ...rest] = game.rivals;
+      rest.forEach((r, i) => r.car.teleport({ x: -150 + 8 * i, z: -175, yaw: 0 }));
+      bot.def = { ...bot.def, aggr: 0, gore: 0 };
+      bot._raceGoal = () => ({ x: F.goal[0], y: F.goal[1], z: F.goal[2], gate: null });
+      const j = (seed % 5) - 2, yaw = F.start[3] + j * 0.05, c = bot.car;
+      c.teleport({ x: F.start[0] + j * 0.5 * Math.cos(yaw), y: F.start[1] + 0.3, z: F.start[2] - j * 0.5 * Math.sin(yaw), yaw });
+      bot._clear();
+      c.nudge(Math.sin(yaw) * F.start[4], Math.cos(yaw) * F.start[4]);
+      const row = { run: name, seed, used: 0, reached: null, jumps: 0, aborts: 0, tips: 0, sides: 0, stillMax: 0, teleports: 0 };
+      const imp = c._impact;
+      c._impact = function (into, nx, nz, x, z, kind, y) {
+        if (into > 4 && (kind === 'ramp' || kind === 'deck')) row.sides++;
+        return imp.call(this, into, nx, nz, x, z, kind, y);
+      };
+      let p = { x: c.x, y: c.y, z: c.z, vy: 0 }, ax = c.x, az = c.z, still = 0, tipped = false, t = 0;
+      await run(game, secs, () => {
+        const cur = { x: c.x, y: c.y, z: c.z, vy: c.rb.body.linvel().y };
+        if (FEATURES[F.expect](cur, p, c)) row.used++;
+        p = cur;
+        const tip = c.upY < 0.5;
+        if (tip && !tipped) row.tips++;
+        tipped = tip;
+        if (Math.hypot(c.x - ax, c.z - az) > 6) (ax = c.x), (az = c.z), (still = 0);
+        else row.stillMax = Math.max(row.stillMax, (still += DT));
+        t += DT;
+        if (Math.hypot(c.x - F.goal[0], c.z - F.goal[2]) < 12 && Math.abs(c.y - F.goal[1]) < 3) {
+          row.reached = r1(t);
+          return false;
+        }
+      });
+      Object.assign(row, { jumps: bot.jumpsTaken, aborts: bot.aborts, teleports: bot.teleports, stillMax: r1(row.stillMax), end: [r1(c.x), r1(c.y), r1(c.z)] });
+      delete c._impact;
+      delete bot._raceGoal;
+      rows.push(row);
+    }
+  }
+  Math.random = random;
+  const sum = {};
+  for (const r of rows) {
+    const s = (sum[r.run] ??= { runs: 0, used: 0, reached: 0, secs: [], jumps: 0, aborts: 0, tips: 0, sides: 0, stillMax: 0, teleports: 0 });
+    s.runs++;
+    if (r.used) s.used++;
+    if (r.reached != null) (s.reached++, s.secs.push(r.reached));
+    s.jumps += r.jumps;
+    s.aborts += r.aborts;
+    s.tips += r.tips;
+    s.sides += r.sides;
+    s.teleports += r.teleports;
+    s.stillMax = Math.max(s.stillMax, r.stillMax);
+  }
+  for (const s of Object.values(sum)) s.secs = s.secs.length ? `${Math.min(...s.secs)}–${Math.max(...s.secs)}` : '—';
+  return { sum, rows };
+}
+
+/**
+ * One bot driving from `start` [x, y, z, yaw, speed] to a fixed `goal` [x, y, z] (any map; the other cars parked
+ * out of the way): every `every` frames a line — time, position, speed, heading, its input, its place on its path and
+ * the jump ahead (kind, band, where its run-up starts and its lip are), wheels on the ground, the body's up.
+ */
+export async function botTrace(game, { start, goal, secs = 8, every = 6, def = null } = {}) {
+  takeOver(game);
+  game.restart();
+  game.car.applyDamage = () => {};
+  while (game.countdown > 0) game.step(DT);
+  game.car.teleport({ x: 150, z: -175, yaw: 0 });
+  const [bot, ...rest] = game.rivals;
+  rest.forEach((r, i) => r.car.teleport({ x: -150 + 8 * i, z: -175, yaw: 0 }));
+  bot.def = { ...bot.def, aggr: 0, gore: 0, ...def };
+  bot._raceGoal = () => ({ x: goal[0], y: goal[1], z: goal[2], gate: null });
+  bot.car.teleport({ x: start[0], y: start[1], z: start[2], yaw: start[3] });
+  bot._clear();
+  if (start[4]) bot.car.nudge(Math.sin(start[3]) * start[4], Math.cos(start[3]) * start[4]);
+  const log = [];
+  for (let i = 0, t = 0; i < secs / DT; i++, t += DT) {
+    game.step(DT);
+    const c = bot.car, J = bot._jumpAhead(), jd = J && game.nav.jumps[J.q], inp = bot.inp;
+    if (i % every) continue;
+    log.push([r1(t), r1(c.x), r1(c.y), r1(c.z), `${r1(c.speed)}m/s`, `yaw ${r1(c.yaw)}`, `thr ${inp.throttle} br ${inp.brake} st ${r1(inp.steer)}`, `s ${r1(bot.pathS)}`,
+      J ? `${jd.kind} ${jd.lo}-${jd.hi} from ${r1(J.s0)} lip ${r1(J.s1)} way ${jd.dx},${jd.dz}${J.dropped ? ' dropped' : ''}` : '-', `wheels ${c.rb.contacts}`, `up ${r1(c.upY)}`].join(' '));
+  }
+  delete bot._raceGoal;
+  return log;
 }
 
 // ---------------------------------------------------------------- session 3: damage, pedestrians, props, weapons

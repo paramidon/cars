@@ -1,11 +1,11 @@
 import * as THREE from 'three';
 import './style.css';
-import { QUALITY, IS_TOUCH, DEBUG, DEBUG_NAV, MUTE, TEST_MAP } from './config.js';
+import { QUALITY, IS_TOUCH, DEBUG, DEBUG_NAV, MUTE, TEST_MAP, TEST_BOTS } from './config.js';
 import { Physics, initRapier, rapierStats } from './physics/rapier.js';
 import { Vehicle } from './physics/vehicle.js';
 import { buildCity } from './world/city.js';
 import { buildNav } from './nav/grid.js';
-import { navMesh, pathLines } from './nav/debug.js';
+import { navMesh, pathLines, jumpLines } from './nav/debug.js';
 import { NavPaths } from './nav/path.js';
 import { Breakables } from './world/props.js';
 import { FX } from './effects/fx.js';
@@ -99,7 +99,8 @@ class Game {
     scene.add(sun, sun.target);
 
     // ------------------------------------------------------------ мир
-    this.test = TEST_MAP; // тестовый полигон: один, без соперников, трассы и условий победы
+    this.test = TEST_MAP && !TEST_BOTS; // тестовый полигон: один, без соперников, трассы и условий победы
+    this.testMap = TEST_MAP; // the test ground (with ?bots=N a race or battle on it, see TEST_BOTS)
     this.city = buildCity(scene, QUALITY, TEST_MAP);
     this.xray = new Xray(renderer, scene);
     this.fx = new FX(scene, this.city.groundHeight, QUALITY);
@@ -110,10 +111,10 @@ class Game {
     this.phys = new Physics(this.city.solids);
     this.phys.addProps(this.breakables.items);
     // the bots' navigation grid, from the static colliders (NAV_PLAN.md); before any car joins the world
-    this.nav = this.city.nav = buildNav(this.phys, this.city.bounds);
+    this.nav = this.city.nav = buildNav(this.phys, this.city.bounds, { pads: this.city.pads });
     this.paths = this.city.paths = new NavPaths(this.nav);
     if (DEBUG_NAV) {
-      scene.add(navMesh(this.nav));
+      scene.add(navMesh(this.nav), jumpLines(this.nav));
       scene.add((this.pathLines = pathLines()));
     }
     this.mainCar = new Car(scene, this.city, this.fx, this.audio, this.debris, QUALITY);
@@ -294,10 +295,10 @@ class Game {
     click('btn-restart', () => this._again());
     click('btn-net', () => this.lobby.open());
     // полигон ⇄ город: другая карта строится при запуске, поэтому — перезагрузка с ?map=test или без
-    $('btn-map').textContent = this.test ? 'В ГОРОД' : 'ТЕСТОВЫЙ ПОЛИГОН';
+    $('btn-map').textContent = this.testMap ? 'В ГОРОД' : 'ТЕСТОВЫЙ ПОЛИГОН';
     click('btn-map', () => {
       const q = new URLSearchParams(location.search);
-      if (this.test) q.delete('map');
+      if (this.testMap) q.delete('map');
       else q.set('map', 'test');
       const qs = q.toString();
       location.href = location.pathname + (qs ? `?${qs}` : '') + location.hash;
@@ -475,7 +476,7 @@ class Game {
     car.remote = false;
     car.netId = undefined;
     car.name = 'ТЫ';
-    const rivals = this.test ? [] : this.allRivals.slice(0, Math.max(1, Math.min(maxCars(game) - 1, bots)));
+    const rivals = this.test ? [] : this.allRivals.slice(0, Math.max(1, Math.min(maxCars(game) - 1, TEST_BOTS || bots)));
     for (const r of rivals) {
       r.car.crew = { driver: 'bot', gunner: crew ? 'bot' : null };
       r.car.team = null;
@@ -1191,7 +1192,7 @@ class Game {
       pixelRatio: this.pixelRatio,
       quality: { low: QUALITY.low, shadows: QUALITY.shadows, peds: QUALITY.pedCount },
       touch: this.input.usingTouch,
-      map: this.test ? 'test' : 'city',
+      map: this.testMap ? 'test' : 'city',
       phys: {
         y: r1(car.y), up: Math.round(car.upY * 100) / 100, vy: r1(car.vy || 0), wheels: car.rb.contacts,
         righting: !!car.rb.righting, stepMs: Math.round(this.phys.stepMs * 1000) / 1000, steps: this.phys.steps,

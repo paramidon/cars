@@ -7,10 +7,12 @@
  * of its centre (a cylinder test above the floor) and it isn't at an edge (a drop, a ramp's side).
  */
 import { RAPIER, OBSTACLES } from '../physics/rapier.js';
+import { buildLinks } from './links.js';
 
 export const NAV = {
   cell: 1.5, // m — a column's size on X and Z
-  step: 0.4, // m — the highest step between neighbouring floors a car drives over (curbs are 0.15)
+  step: 0.25, // m — the highest step between neighbouring floors a car drives over (curbs are 0.15, bevelled; a ramp's
+  // side is a vertical face: at 0.4 the foot of the deck's ramp was "walkable" from the side, and cars hit it)
   slope: 32, // ° — a floor's normal at most this far from up (the curbs' bevels are ~27°, ramps ≤ 13°)
   clear: 2, // m of free room above a floor (the car is 1.4 m tall)
   inflate: 1.1, // m — the car's half width and a margin: no solid this close to a walkable floor's centre
@@ -19,15 +21,18 @@ export const NAV = {
 
 // directions to the 8 neighbours: dx, dz (the index into link[] is the direction)
 const DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
-const F_WALK = 1, F_SOLID = 2, F_EDGE = 4;
+const F_WALK = 1, F_SOLID = 2, F_EDGE = 4, F_PAD = 8;
+/** pad[i]: what floor i is on (NavGrid.pad). */
+export const PAD = { none: 0, boost: 1, launch: 2 };
 const ROOM_MAX = 25.5; // m — room is kept in 0.1 m steps in a byte
 
 export class NavGrid {
   /**
    * phys — Physics (static colliders only are looked at); bounds — { x0, z0, x1, z1, y0, y1 }: the area cars can be in
-   * and the height range of the colliders.
+   * and the height range of the colliders; pads — [{ type: 'boost' | 'launch', x0, z0, x1, z1, y }]: the map's pads (a
+   * catapult's floors aren't walkable: driving over one throws the car — only its links lead over it).
    */
-  constructor(phys, bounds) {
+  constructor(phys, bounds, { pads = [] } = {}) {
     const t0 = performance.now();
     this.phys = phys;
     const c = NAV.cell;
@@ -49,16 +54,19 @@ export class NavGrid {
     };
     phase('floors', () => this._floors(bounds));
     phase('links', () => this._link());
-    phase('walkable', () => this._walk());
+    phase('walkable', () => this._walk(pads));
     phase('areas', () => this._components());
     phase('room', () => this._room());
-    const kb = [this.start, this.y, this.kind, this.flags, this.link, this.comp, this.room, this.colOf, this.free]
+    phase('jumps', () => buildLinks(this, pads));
+    const kb = [this.start, this.y, this.kind, this.flags, this.link, this.comp, this.room, this.colOf, this.free, this.pad, this.jumpStart, this.jumpTo]
       .reduce((s, a) => s + a.byteLength, 0) / 1024;
     const layers = [];
     for (let col = 0; col < this.nx * this.nz; col++) {
       for (let l = 0; l < this.start[col + 1] - this.start[col]; l++) layers[l] = (layers[l] ?? 0) + 1;
     }
-    this.stats = { ms: Math.round(performance.now() - t0), columns: this.nx * this.nz, cells: this.y.length, layers, walkable: this.free.length, kb: Math.round(kb), phases };
+    const jumps = {};
+    for (const J of this.jumps) jumps[J.kind] = (jumps[J.kind] ?? 0) + 1;
+    this.stats = { ms: Math.round(performance.now() - t0), columns: this.nx * this.nz, cells: this.y.length, layers, walkable: this.free.length, jumps, kb: Math.round(kb), phases };
   }
 
   // ------------------------------------------------------------------ building
@@ -184,12 +192,21 @@ export class NavGrid {
     }
   }
 
-  /** Walkable floors: linked all round (not at a drop or a side) and no solid within NAV.inflate above the floor. */
-  _walk() {
+  /**
+   * Walkable floors: linked all round (not at a drop or a side), no solid within NAV.inflate above the floor, not on a
+   * catapult. pad[i] — the pad floor i is on (PAD).
+   */
+  _walk(pads) {
     const n = this.y.length;
     this.flags = new Uint8Array(n);
+    this.pad = new Uint8Array(n);
     for (let i = 0; i < n; i++) {
       let f = 0;
+      const col = this.colOf[i], x = this.cx(col), z = this.cz(col);
+      for (const p of pads) {
+        if (x >= p.x0 && x <= p.x1 && z >= p.z0 && z <= p.z1 && Math.abs(this.y[i] - p.y) < 0.5) this.pad[i] = p.type === 'launch' ? PAD.launch : PAD.boost;
+      }
+      if (this.pad[i] === PAD.launch) f |= F_PAD;
       for (let d = 0; d < 8; d++) if (!this.link[i * 8 + d]) f |= F_EDGE;
       if (!f && this._solidNear(i, NAV.inflate)) f |= F_SOLID;
       this.flags[i] = f || F_WALK;
@@ -324,6 +341,18 @@ export class NavGrid {
     return this.start[jc] + l - 1;
   }
 
+  /** Floor i is at an edge: some neighbour's floor can't be driven to (a drop, a lip, a ramp's side, a wall's foot). */
+  edge(i) {
+    return !!(this.flags[i] & F_EDGE);
+  }
+
+  /** The jumps (links: off a ramp's lip, off an edge, over a catapult) that start at floor i: indices into `jumps`. */
+  jumpsFrom(i) {
+    const out = [];
+    for (let q = this.jumpStart[i]; q < this.jumpStart[i + 1]; q++) out.push(q);
+    return out;
+  }
+
   /** Floor i's centre: { x, y, z }. */
   pos(i) {
     const col = this.colOf[i];
@@ -450,7 +479,9 @@ export class NavGrid {
   }
 }
 
-/** Build the nav grid for a map: its Rapier world (static colliders) and bounds. */
-export function buildNav(phys, bounds) {
-  return new NavGrid(phys, bounds);
+/** Build the nav grid for a map: its Rapier world (static colliders), bounds and pads. */
+export function buildNav(phys, bounds, opts) {
+  return new NavGrid(phys, bounds, opts);
 }
+
+export { DIRS };

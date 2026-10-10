@@ -1,11 +1,12 @@
-import { Car, sameTeam } from './car.js';
+import { Car, sameTeam, thrustAt } from './car.js';
 import { ST } from './pedestrians.js';
 import { CarTag } from './tag.js';
 import { ZONE, spotNear, freeSpotNear } from './zone.js';
 import { VEH } from './physics/vehicle.js';
+import { PHYS } from './physics/rapier.js';
 import { RACE } from './race.js';
-import { PATH, projectOn, pointOn, joinPaths, polyline } from './nav/path.js';
-import { clamp, lerp, rand } from './utils.js';
+import { PATH, projectOn, pointOn, joinPaths, polyline, sliceFrom } from './nav/path.js';
+import { clamp, lerp, rand, wrapAngle } from './utils.js';
 
 /**
  * Соперники. Характер — не роль, а две шкалы от 0 до 1:
@@ -141,6 +142,16 @@ const DRIVE = {
   ahead: 100, // m of path looked at for corners
   narrow: [1.5, 5, 0.35], // a corner with room (NavGrid.roomAt) narrow[1] m or more: its full speed; less — down to narrow[2] of it at narrow[0]
   sharp: [0.6, 1, 18, 10], // rad off the nose → m/s: steering sharp[0] rad off, at most sharp[2] m/s; sharp[1] and more — sharp[3]
+  // jumps (NAV_PLAN session 4; NavGrid.jumps): on a jump's run-up it holds the middle speed of the jump's band (lo…hi)
+  commit: 14, // m — from this far before the lip to the end of the run-out it drives the jump whatever (no new path,
+  // nothing avoided); in the air the wheel is held straight
+  onRun: 1, // rad — on a run-up's line with the nose more than this off its way: not on the run-up yet
+  ban: 15, // s — too slow for a jump on its run-up (it would fall short): it brakes, and its paths don't take it this long…
+  last: [6, 0.45], // … and so it does within last[0] m of the lip slower than the jump's band, or with its nose more than
+  // last[1] rad off the jump's way (still turning onto the run-up: off an edge it would tip over the lip)
+  offLip: 6, // m past the lip it doesn't brake (nor in the air)
+  stop: 18, // m/s² — the braking it counts on to stop before a lip it gives up, or before an edge it hasn't planned to go off…
+  edge: 3, // m — … stopping this far before such an edge (looked at every DRIVE.recheck s, as far as it needs to stop)
 };
 /** Not driving into cars and wrecks, which the grid doesn't know (NAV_PLAN session 3). */
 const AVOID = {
@@ -174,6 +185,7 @@ export const CAR_HIT = {
 };
 
 const TOP_SPEED = 35; // ≈ максималка игрока, м/с
+const SLOWEST = Math.min(...RIVALS.map((d) => d.speed)); // the slowest bot's share of it
 
 /**
  * Соперник: машина + ИИ-водитель + табличка над крышей.
@@ -282,10 +294,15 @@ export class Rival {
     this.directT = 0;
     this.directKind = null;
     this.uturnT = 0; // s before it may start another turn round on purpose (ESCAPE.uturn)
+    this.edgeT = 0; // _edgeAhead: s before it looks again, and the speed it found
+    this.edgeV = Infinity;
     this.avSide = 0; // the side it went round a car on last (AVOID.keep s)
     this.avSideT = 0;
     this.teleports = 0;
     this.uturns = 0; // turns round on purpose (tests count these)
+    this.banned = []; // lips it gave a jump up at: { x, z, t } — its paths take no jump off within PATH.banR m for t more s
+    this.jumpsTaken = 0; // jumps it drove off (tests count these)
+    this.aborts = 0; // jumps given up on its run-up
     this.backT = 0; // отъезд назад для нового тарана
     this.chargeT = 0; // пока > 0, новый отъезд не начинаем — даём разогнаться
     this.boost = 1;
@@ -519,6 +536,9 @@ export class Rival {
     this.uturnT -= dt;
     for (const t of this.traps) t.t -= dt;
     if (this.traps.length && this.traps.some((t) => t.t <= 0)) this.traps = this.traps.filter((t) => t.t > 0);
+    for (const b of this.banned) b.t -= dt;
+    if (this.banned.length && this.banned.some((b) => b.t <= 0)) this.banned = this.banned.filter((b) => b.t > 0);
+    const air = car.rb.contacts === 0; // no wheel on the ground
 
     // битва: у стены или снаружи — не до охоты, сначала спастись
     const flee = this._unsafe(car.x, car.z, ZONE_SAFE.flee);
@@ -566,7 +586,7 @@ export class Rival {
     // speed: slow down before the path's corners in time
     let target = this.onPath ? this._pathSpeed(maxV) : maxV;
     // cars and wrecks in the way (the grid doesn't know them): round them, or slow down behind
-    const av = this.esc || this.backT > 0 ? null : this._avoidCars(tx, tz, v);
+    const av = this.esc || this.backT > 0 || air || this._committed() ? null : this._avoidCars(tx, tz, v);
     if (av) {
       tx = av.x;
       tz = av.z;
@@ -578,18 +598,24 @@ export class Rival {
 
     // руль: угол до цели
     const { ang } = this._bearing(tx, tz);
-    let steer = clamp(ang * 2.2, -1, 1);
+    let steer = air ? 0 : clamp(ang * 2.2, -1, 1); // in the air: the wheel straight for the landing
     // facing away from where it steers: slow (DRIVE.sharp: 18 m/s at 0.6 rad off, down to 10 at 1 rad and more)
     const off = Math.abs(ang);
     if (off > DRIVE.sharp[0]) target = Math.min(target, lerp(DRIVE.sharp[2], DRIVE.sharp[3], clamp((off - DRIVE.sharp[0]) / (DRIVE.sharp[1] - DRIVE.sharp[0]), 0, 1)));
     // the path starts behind it in a narrow place: turn round in several goes now
-    if (this.onPath && !this.esc && off > ESCAPE.uturn && v < ESCAPE.uturnV && this.uturnT <= 0 && this._roomHere() < ESCAPE.uturnRoom) this._startTurn(tx, tz);
+    if (this.onPath && !this.esc && !air && off > ESCAPE.uturn && v < ESCAPE.uturnV && this.uturnT <= 0 && this._roomHere() < ESCAPE.uturnRoom) this._startTurn(tx, tz);
+    // on a jump's run-up too slow to land well: give it up (brake, and a path without it)
+    if (this.onPath && !air) target = Math.min(target, this._jumpCheck(v));
+    // an edge ahead it isn't going to jump off (straight at a target on a deck): able to stop before it
+    const edge = !air && !this._onRunUp() ? this._edgeAhead(v) : Infinity;
+    target = Math.min(target, edge);
     let throttle = v < target - 0.5 ? 1 : 0;
     let brake = v > target + 1.5 ? 1 : 0;
 
     // stuck: turn out of it (_startEscape: back while there is room behind, forward when that runs out…), then a new
     // path that keeps off that spot for a while; no way out in STUCK.time s — a free spot nearby (respawn)
-    if (v < 1.5 && throttle > 0 && !this.esc) this.stuckT += dt;
+    // (held at an edge counts too: the escape's legs see drops)
+    if (v < 1.5 && (throttle > 0 || edge < 1) && !this.esc) this.stuckT += dt;
     else this.stuckT = Math.max(0, this.stuckT - dt * 2);
     if (this.stuckT > ESCAPE.stuck && !this.esc) {
       this._startEscape(tx, tz);
@@ -626,6 +652,7 @@ export class Rival {
     this.chargeT -= dt;
     if (this.backT > 0 && !this.esc) {
       this.backT -= dt;
+      if (this._dropDist(-Math.sin(car.yaw), -Math.cos(car.yaw), 4.5) < 4) this.backT = 0; // not backwards off an edge
       throttle = 0;
       brake = 1;
       steer = -clamp(ang * 2.2, -1, 1);
@@ -670,10 +697,29 @@ export class Rival {
       dx, dz, ESCAPE.look, car.rb.body);
   }
 
-  /** Free room ahead of the nose (way 1) or behind the tail (−1), m. */
+  /** Free room ahead of the nose (way 1) or behind the tail (−1), m: to a solid, a car or a drop (a deck's edge). */
   _roomAlong(way) {
-    const car = this.car;
-    return this._room(way, Math.sin(car.yaw) * way, Math.cos(car.yaw) * way);
+    const car = this.car, dx = Math.sin(car.yaw) * way, dz = Math.cos(car.yaw) * way, end = VEH.lower.half[2];
+    return Math.min(this._room(way, dx, dz), this._dropDist(dx, dz, ESCAPE.look + end) - end - 0.5);
+  }
+
+  /**
+   * Metres from the car along the unit (dx, dz) to the first drop — a floor more than a step lower than the one it
+   * follows, as off a deck's edge, a tunnel's portal or a ramp's side seen from on it — within max m; max if none
+   * (a wall, a building or a step up isn't a drop: the casts see those).
+   */
+  _dropDist(dx, dz, max) {
+    const car = this.car, nav = this.city.nav, up = 0.7;
+    let y = car.y;
+    for (let d = 0.75; d < max; d += 0.75) {
+      const i = nav.cellAt(car.x + dx * d, y + up, car.z + dz * d, 0);
+      if (i >= 0 && Math.abs(nav.y[i] - y) <= up + 0.75) {
+        y = nav.y[i];
+        continue;
+      }
+      return i < 0 || nav.y[i] > y ? max : d;
+    }
+    return max;
   }
 
   /** Room for the nose to swing to the right (side 1) or the left (−1) — and so the tail the other way. */
@@ -779,6 +825,14 @@ export class Rival {
   _go(kind, gx, gy, gz, v, moving, gate = null, dx = gx, dz = gz) {
     const car = this.car, paths = this.city.paths;
     this.onPath = false;
+    // going off a lip (DRIVE.commit): this path to the end of the run-out, whatever the goal does meanwhile
+    if (this._committed()) {
+      const q = this._pursue(v, false);
+      if (q) {
+        this.onPath = true;
+        return q;
+      }
+    }
     // (looked at every DRIVE.recheck s: a long line costs a hundred floor lookups)
     this.directT -= this.dt;
     if (this.directT <= 0 || this.directKind !== kind) {
@@ -791,7 +845,7 @@ export class Rival {
     // a gate passed: the path already goes on to the next one — keep driving it, with the leg after that added
     if (P && kind === 'race' && gate != null && P.gate === (gate + this.race.cps.length - 1) % this.race.cps.length && !this.replan) {
       const k = Math.min(this.pathK + 1, P.x.length - 1);
-      const rest = polyline([car.x, ...P.x.slice(k)], [car.y, ...P.y.slice(k)], [car.z, ...P.z.slice(k)]);
+      const rest = sliceFrom(P, k, car.x, car.y, car.z);
       const g = this.race.cps[gate];
       P = this.path = Object.assign(joinPaths(rest, this._gateLeg(paths, gate)), { kind, gx: g.x, gz: g.z, gate });
       this.pathK = 0;
@@ -817,6 +871,7 @@ export class Rival {
   _plan(paths) {
     const w = this.want, car = this.car;
     this.replanT = DRIVE.replan;
+    if (this._committed()) return; // asked for before it went for a jump: not now (asked again after)
     this.replan = false;
     if (!w || car.wrecked) return;
     const a = paths.floorAt(car.x, car.y, car.z, 6, car.yaw);
@@ -826,6 +881,7 @@ export class Rival {
     const old = this.path, same = old?.cells && old.kind === w.kind && (w.kind === 'race' || w.kind === 'zone') && Math.hypot(old.gx - w.x, old.gz - w.z) < 1;
     const cells = paths.find(a, b, {
       traps: this.traps.length ? this.traps : null, gore: this.def.gore, car: { x: car.x, z: car.z, yaw: car.yaw, v: car.vF }, prefer: same ? old.cells : null,
+      speed: TOP_SPEED * this.def.speed, banned: this.banned.length ? this.banned : null,
     });
     if (!cells) {
       this.path = null;
@@ -847,8 +903,9 @@ export class Rival {
     const key = `${A.x},${A.z}>${B.x},${B.z}`;
     let leg = paths.cache.get(key);
     if (!leg) {
-      const cells = paths.find(paths.floorAt(A.x, 0, A.z, 10), paths.floorAt(B.x, 0, B.z, 10), { wrecks: false });
-      leg = cells ? paths.smooth(cells) : polyline([A.x], [0], [A.z]);
+      // (shared by every bot: no jump the slowest of them can't take)
+      const cells = paths.find(paths.floorAt(A.x, A.y, A.z, 10), paths.floorAt(B.x, B.y, B.z, 10), { wrecks: false, speed: TOP_SPEED * SLOWEST });
+      leg = cells ? paths.smooth(cells) : polyline([A.x], [A.y], [A.z]);
       paths.cache.set(key, leg);
     }
     return leg;
@@ -860,7 +917,7 @@ export class Rival {
     if (!this.tr.finished) this.gi = this.tr.next;
     else if (Math.hypot(cps[this.gi].x - car.x, cps[this.gi].z - car.z) < RACE.radius) this.gi = (this.gi + 1) % cps.length;
     const cp = cps[this.gi];
-    return { x: cp.x, y: 0, z: cp.z, gate: this.gi };
+    return { x: cp.x, y: cp.y, z: cp.z, gate: this.gi };
   }
 
   /**
@@ -870,11 +927,26 @@ export class Rival {
    */
   _pursue(v, lane) {
     const P = this.path, car = this.car, paths = this.city.paths;
-    const pr = projectOn(P, car.x, car.z, this.pathK);
+    const pr = projectOn(P, car.x, car.z, this.pathK, car.y);
     if (pr.d > DRIVE.stray) return null;
     this.pathK = pr.k;
     this.pathS = pr.s;
-    const look = DRIVE.look[0] + DRIVE.look[1] * v, vs = P.s[Math.min(pr.k + 1, P.s.length - 1)] - pr.s;
+    let look = DRIVE.look[0] + DRIVE.look[1] * v;
+    const vs = P.s[Math.min(pr.k + 1, P.s.length - 1)] - pr.s;
+    // a jump: on its run-up and over it the path is straight — steer along it, nothing to look at; before it, the look
+    // stops short of the lip (beyond it the line leaves the floor)
+    const J = this._jumpAhead();
+    if (J && pr.s > J.s0 - 1) {
+      // (crossing the run-up's line facing elsewhere isn't being on it: to its start, and a new path from here)
+      const jd = this.city.nav.jumps[J.q];
+      if (pr.s < J.s1 - DRIVE.commit && Math.abs(wrapAngle(car.yaw - Math.atan2(jd.dx, jd.dz))) > DRIVE.onRun) {
+        this.replan = true;
+        this.pathS = Math.min(pr.s, J.s0 - 1);
+        return pointOn(P, J.s0);
+      }
+      return pointOn(P, Math.min(pr.s + look, J.s2));
+    }
+    if (J) look = Math.min(look, Math.max(2, J.s0 + 2 - pr.s)); // onto the run-up at its start, not cutting in
     const L = lane ? this.def.lane : 0;
     // which look-ahead (and whether the lane fits) is looked at every DRIVE.recheck s, kept in between
     this.lookT -= this.dt;
@@ -891,8 +963,9 @@ export class Rival {
     this.lookK = Math.min(this.lookK, 2);
     this.inLane = false;
     if (L) {
-      const lx = q.x - q.dz * L, lz = q.z + q.dx * L;
-      if (paths.lineFree(car.x, car.y, car.z, lx, lz, PATH.narrow, 1.5)) {
+      // (the shifted point itself needs room too: a line's ends may be by an edge — a ramp's side)
+      const lx = q.x - q.dz * L, lz = q.z + q.dx * L, li = this.city.nav.cellAt(lx, q.y, lz);
+      if (this.city.nav.roomAt(li) >= PATH.narrow && paths.lineFree(car.x, car.y, car.z, lx, lz, PATH.narrow, 1.5)) {
         this.inLane = true;
         return { x: lx, z: lz };
       }
@@ -906,20 +979,101 @@ export class Rival {
    */
   _pathSpeed(maxV) {
     const P = this.path, corner = this.def.corner, nav = this.city.nav, N = DRIVE.narrow;
-    let target = maxV;
+    let target = maxV, until = Infinity;
+    const brakeFor = (vc, dist) => (target = Math.min(target, Math.sqrt(vc * vc + 2 * DRIVE.decel * Math.max(0, dist - DRIVE.margin))));
+    // a jump ahead: its lip is a "corner" at the most it lands well at, its run-up held at the jump's speed; what lies
+    // past the lip isn't braked for before it (no braking in the air: the run-out is there for that)
+    const J = this._jumpAhead();
+    // over the lip (its back wheels still on it, then in the air): no braking — it would pitch the nose down off it
+    if (J && this.pathS >= J.s1 && (this.pathS < J.s1 + DRIVE.offLip || this.car.rb.contacts === 0)) return Math.max(this.car.speed, maxV);
+    if (J && this.pathS < J.s1) {
+      const jd = nav.jumps[J.q];
+      brakeFor(jd.hi - 1, J.s1 - this.pathS);
+      if (this.pathS > J.s0 - 2) target = Math.min(target, (jd.lo + jd.hi) / 2);
+      until = J.s1;
+    }
+    for (const cr of P.crests) {
+      const dist = cr.s - this.pathS;
+      if (dist < -3 || cr.s > until) continue;
+      if (dist > DRIVE.ahead) break;
+      brakeFor(cr.v, dist);
+    }
     for (const cn of P.corners) {
       const dist = cn.s - this.pathS;
       if (dist < -3) continue;
-      if (dist > DRIVE.ahead) break;
+      if (dist > DRIVE.ahead || cn.s > until) break;
       // def.corner is the speed for 90°; the radius a turn of the same chord allows grows as 1 / sin(angle / 2)
       if (cn.room == null) {
         const i = nav.cellAt(P.x[cn.k], P.y[cn.k] + 0.5, P.z[cn.k]);
         cn.room = i >= 0 ? nav.roomAt(i) : N[1];
       }
-      const vc = corner * Math.sqrt(Math.SQRT1_2 / Math.sin(Math.min(cn.angle, Math.PI) / 2)) * clamp((cn.room - N[0]) / (N[1] - N[0]), N[2], 1);
-      target = Math.min(target, Math.sqrt(vc * vc + 2 * DRIVE.decel * Math.max(0, dist - DRIVE.margin)));
+      brakeFor(corner * Math.sqrt(Math.SQRT1_2 / Math.sin(Math.min(cn.angle, Math.PI) / 2)) * clamp((cn.room - N[0]) / (N[1] - N[0]), N[2], 1), dist);
     }
     return target;
+  }
+
+  /**
+   * The speed it can stop at before the first drop along its heading (a floor more than a step lower, or none: a deck's
+   * edge, a tunnel's portal, a ramp's side seen from on it) within its stopping distance, DRIVE.edge short of it.
+   * Looked at every DRIVE.recheck s. Infinity — none.
+   */
+  _edgeAhead(v) {
+    this.edgeT -= this.dt;
+    if (this.edgeT > 0) return this.edgeV;
+    this.edgeT = DRIVE.recheck;
+    const car = this.car, reach = (v * v) / (2 * DRIVE.stop) + DRIVE.edge + 2;
+    const d = this._dropDist(Math.sin(car.yaw), Math.cos(car.yaw), reach);
+    this.edgeV = d < reach ? Math.sqrt(2 * DRIVE.stop * Math.max(0, d - DRIVE.edge)) : Infinity;
+    return this.edgeV;
+  }
+
+  /** The first jump of the path not yet behind the car (its run-out not passed): the path's { k0, k1, k2, q, s0, s1, s2 } or null. */
+  _jumpAhead() {
+    const P = this.path;
+    if (!P?.jumps.length) return null;
+    for (const J of P.jumps) if (J.s2 > this.pathS) return J;
+    return null;
+  }
+
+  /** On a jump's run-up (not given up), or over it until the end of its run-out. */
+  _onRunUp() {
+    const J = this._jumpAhead();
+    return !!J && this.pathS > J.s0 - 1 && !J.dropped;
+  }
+
+  /** Going off a lip: within DRIVE.commit before it, or over it, until the end of its run-out. */
+  _committed() {
+    const J = !this.esc && this._jumpAhead();
+    return !!J && this.pathS > J.s1 - DRIVE.commit && !J.dropped;
+  }
+
+  /**
+   * On a jump's run-up: the speed it will have at the lip at full throttle (thrustAt, against the climb) — too slow
+   * for the jump's band (below its lo), it gives the jump up: brakes, bans it for DRIVE.ban s and searches again.
+   * Returns a speed limit (Infinity — none).
+   */
+  _jumpCheck(v) {
+    const J = this._jumpAhead(), car = this.car;
+    if (!J || this.pathS < J.s0 - 1 || this.pathS > J.s1) return Infinity;
+    const jd = this.city.nav.jumps[J.q], D = J.s1 - this.pathS;
+    if (J.dropped) return 0; // given up: stop until the new path comes
+    if (D < 1) {
+      if (this._lastJump !== J) this.jumpsTaken++;
+      this._lastJump = J;
+      return Infinity;
+    }
+    const grade = (jd.lip.y - car.y) / D, n = 4;
+    let w = v;
+    for (let k = 0; k < n; k++) w = Math.sqrt(Math.max(0, w * w + 2 * (thrustAt(w) - PHYS.gravity * grade) * (D / n)));
+    const off = Math.abs(wrapAngle(car.yaw - Math.atan2(jd.dx, jd.dz)));
+    if (w >= jd.lo && !(D < DRIVE.last[0] && (v < jd.lo - 0.5 || off > DRIVE.last[1]))) return Infinity;
+    // too late to stop before the lip: better go than brake over it (it would pitch the nose down)
+    if (D < (v * v) / (2 * DRIVE.stop) + 1.5) return Infinity;
+    J.dropped = true;
+    this.banned.push({ x: jd.lip.x, z: jd.lip.z, t: DRIVE.ban });
+    this.aborts++;
+    this.replan = true;
+    return 0;
   }
 
   /**
