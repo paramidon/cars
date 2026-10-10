@@ -151,7 +151,8 @@ const DRIVE = {
   // last[1] rad off the jump's way (still turning onto the run-up: off an edge it would tip over the lip)
   offLip: 6, // m past the lip it doesn't brake (nor in the air)
   stop: 18, // m/s² — the braking it counts on to stop before a lip it gives up, or before an edge it hasn't planned to go off…
-  edge: 3, // m — … stopping this far before such an edge (looked at every DRIVE.recheck s, as far as it needs to stop)
+  edge: 3, // m — … stopping this far before such an edge (looked at every DRIVE.recheck s, as far as it needs to stop);
+  creep: 0.3, // m/s — held there, it brakes once it rolls towards the edge faster than this
   retreat: [2, 1], // stopped after giving a jump up: backs off straight for retreat[0] s (while there are retreat[1] m
   // behind), away from the lip, before the new path takes it anywhere
   // a lip taken in turn: a bot heading for a jump claims its lip (when it gets there, s); another one whose jump goes
@@ -626,6 +627,18 @@ export class Rival {
     target = Math.min(target, edge);
     let throttle = v < target - 0.5 ? 1 : 0;
     let brake = v > target + 1.5 ? 1 : 0;
+    // rolling backwards (down a ramp, out of a turn) faster than it wants: the brake would reverse it harder (a bot
+    // backed down the deck's ramp at 11 m/s) — the throttle brakes then (Car._drive)
+    if (brake && car.vF < -0.5) {
+      brake = 0;
+      throttle = 1;
+    }
+    // held at an edge: brake as soon as it creeps towards it (on a slope it would roll on; not the handbrake — it lets
+    // the tyres slide sideways, down a ramp's cross-slope)
+    if (edge < 1 && car.vF > DRIVE.creep) {
+      throttle = 0;
+      brake = 1;
+    }
 
     // stuck: turn out of it (_startEscape: back while there is room behind, forward when that runs out…), then a new
     // path that keeps off that spot for a while; no way out in STUCK.time s — a free spot nearby (respawn)
@@ -644,15 +657,22 @@ export class Rival {
       const o = this._bearing(car.x + e.ox, car.z + e.oz).ang; // the way out, from the nose
       throttle = e.back ? 0 : 1;
       brake = e.back ? 1 : 0;
-      const room = this._roomAlong(e.back ? -1 : 1);
-      // no room for the ends to swing (cars or a wall along its sides) but room that way: straight out first
-      const straight = room > ESCAPE.straight && !this._canSwing(Math.sign(o) || 1);
+      // beached (its nose over an edge, the belly on it: backing up didn't move it) — the way out is over the edge, slowly
+      const off = e.beached && !e.back, way = e.back ? -1 : 1;
+      const room = off ? this._room(1, Math.sin(car.yaw), Math.cos(car.yaw)) : this._roomAlong(way);
+      // a drop that way (a ramp's or a deck's side): the leg ends now, not after its first ESCAPE.leg[0] s of pushing on
+      const drop = !off && this._dropAlong(way) < ESCAPE.stop + v * 0.25;
+      // no room for the ends to swing (cars or a wall along its sides, a drop beside an end) but room that way:
+      // straight out first; and so with the other end at or over an edge — swinging would drag it along the edge
+      const over = this._dropAlong(-way) < 0;
+      const straight = (room > ESCAPE.straight || (over && room > ESCAPE.stop + 0.5)) && !this._canSwing(Math.sign(o) || 1);
       steer = straight ? 0 : (e.back ? -1 : 1) * clamp(o * 3, -1, 1);
-      if (e.t > ESCAPE.leg[0]) {
+      if (e.t > ESCAPE.leg[0] || drop) {
         // blocked that way: by the cast, or it just doesn't move (held by something the cast doesn't see)
         const held = e.t > ESCAPE.held[0] && Math.hypot(car.x - e.x, car.z - e.z) < ESCAPE.held[1];
         if (Math.abs(o) < ESCAPE.turned || e.t > ESCAPE.leg[1]) this._endEscape();
-        else if (held || room < ESCAPE.stop + v * 0.25) {
+        else if (held || drop || room < ESCAPE.stop + v * 0.25) {
+          if (held && e.back && this._dropAlong(1) < 0) e.beached = true;
           if (++e.legs > ESCAPE.legs) this._endEscape();
           else Object.assign(e, { back: !e.back, t: 0, x: car.x, z: car.z });
         }
@@ -727,8 +747,14 @@ export class Rival {
 
   /** Free room ahead of the nose (way 1) or behind the tail (−1), m: to a solid, a car or a drop (a deck's edge). */
   _roomAlong(way) {
-    const car = this.car, dx = Math.sin(car.yaw) * way, dz = Math.cos(car.yaw) * way, end = VEH.lower.half[2];
-    return Math.min(this._room(way, dx, dz), this._dropDist(dx, dz, ESCAPE.look + end) - end - 0.5);
+    const car = this.car;
+    return Math.min(this._room(way, Math.sin(car.yaw) * way, Math.cos(car.yaw) * way), this._dropAlong(way));
+  }
+
+  /** Room ahead of the nose (way 1) or behind the tail (−1) to a drop only, m (less than 0: that end is over one). */
+  _dropAlong(way) {
+    const car = this.car, end = VEH.lower.half[2];
+    return this._dropDist(Math.sin(car.yaw) * way, Math.cos(car.yaw) * way, ESCAPE.look + end) - end - 0.5;
   }
 
   /**
@@ -736,11 +762,12 @@ export class Rival {
    * follows, as off a deck's edge, a tunnel's portal or a ramp's side seen from on it — within max m; max if none
    * (a wall, a building or a step up isn't a drop: the casts see those).
    */
-  _dropDist(dx, dz, max) {
-    const car = this.car, nav = this.city.nav, up = 0.7;
+  _dropDist(dx, dz, max, ox = 0, oz = 0) {
+    const car = this.car, nav = this.city.nav, up = 0.7, x0 = car.x + ox, z0 = car.z + oz;
     let y = car.y;
-    for (let d = 0.75; d < max; d += 0.75) {
-      const i = nav.cellAt(car.x + dx * d, y + up, car.z + dz * d, 0);
+    // (from a point off the car's centre, ox, oz — a corner: that point itself may already be over the drop)
+    for (let d = ox || oz ? 0 : 0.75; d < max; d += 0.75) {
+      const i = nav.cellAt(x0 + dx * d, y + up, z0 + dz * d, 0);
       if (i >= 0 && Math.abs(nav.y[i] - y) <= up + 0.75) {
         y = nav.y[i];
         continue;
@@ -750,10 +777,16 @@ export class Rival {
     return max;
   }
 
-  /** Room for the nose to swing to the right (side 1) or the left (−1) — and so the tail the other way. */
+  /**
+   * Room for the nose to swing to the right (side 1) or the left (−1) — and so the tail the other way: no solid (the
+   * casts) and no drop (a ramp's or a deck's side, which the casts don't see) within ESCAPE.side of either end.
+   */
   _canSwing(side) {
     const car = this.car, rx = -Math.cos(car.yaw) * side, rz = Math.sin(car.yaw) * side;
-    return this._room(1, rx, rz, true) > ESCAPE.side && this._room(-1, -rx, -rz, true) > ESCAPE.side;
+    const s = Math.sin(car.yaw), c = Math.cos(car.yaw), end = VEH.lower.half[2] - 0.2, half = VEH.lower.half[0];
+    const drop = (way, dx, dz) => this._dropDist(dx, dz, half + ESCAPE.side + 1, s * end * way, c * end * way) - half;
+    return this._room(1, rx, rz, true) > ESCAPE.side && this._room(-1, -rx, -rz, true) > ESCAPE.side
+      && drop(1, rx, rz) > ESCAPE.side && drop(-1, -rx, -rz) > ESCAPE.side;
   }
 
   /**

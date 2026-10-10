@@ -84,7 +84,9 @@ lose by wrecking your own car or running out of time.
   steepest slope between two samples 0.75 m apart, and crosses a ramp (a slope over 3° that goes on) only within ~30°
   of along it: bots turn before a ramp, not on it, and don't cut onto one over its low side by the foot. It slows down before a crest (the grade dropping by 0.06 or more) to fly at most 8 m off it (the deck's top:
   23 m/s), and brakes in time to stop 3 m short of a drop it isn't taking (a deck's edge while chasing someone across
-  it); held there it gets out as below, and the escape's legs and a hunter's back-up see drops too. Cars and wrecks the grid doesn't know: one in the way (ahead within 6 m + 1.1 s of the
+  it); held there it brakes as soon as it creeps towards the edge (on a slope it would roll on) and gets out as below,
+  and the escape's legs and a hunter's back-up see drops too. A bot rolling backwards faster than it wants to go (down a
+  ramp, out of a turn) brakes with the throttle — braking would only reverse it harder. Cars and wrecks the grid doesn't know: one in the way (ahead within 6 m + 1.1 s of the
   speed, its centre within 3 m of the line; a moving car only if the bot closes in on it at 2 m/s or more) is passed
   0.25, 0.5 or 0.8 rad to one side where the grid has 10 m of room; with no way past, the bot slows down to its speed,
   but not below 4 m/s — it nudges a wreck aside or gets stuck against it and out as below, rather than waiting behind it
@@ -96,7 +98,11 @@ lose by wrecking your own car or running out of time.
   at least 1 m of room, backs up, the nose swinging away from what it hit towards the side that leads to its target;
   with no room behind it pulls forward instead, and when that way runs out too it switches — a many-point turn of up to
   6 legs, each until there is 0.4 m left (plus 0.25 s of its speed) or it hasn't moved 0.3 m in 1 s, 3 s pass or the
-  nose points the way out; while cars or a wall are along its sides and there are 2 m that way it goes straight first. Then it takes a new path
+  nose points the way out; while cars or a wall are along its sides and there are 2 m that way it goes straight first.
+  A drop counts as a wall for the legs: a leg towards one ends at once (not after its first 0.4 s), a side with a drop
+  by an end is no room to swing, and with the other end at or over an edge it backs straight off first (0.9 m of room
+  will do). Beached — its nose over a ramp's or a deck's side, the belly on the edge, and backing up doesn't move it —
+  it drives off the edge slowly instead (the flip rules right it if it lands badly). Then it takes a new path
   that keeps off that spot for 10 s (a metre within 5 m of it costs +10; stuck there again 3 times, it turns out to the other side). Only a bot that
   hasn't got more than 8 m away from one spot for 20 s (ramming a target within 15 m doesn't count) is put on the
   nearest free floor of the nav grid 8–30 m away (no solid within 2.8 m, 1.5 m of walkable floor all round, no car

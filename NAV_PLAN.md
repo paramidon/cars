@@ -941,7 +941,7 @@ in the city. Six problems found and fixed, and a debug nit (`src/racers.js`, `sr
 
 **Left for later** (options, the recommended one first)
 
-- **Bots stopped at a ramp's side edge** (the deck ramp's sides, the big ramp's west side; race and hunt): the edge
+- ~~**Bots stopped at a ramp's side edge**~~ — done in the follow-up below (the deck ramp's sides, the big ramp's west side; race and hunt): the edge
   look stops a bot facing a ramp's side, then the escape's many-point turn on the slope struggles for 10–13 s — its
   swings aren't checked for drops (`_canSwing` casts against solids only), and a bot held still on a slope rolls
   (throttle and brake are both 0 under 1.5 m/s; braking at a standstill would reverse). (a) Let `_canSwing` and the
@@ -960,3 +960,55 @@ in the city. Six problems found and fixed, and a debug nit (`src/racers.js`, `sr
   heading near the start) if it matters.
 - The rest of session 4's list stands (side hits at the deck ramp's foot, boost pads on a run-up, no spin in flights,
   the tube's room cost, one-way areas, thin strips, lips off the grid's 8 directions, the phone).
+
+**Follow-up (the same day): bots at a ramp's side edge** (`src/racers.js`)
+
+The recommended option (a) first — `_canSwing` also looks for drops beside the swinging ends (`_dropDist` from a corner)
+and the bot holds still at an edge — changed nothing in a scripted test: 33 starts on the deck ramp's and the big
+ramp's sides, the nose 0.4 m over the edge, most with a wreck parked behind it on the ramp (goals up on the deck or
+down south). Traced, the legs turned the wheel anyway (no 2 m of room straight either way), and the real trouble was:
+
+- a forward leg pushed on for its first `ESCAPE.leg[0]` 0.4 s whatever was ahead, so every forward leg shoved the
+  nose back over the edge;
+- with the nose over the edge, the belly lies on it: backing up with the wheel turned dragged the nose along the edge,
+  and often backing up didn't move the car at all (the arcade layer pushes with 3 wheels of 4, the edge holds the
+  body) — the old code got out only by falling off on a forward leg;
+- a bot rolling backwards faster than it wanted got `brake` 1, which reverses harder: one backed down the deck's
+  ramp at 11–12 m/s onto the boost pad at its foot and was thrown up the ramp at 35 m/s.
+
+What was done:
+
+- `_dropAlong(way)` (the drop part of `_roomAlong`): a leg towards a drop ends at once, not after 0.4 s; with the
+  other end at or over an edge (`_dropAlong(−way)` < 0) the leg goes straight while there are 0.9 m of room
+  (`ESCAPE.stop` + 0.5), not only 2 m — the nose comes back onto the ramp first.
+- `_canSwing`: a drop within `ESCAPE.side` beside an end is no room to swing (option (a); kept, it matters with room
+  straight ahead).
+- Beached: a back leg that didn't move (`held`) with the nose over an edge marks the escape `beached`; its forward legs
+  then ignore the drop and drive off the edge slowly (the flip rules and the hung rule right it if it lands badly).
+- Held at an edge (`_edgeAhead` under 1 m/s): it brakes as soon as it rolls towards the edge faster than
+  `DRIVE.creep` 0.3 m/s (not the handbrake: it cuts the tyres' sideways grip to `hbGrip`, and on a ramp's cross-slope
+  the car would slide).
+- Rolling backwards (`vF` < −0.5) with `brake` asked for: the throttle instead, which brakes (`Car._drive`). The
+  escape's, the back-off's and a hunter's back-ups set their own input after this.
+
+Measured. The scripted starts (33 each):
+
+| | Reached the goal | Mean, s | Stays over 10 s | Fell off a side | Tips | Righted |
+| --- | --- | --- | --- | --- | --- | --- |
+| Review's code | 30 | 9.5 | 4 | 18 | 8 | 7 |
+| Option (a) alone | 30 | 9.6 | 4 | 18 | 7 | 7 |
+| … legs that stop at a drop, straight off an edge | 30 | 7.8 | 2 (14.2) | 11 | 1 | 1 |
+| Final | 32 | 8.3 | 1 (10.3) | 8 | 3 | 3 |
+
+`testGround()`, race, seeds 1300–1315 (16 games, as in the review's table): big ramp 131, up the deck 152, off it 142,
+tube 99, jumps 243, given up 15, tips 49, side hits 29, stuck over 10 s **0** (max 9.6), teleports 0, gates 807,
+wrecked 55 — against the review's 119 / 133 / 124 / 96 / 216 / 16 / 47 / 20 / 2 (15.1) / 0 / 761 / 63 and the old
+code's 120 / 147 / 140 / 87 / 227 / 9 / 43 / 38 / 0 (9.7) / 0 / 736 / 62. `featureRuns()` unchanged. City:
+`botBattles()` race 5 games — stuck max 6.2 s, wrecked 4.4, kills 43.4, rams 29.8, teleports 0; royale 5 games —
+10.6 s (1 game), wrecked 18.2, kills 71.2, rams 65, teleports 0; `traps()` — tree 1.8–4.1 s, boxed 1.5–9.2, caged
+8.3–10.8, alley 2.9–6.2, `pinned` teleported 5 / 5 at 20 s — as before.
+
+Left: after a long back leg (up to 3 s, reversing at up to 11 m/s) the bot coasts backwards for ~0.8 s before the
+throttle stops it; the boost pad at the deck ramp's foot throws a bot that crosses it the wrong way (boost pads are
+only marked in the grid, session 4's list). Option (b) (start the many-point turn at once when the edge look stops the
+bot) wasn't needed.
