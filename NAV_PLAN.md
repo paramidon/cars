@@ -450,17 +450,13 @@ either. A race run after the royale rows in the same page gave 38 kills; in a fr
 
 **Left for later** (now in sessions 3 and 4's scopes)
 
-
 - `Rival._navPoint` still reads `city.roads` (the only reader outside the race route); session 3 replaces it with A*
   on this grid, as its scope says.
 - Spawns and zone waypoints avoid yards (`NAV.open` 6 m) only because the bots can't find their way into them yet;
   with session 3's paths `open` can go down to ~3 m.
-- (Done in the follow-up above: (a) and (c).) One bot lay tipped for 11.4 s in one game of 20 logged royale games (the others: ≤ 5.1 s; earlier sessions up to
-  5.5 s). Not reproduced: a car put on its roof on a wreck rights itself in 2–2.3 s, and the logged tips were cars
-  rocking on their side at ~2 m/s (the flip rule's slow rate, 3 s). Unrelated to navigation (it only moved spawns and
-  waypoints). Options: (a) log every tip over 6 s in `botBattles()` (speed, spin, righting, contacts) and catch it —
-  recommended first; (b) count `tippedT` at the slow rate also above `flipSlow` while the car is tipped and on the
-  ground, so a car pushed along on its side still rights itself; (c) a hard cap: tipped for 8 s → `right()` whatever.
+- ~~One bot lay tipped for 11.4 s in one game of 20 logged royale games~~ — done in the follow-up above: options (a)
+  (every tip over 6 s traced in `botBattles()`) and (c) (`VEH.flipMax` 8 s cap). Option (b) — count `tippedT` at the
+  slow rate also above `flipSlow` while the car is tipped and on the ground — wasn't needed.
 - Build time on a real phone isn't measured. If it is over ~1 s there: bake the grid at build time per map (the data
   is a few typed arrays, ~1.7 MB raw, much less compressed) or build it in slices over the menu's first frames.
 - Floors are sampled at column centres: a drivable strip narrower than ~1.5 m (a plank, a thin bridge) may be missed
