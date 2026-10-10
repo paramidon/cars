@@ -872,3 +872,91 @@ it before its foot). The start's tips at the big ramp: 5 → 2. City (battle roy
   to the side the car turns. Recommended (a) if it matters.
 - The rest of session 4's list stands (boost pads on a run-up, no spin in flights, the tube's room cost, one-way
   areas, thin strips, lips off the grid's 8 directions, the phone).
+
+### Session 4 review (2026-10-11)
+
+The session's code reviewed (`src/nav/links.js`, `path.js`, `grid.js`, `debug.js`, the jump rules in `src/racers.js`,
+the course in `race.js` / `city.js`, `?map=test&bots=N`) and checked in the browser on the test ground with bots and
+in the city. Six problems found and fixed, and a debug nit (`src/racers.js`, `src/nav/path.js`,
+`src/physics/vehicle.js`, `src/nav/debug.js`, `src/main.js`, `src/style.css`):
+
+- **Knocked off a jump, the bot drove blind.** Within `DRIVE.commit` of a lip `_plan` searches for no new path. A bot
+  pushed more than 7 m off its path there (or landing wide) kept the stale place on it, so it stayed "committed": no
+  search, and it drove straight at its goal with no path, no edge look (`_onRunUp`) and no car avoidance until it
+  happened to rejoin the path or got stuck. In 4 test-ground races: 1677 bot-frames (~28 s) like that. Scripted (the
+  big ramp's run-up, the bot moved 9 m sideways 10 m before the lip): 2 s straight at the goal. Now `_go` drops the
+  path when `_pursue` loses it while committed and searches at once: 0 frames; the scripted bot has a new path in the
+  same frame.
+- **The run-up speed was capped by the bot's own limit.** A* gives a bot jumps by its top speed (`def.speed`), and
+  `_jumpCheck` predicts the lip speed at full throttle, but `_pathSpeed` started from `maxV` — × 0.55 for a racer that
+  has finished, × 0.8 for a battle royale survivor (23.8–25.8 m/s against the deck's 22–28 band, middle 25). A finished
+  bot hit the big ramp's lip of the 18–24 band at 15.0 m/s; now the band's middle speed on the run-up overrides
+  `maxV`: 20.5 m/s.
+- **A stale run-up switched the edge look off.** `_onRunUp()` read the path's place even when the bot wasn't driving
+  the path (straight at a target within 45 m, or off the path): the last place on it said "on a run-up" and
+  `_edgeAhead` was skipped — 1732 bot-frames in 4 races (most of them the case above; with that fixed, still ~450 per
+  4–6 races), hunters and butchers chasing straight across the deck among them, so the follow-up's "a hunter's ram already stops at an edge" wasn't true there. Now only while driving the path
+  (and the back-off after a give-up likewise).
+- **`?map=test&bots=N` showed the network button** (`body.test` hides it only for the free ride): a room checks the
+  build, not the map, so a test-ground host and a city guest could start a game in two different worlds. Hidden there
+  (`body.testmap`); the README says the test ground with bots is single-player too.
+- **A car hung on a ramp's side for 20 s.** With the edge look on (above) hunters stop at the big ramp's west edge
+  instead of driving off it; twice in ~26 races one slid half over the side during its escape legs and hung there at
+  52° (`up` 0.62) on one wheel, still — no leg can move it, and the flip rule needs `up` < 0.5 — until the 20 s
+  teleport. New rule in `Vehicle.update` (`VEH.hungUp` 0.85, `hungWheels` 2, `hungAfter` 2): leaning more than ~32° on
+  two wheels or fewer and still for 2 s, the car is righted like a tipped one. Scripted (a car dropped across the big
+  ramp's west side, 15 poses): 4 hung at 34–56° and were righted after 2 s still (never before); the rest fell over
+  fully and the old rule righted them as before.
+- **A path could start with a jump the car faces away from.** A*'s way rule for a jump looks at the step into its
+  take-off floor; at the start floor there is none, so a bot standing on a run-up's entry facing elsewhere got that
+  jump, `_pursue`'s `DRIVE.onRun` sent it round in a circle and it searched again (~15 times per test-ground race).
+  Now a jump off a floor within 6 m of the car (path cost, `PATH.startRun`) needs the car's own heading within 1 rad
+  of its way (`PATH.startWay`): on the deck, standing still facing south / east with the goal north below it, the
+  goal is reached in 5.0 / 5.7 s (5.5 / 6.5 before), and such re-searches are ~12 per race.
+- `?debug=nav` drew the catapult's arcs with 18 m/s up hard-coded instead of `VEH.launch`.
+
+**Measured** (statistics: the sim isn't deterministic, runs of the same code differ a lot)
+
+- `featureRuns()`: unchanged — every feature 5 / 5 (the exit trench and the tube's free route 0 / 5 by design), no
+  tips, no side hits, the same times.
+- `testGround()`, race, 7 bots, games of 120 s, the fixes switched on and off in one page and alternated (seeds
+  1300–1315, 16 games each; "old" emulates the session-4 code):
+
+| | Big ramp | Up the deck | Off the deck | Tube | Jumps | Given up | Tips > 60° | Side hits | Stuck > 10 s (max) | Teleports | Gates | Wrecked |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Fixed | 119 | 133 | 124 | 96 | 216 | 16 | 47 | 20 | 2 (15.1) | 0 | 761 | 63 |
+| Old | 120 | 147 | 140 | 87 | 227 | 9 | 43 | 38 | 0 (9.7) | 0 | 736 | 62 |
+
+  Another fixed run on seeds 1300–1307: deck 80 / 77, given up 5, side hits 13, stuck max 9.4 s; one on seeds
+  1200–1207: 72 / 71, side hits 31 (15 of them on the deck ramp's west side, 11 in the first 21 s, hunters fighting),
+  stuck max 7.4 s — the spread covers both rows. The stays over 10 s that were traced are bots stopped by the edge look
+  at the deck ramp's sides while driving their path — code these fixes don't change (below).
+- City (the fixes change nothing there but the hung rule: no jumps, no drops): `botBattles()` race 5 games — stuck max
+  8.7 s (0 over 10), wrecked 3.8, kills 42.6, rams 25.6, teleports 0; royale 5 games — stuck max 11.4 s (1 game, a
+  hunter, upright), wrecked 18, kills 81, rams 65.6, teleports 0 — within sessions 3–4's spread. `traps()`: tree
+  1.8–4 s, boxed 1.5–9.5 s, alley 2.9–6 s, after out ≤ 2.2 s; `pinned` teleported at 20.0 s, 8–9.8 m away, nearest car
+  6.2 m, 2 m up; the teleport by 6 parked cars 12.5–13.7 m away, nearest car 6.1–6.8 m, full hull.
+- Battle royale on the test ground (3 games): no errors, a brawl as before (2 jumps, 20 of 21 wrecked).
+- `npm run build` passes, single file.
+
+**Left for later** (options, the recommended one first)
+
+- **Bots stopped at a ramp's side edge** (the deck ramp's sides, the big ramp's west side; race and hunt): the edge
+  look stops a bot facing a ramp's side, then the escape's many-point turn on the slope struggles for 10–13 s — its
+  swings aren't checked for drops (`_canSwing` casts against solids only), and a bot held still on a slope rolls
+  (throttle and brake are both 0 under 1.5 m/s; braking at a standstill would reverse). (a) Let `_canSwing` and the
+  legs look for drops at the swinging corners (`_dropDist` from the nose's and the tail's corners) and hold the
+  handbrake while held at an edge; (b) when the edge look stops the bot and its steering point is beside or behind
+  it, start the many-point turn at once (`_startTurn`) instead of after 1.4 s of "stuck"; (c) leave it — the hung rule
+  and the 20 s teleport cover the worst. Recommended (a), then (b) if it still shows.
+- **Lip claims ignore the player and the autopilot** (`_lipTurn` reads `car.ai.claim`; the autopilot's car has no
+  `ai`): a bot may take the big ramp together with them. (a) Publish the autopilot's claim on its car (a field other
+  than `ai`, which other code reads as "a bot"); (b) leave it — a human isn't predictable anyway. Recommended (b).
+- **The back-off after a give-up rarely runs:** the new path arrives in the same frame, before the bot has stopped, so
+  `DRIVE.retreat` only fires when the search waits for `DRIVE.replan`. Harmless (the edge look and the turns cover
+  it); left as is.
+- The start rule covers jumps within 6 m of the car only: a path may still enter a run-up farther on against the
+  car's heading and `DRIVE.onRun` re-plans then (~12 times per race). A heading-aware search (A* over floor and
+  heading near the start) if it matters.
+- The rest of session 4's list stands (side hits at the deck ramp's foot, boost pads on a run-up, no spin in flights,
+  the tube's room cost, one-way areas, thin strips, lips off the grid's 8 directions, the phone).

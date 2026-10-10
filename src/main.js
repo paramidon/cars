@@ -187,6 +187,7 @@ class Game {
     this._resize();
     document.body.classList.toggle('touch', IS_TOUCH);
     document.body.classList.toggle('test', this.test);
+    document.body.classList.toggle('testmap', this.testMap);
     renderer.setAnimationLoop((t) => this._tick(t));
   }
 

@@ -665,7 +665,7 @@ export class Rival {
     if (this.stuckAt.t > STUCK.time) this.respawn();
     // протаранил жертву — сдать назад, держа её в прицеле (задним ходом руль наоборот), и ударить снова
     // gave a jump up and stopped by the lip: back off straight before the new path turns it (it could roll over the lip)
-    const Jd = this._jumpAhead();
+    const Jd = this.onPath && this._jumpAhead();
     if (Jd?.dropped && !Jd.retreated && v < 0.5 && !this.esc) {
       Jd.retreated = true;
       this.retreatT = DRIVE.retreat[0];
@@ -860,6 +860,10 @@ export class Rival {
         this.onPath = true;
         return q;
       }
+      // knocked off it (pushed off the run-up, landed wide): the jump is off — a new path from here, now (while the
+      // stale path said "committed", _plan searched for none, and the bot drove blind at the goal)
+      this.path = null;
+      this.replanT = 0;
     }
     // (looked at every DRIVE.recheck s: a long line costs a hundred floor lookups)
     this.directT -= this.dt;
@@ -1003,7 +1007,7 @@ export class Rival {
 
   /**
    * The top speed (≤ maxV) that brakes in time for every corner of the path within DRIVE.ahead; slower where the corner
-   * is narrow (DRIVE.narrow: less room to swing wide).
+   * is narrow (DRIVE.narrow: less room to swing wide). On a jump's run-up: the jump's speed, even over maxV.
    */
   _pathSpeed(maxV) {
     const P = this.path, corner = this.def.corner, nav = this.city.nav, N = DRIVE.narrow;
@@ -1016,8 +1020,10 @@ export class Rival {
     if (J && this.pathS >= J.s1 && (this.pathS < J.s1 + DRIVE.offLip || this.car.rb.contacts === 0)) return Math.max(this.car.speed, maxV);
     if (J && this.pathS < J.s1) {
       const jd = nav.jumps[J.q];
-      brakeFor(jd.hi - 1, J.s1 - this.pathS);
-      if (this.pathS > J.s0 - 2) target = Math.min(target, (jd.lo + jd.hi) / 2);
+      // on the run-up: the band's middle speed, over the bot's own limit too (a finished racer's 55%, a survivor's 80%:
+      // A* gave it only jumps its top speed reaches, and slower than the band it would fall short or tip over the lip)
+      if (this.pathS > J.s0 - 2) target = (jd.lo + jd.hi) / 2;
+      else brakeFor(jd.hi - 1, J.s1 - this.pathS);
       until = J.s1;
     }
     for (const cr of P.crests) {
@@ -1090,9 +1096,12 @@ export class Rival {
     return null;
   }
 
-  /** On a jump's run-up (not given up), or over it until the end of its run-out. */
+  /**
+   * Driving its path this frame, on a jump's run-up (not given up) or over it until the end of its run-out. (Not when
+   * it goes straight at a goal: the path it keeps meanwhile says where it was, and the edge look must stay on.)
+   */
   _onRunUp() {
-    const J = this._jumpAhead();
+    const J = this.onPath && this._jumpAhead();
     return !!J && this.pathS > J.s0 - 1 && !J.dropped;
   }
 

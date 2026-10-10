@@ -1474,3 +1474,8 @@ body.test #btn-net,
 body.test #race {
   display: none;
 }
+
+/* the test ground with bots (?map=test&bots=N) is single-player too: a room doesn't know its players' maps */
+body.testmap #btn-net {
+  display: none;
+}

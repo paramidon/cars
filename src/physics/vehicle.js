@@ -48,6 +48,12 @@ export const VEH = {
   // a safety net: tipped for flipMax s in a row, whatever it does (pushed along on its side, hung on something), the
   // car rights itself anyway (one bot in ~80 bot games lay tipped 11 s; the rule above normally takes 1.5–3 s)
   flipMax: 8,
+  // hung on an edge (half over a ramp's or a deck's side): leaning more than ~32° (up·Y < hungUp) on hungWheels wheels
+  // or fewer and still for hungAfter s — it can't drive off and isn't tipped enough for the rule above (bots on the
+  // test ground hung 20 s at 52° on one wheel): it is righted the same way
+  hungUp: 0.85,
+  hungWheels: 2,
+  hungAfter: 2,
   rightRate: 6,
   rightLift: 0.9,
   rightTime: 1.5,
@@ -200,6 +206,7 @@ export class Vehicle {
     this.contacts = 0; // wheels on the ground at the last step
     this.tippedT = 0;
     this.tipAll = 0; // s tipped in a row (VEH.flipMax)
+    this.hungT = 0; // s hung on an edge (VEH.hungUp)
     this.righting = null;
     this.padIn = null;
     this.ghost = false; // another computer drives this car: the body follows its snapshots (setRemote, GHOST)
@@ -696,6 +703,7 @@ export class Vehicle {
     if (this.righting || this.car.wrecked) {
       this.tippedT = 0;
       this.tipAll = 0;
+      this.hungT = 0;
       return;
     }
     this.tipAll = this.up.y < VEH.flipUp ? this.tipAll + dt : 0;
@@ -704,7 +712,9 @@ export class Vehicle {
     // still: the full rate; rocking on its side or shoved by other cars (slow, not still): a slower one
     const rate = v < VEH.flipStill && w < VEH.flipStill ? 1 : v < VEH.flipSlow && w < VEH.flipSlow ? VEH.flipSlowRate : 0;
     this.tippedT = this.up.y < VEH.flipUp && rate ? this.tippedT + dt * rate : 0;
-    if (this.tippedT > VEH.flipAfter || this.tipAll > VEH.flipMax) this.right();
+    // hung on an edge: leaning, on two wheels or fewer, still
+    this.hungT = this.up.y < VEH.hungUp && this.contacts <= VEH.hungWheels && rate === 1 ? this.hungT + dt : 0;
+    if (this.tippedT > VEH.flipAfter || this.tipAll > VEH.flipMax || this.hungT > VEH.hungAfter) this.right();
   }
 
   get tipped() {
@@ -721,6 +731,7 @@ export class Vehicle {
     this.righting = { t: 0, ground, roll: _f.clone().setY(0).normalize() };
     this.tippedT = 0;
     this.tipAll = 0;
+    this.hungT = 0;
     this.car.onRight?.();
   }
 

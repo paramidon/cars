@@ -5,6 +5,7 @@
  */
 import * as THREE from 'three';
 import { PHYS } from '../physics/rapier.js';
+import { VEH } from '../physics/vehicle.js';
 
 const KIND = { ground: '#3fa34d', curb: '#3f7fd1', ramp: '#e0a020', deck: '#d0d0d0' };
 const OTHER = '#9a7a5a', BLOCKED = '#6a1010', ISLAND = '#a040c0';
@@ -59,7 +60,7 @@ export function jumpLines(nav) {
     c.set(JUMP_COLOR[J.kind]);
     for (const v of [J.lo, J.hi]) {
       // the flight's arc off the lip (the box's own start offset left out)
-      const cs = 1 / Math.sqrt(1 + J.grade * J.grade), vh = v * cs, vy = J.kind === 'launch' ? 18 : v * J.grade * cs;
+      const cs = 1 / Math.sqrt(1 + J.grade * J.grade), vh = v * cs, vy = J.kind === 'launch' ? VEH.launch : v * J.grade * cs;
       const L = J.land[Math.round((v - J.lo) / J.step)], T = L / vh;
       let p = J.lip;
       for (let k = 1; k <= 12; k++) {

@@ -57,6 +57,9 @@ export const PATH = {
   gap: 1.5,
   hurt: 2,
   jumpMargin: 2, // m/s — a jump is taken only by a car this much faster than its band's middle speed
+  startRun: 6, // m — a jump off a floor this close to the car (by path cost) is taken only if the car's own heading is
+  startWay: 1, // within this many rad of its way (as Rival's DRIVE.onRun: facing elsewhere it isn't on the run-up — it
+  // would circle back to the take-off floor and search again)
   longRun: 18, // m — a jump's run-up shorter than this is entered only straight along its way, a longer one also from the side
   banR: 6, // m — a bot that gave a jump up takes no jump off a lip this close to it for a while (Rival.banned)
   // a goal on another level than the car (more than `level` m higher or lower, or under another floor: a tunnel under
@@ -226,9 +229,10 @@ export class NavPaths {
    * A* from floor a to floor b: the floors in between, a first, or null. traps — [{ x, z }]: a metre within PATH.trap
    * of one costs PATH.trapCost more; gore 0…1 — a metre through a crowd costs up to PATH.crowd × gore less; wrecks
    * false — wrecks cost nothing extra; car — { x, z, yaw, v }: floors behind a moving car, within PATH.turnRoom of it,
-   * cost up to PATH.backCost more; prefer — floors (the last path to this goal) that cost PATH.keep as much; speed —
-   * the car's top speed, m/s (a jump needing more isn't taken: its middle speed + PATH.jumpMargin); banned — [{ x, z }]:
-   * no jump off a lip within PATH.banR of one.
+   * cost up to PATH.backCost more, and a jump within PATH.startRun of it needs its heading (PATH.startWay); prefer —
+   * floors (the last path to this goal) that cost PATH.keep as much; speed — the car's top speed, m/s (a jump needing
+   * more isn't taken: its middle speed + PATH.jumpMargin); banned — [{ x, z }]: no jump off a lip within PATH.banR of
+   * one.
    * The floors come with `jumps`: [[k, q]] — floor k was reached from floor k − 1 by jump q (NavGrid.jumps).
    */
   find(a, b, { traps = null, gore = 0, wrecks = true, car = null, prefer = null, speed = Infinity, banned = null } = {}) {
@@ -257,6 +261,7 @@ export class NavPaths {
     const back = car ? PATH.backCost * Math.min(1, Math.max(0, car.v / 10)) : 0;
     const cx = car && (car.x - nav.x0) / c - 0.5, cz = car && (car.z - nav.z0) / c - 0.5;
     const fx = car && Math.sin(car.yaw), fz = car && Math.cos(car.yaw), turn2 = (PATH.turnRoom / c) ** 2;
+    const nearRun = car ? PATH.startRun : 0, wayCos = Math.cos(PATH.startWay);
     // a goal on another level: the field back from it (PATH.field)
     const covered = b < start[bcol + 1] - 1;
     const R = Math.abs(y[a] - y[b]) > PATH.level || covered ? this._field(b) : -1;
@@ -365,6 +370,8 @@ export class NavPaths {
           const dot = ax * J.dx + az * J.dz;
           if (comp[j] !== main || done[j] === st || (J.lo + J.hi) / 2 + PATH.jumpMargin > speed || dot < (J.run < PATH.longRun ? 0.99 * Math.hypot(ax, az) : 0)) continue;
           if (banned && banned.some((b) => Math.hypot(b.x - J.lip.x, b.z - J.lip.z) < PATH.banR)) continue;
+          // (close to the car: its own heading, PATH.startRun)
+          if (gi < nearRun && fx * J.dx + fz * J.dz < wayCos) continue;
           relax(i, j, gi + jcost[q], q);
         }
       }

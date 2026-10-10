@@ -67,9 +67,12 @@ lose by wrecking your own car or running out of time.
   jumps — off a ramp's lip, off a deck's edge or a tunnel's portal, over a catapult (see [Physics](#physics)): the run-up
   costs its length, the flight and the run-out after it half their length, plus 4 per jump, 1.5 per m/s the lip needs
   over 14 (a gap: too slow, it falls in) and 2 per m/s of landing harder than 13 m/s; a jump is entered only roughly
-  along its way (a run-up shorter than 18 m straight along it, a longer one also from the side, never against it), and
+  along its way (a run-up shorter than 18 m straight along it, a longer one also from the side, never against it; one
+  within 6 m of the car only if the car itself faces within 1 rad of its way — `PATH.startRun`/`startWay`), and
   only by a bot whose top speed is 2 m/s over the middle of the jump's band of speeds. On the run-up the bot holds that
-  middle speed; from 14 m before the lip to the end of the run-out it searches for no new path and avoids no car; it
+  middle speed, even over its own limit (a finished racer's or a battle survivor's: slower, it would fall short); from
+  14 m before the lip to the end of the run-out it searches for no new path and avoids no car (knocked more than 7 m
+  off the path there, it drops the jump and gets a new path at once); it
   doesn't brake for 6 m past the lip (braking with the back wheels still on it would pitch the nose down) and holds the
   wheel straight in the air. If it won't make the band's slowest speed by the lip at full throttle (the car's thrust
   against the climb), or within 6 m of the lip it's slower than that or more than 0.45 rad off the jump's way, it gives
@@ -204,7 +207,8 @@ lose by wrecking your own car or running out of time.
   your own car; if it gets wrecked — «ЕЩЁ ЗАЕЗД». Single player only (online only from a test script). New mechanics
   should be added here too. Layout — `testGround()` and `verticals()` in `src/world/city.js`.
   With `?map=test&bots=N` it's a playable map instead, to exercise the bots' 3D navigation: the menu's race or battle
-  royale with N bots. The race's gates: before the big ramp, after its landing, on the deck, north of the deck (the
+  royale with N bots (single player as well: the menu has no network button there — a room doesn't check its players'
+  maps). The race's gates: before the big ramp, after its landing, on the deck, north of the deck (the
   way there is off its edge), in the tunnel, and the finish after the tube (`course` in `buildCity()`).
 - **Back to menu** in single player is available from pause and from the results screen (online, the same place has «ВЫЙТИ ИЗ КОМНАТЫ»): the race is reset and cars return to the start.
 
@@ -243,7 +247,10 @@ the arcade handling, damage, tripping and self-righting. How it was built and me
   rocking on its side or shoved by other cars (under 4 m/s and 4 rad/s, not still) it does so after 3 s:
   still a physical body, so walls push it away, turned upright about its centre of mass at up to 6 rad/s with its
   heading kept, for at most 1.5 s. Whatever it does, tipped for 8 s in a row it rights itself anyway (`VEH.flipMax`: a
-  car dragged along on its side faster than that). `R` on a tipped car does that at once.
+  car dragged along on its side faster than that). Hung on an edge — half over a ramp's or a deck's side, leaning more
+  than ~32° on two wheels or fewer and still for 2 s (`VEH.hungUp`/`hungWheels`/`hungAfter`) — it is righted the same
+  way (it can't drive off, and it isn't tipped enough for the rule above: bots hung 20 s at 52° on one wheel). `R` on
+  a tipped car does that at once.
 - **Blasts** shove a car (`CANNON.push`, 7 m/s at the centre) with a tenth of it upwards and tilt it away at 1 rad/s
   per m/s: a blast touching its side throws a parked car at 21 km/h and tilts it 40°, 1 m away — 16 km/h and 16°,
   2 m — 11 km/h and 7°, 3 m — 6 km/h and 3°.
@@ -493,7 +500,7 @@ Cars are bodies in the Rapier physics engine; everything else collides in the XZ
 Pedestrians (all body parts) are drawn in ~6 draw calls via
 `InstancedMesh`. On a weak device the render resolution drops automatically if the FPS sags.
 
-Main tuning numbers: `PHYS` in `src/physics/rapier.js` (gravity, the step and `maxSteps` per frame, ground and wall friction) and `VEH` in `src/physics/vehicle.js` (`mass`, centre of mass — `com`, `inertia`, chassis shape — `lower`/`cabin`, its `friction`/`restitution`, `angularDamping`, suspension — `wheelRadius`/`rest`/`travel`/`stiffness`/`compression`/`relaxation`, the arcade layer's fade with lean — `upFull`/`upNone`, grip against obstacles — `leanGrip`, the flip rule — `flipUp`/`flipAfter`/`flipStill`/`flipSlow`/`flipSlowRate`/`flipMax`/`rightRate`/`rightLift`/`rightTime`, tripping — `tripAccel`/`trip`/`tripTime`, wall hits — `wallNormal`, landing and roof damage — `landAir`/`landSafe`/`landScale`/`roofSafe`/`roofScale`, blasts — `blastLift`/`blastSpin`, pads — `boost`/`launch`; `GHOST` — other players' cars over the network: the spring's `rate`, how far a snapshot is carried forward — `ahead`, `sink`, `snap`, passing through — `deep`/`loose`, easing two overlapping cars apart — `ease`, a just-hit ghost — `holdShow`/`hold`, reconciling knocks — `knockWindow`), `SNAP_HZ`/`LEAD_MAX` in `src/net/netplay.js` (snapshots a second, the most a snapshot is carried forward for the network's delay), `P` in `src/car.js` (thrust, grip, steering at speed — the `yawCap` table and `hardFrom`/`hardTo`/`steerTime`/`yawResp`, steering return — `steerReturn`/`yawUnwind`, damage threshold and multiplier),
+Main tuning numbers: `PHYS` in `src/physics/rapier.js` (gravity, the step and `maxSteps` per frame, ground and wall friction) and `VEH` in `src/physics/vehicle.js` (`mass`, centre of mass — `com`, `inertia`, chassis shape — `lower`/`cabin`, its `friction`/`restitution`, `angularDamping`, suspension — `wheelRadius`/`rest`/`travel`/`stiffness`/`compression`/`relaxation`, the arcade layer's fade with lean — `upFull`/`upNone`, grip against obstacles — `leanGrip`, the flip rule — `flipUp`/`flipAfter`/`flipStill`/`flipSlow`/`flipSlowRate`/`flipMax`, hung on an edge — `hungUp`/`hungWheels`/`hungAfter`, righting — `rightRate`/`rightLift`/`rightTime`, tripping — `tripAccel`/`trip`/`tripTime`, wall hits — `wallNormal`, landing and roof damage — `landAir`/`landSafe`/`landScale`/`roofSafe`/`roofScale`, blasts — `blastLift`/`blastSpin`, pads — `boost`/`launch`; `GHOST` — other players' cars over the network: the spring's `rate`, how far a snapshot is carried forward — `ahead`, `sink`, `snap`, passing through — `deep`/`loose`, easing two overlapping cars apart — `ease`, a just-hit ghost — `holdShow`/`hold`, reconciling knocks — `knockWindow`), `SNAP_HZ`/`LEAD_MAX` in `src/net/netplay.js` (snapshots a second, the most a snapshot is carried forward for the network's delay), `P` in `src/car.js` (thrust, grip, steering at speed — the `yawCap` table and `hardFrom`/`hardTo`/`steerTime`/`yawResp`, steering return — `steerReturn`/`yawUnwind`, damage threshold and multiplier),
 `HEAL` in `src/main.js` (repair for kills), `RACE` in `src/race.js` (laps, pace, time bonuses, how far under or over a gate counts),
 `CANNON` in `src/cannon.js` (reload, damage, blast radius), `MG` in `src/mg.js` (machine gun), `MOLOTOV` in `src/molotov.js` (cocktails), `RIVALS` (personality `aggr`/`gore`, speed; battle bots beyond seven reuse the same personalities under names from `EXTRA`), `MAX_CARS`/`MAX_CARS_ROYALE` (cars in a race / in battle),
 `HUNT`/`GORE`/`PREY_WEIGHT`/`HUNT_DELAY`, `DRIVE`, `AVOID`, `ESCAPE`, `STUCK` and `CAR_HIT` in `src/racers.js` (how personality scales turn into behavior,
