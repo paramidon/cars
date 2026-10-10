@@ -10,6 +10,8 @@
  *   await t.botBattles(game, { type: 'royale', bots: 19 }); // city: 10 bot games of 2 min — stuck bots, wrecks, kills
  *   await t.traps(game);                // city: scripted traps — does a stuck bot get out, when is it teleported (NAV_PLAN 1)
  *   await t.navGrid(game);              // city or test ground: the nav grid's build time, size, layers; 3D checks (NAV_PLAN 2)
+ *   await t.frameCost(game);            // city: game.step's cost with 19 bots, the bots' share, path searches (NAV_PLAN 3)
+ *   await t.waypoints(game);            // city: battle royale waypoints in yards — do bots get there (NAV_PLAN 3)
  *   // also: landings, carCrashes, blasts, pedJumps, props, muzzle (session 3), sideHit, obstacle, wallScrape, rollovers,
  *   // gunnerTilt (session 5), pedShots, rocking, molotovs, tyreMarks (the open problems' fixes)
  *
@@ -546,7 +548,8 @@ export async function rollovers(game, { races = 20, secs = 75, seed0 = 100 } = {
  * City (session 5): `runs` seeded games of `secs` s with `bots` bots — a race (`game: 'race'`, up to 7 bots) or a battle
  * royale (`'royale'`, up to 19), classic or crew (`mode: 'crew'`: bot gunners in every turret). My car runs on the
  * autopilot and can't be wrecked. Per run: the longest time any bot spent within 6 m of one spot while the game was on
- * (not wrecked, not finished), bots wrecked, pedestrians killed by bots, rams, shots, bot teleports (Rival.respawn) and
+ * (not wrecked, not finished) — and the same not counting rams of the car it hunts within 15 m (`stuckNoRam`, as the
+ * STUCK rule) —, bots wrecked, pedestrians killed by bots, rams, shots, bot teleports (Rival.respawn) and
  * back-ups, tips
  * past 60° and how long the longest one lasted (tips over LONG_TIP s traced every 0.5 s in `longTips`). A run stops early when the game ends (a bot wins or everyone is wrecked).
  * `each(t, rivals)` is called every step (for tracing one bot).
@@ -564,7 +567,7 @@ export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type =
     game.car.applyDamage = () => {};
     while (game.countdown > 0) game.step(DT);
     const rivals = game.rivals;
-    const st = rivals.map((r) => ({ ax: r.car.x, az: r.car.z, still: 0, max: 0, at: null, tipT: 0, maxTip: 0, tips: 0 }));
+    const st = rivals.map((r) => ({ ax: r.car.x, az: r.car.z, still: 0, max: 0, at: null, still2: 0, max2: 0, at2: null, tipT: 0, maxTip: 0, tips: 0 }));
     let teleports = 0, reverses = 0, rams = 0, shots = 0, t = 0;
     const longTips = [];
     const wasRev = rivals.map(() => false);
@@ -609,12 +612,19 @@ export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type =
           s.ax = c.x;
           s.az = c.z;
           s.still = 0;
+          s.still2 = 0;
           return;
         }
         s.still += DT;
         if (s.still > s.max) {
           s.max = s.still;
           s.at = { name: r.name, x: r1(c.x), z: r1(c.z), mode: r.mode, up: r1(c.upY), t: r1(t) };
+        }
+        // the same, not counting the time it rams the car it hunts within STUCK.ram (15 m), as the STUCK rule doesn't
+        if (!(r.mode === 'hunt' && r.target && Math.hypot(r.target.x - c.x, r.target.z - c.z) < 15)) s.still2 += DT;
+        if (s.still2 > s.max2) {
+          s.max2 = s.still2;
+          s.at2 = { name: r.name, x: r1(c.x), z: r1(c.z), mode: r.mode, t: r1(t) };
         }
       });
       t += DT;
@@ -623,8 +633,9 @@ export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type =
     delete game._fire;
     delete game._carHit;
     const worst = st.reduce((a, s) => (s.max > a.max ? s : a), st[0]);
+    const worst2 = st.reduce((a, s) => (s.max2 > a.max2 ? s : a), st[0]);
     res.push({
-      run: k, secs: r1(t), state: game.state, stuckMax: r1(worst.max), stuckAt: worst.at,
+      run: k, secs: r1(t), state: game.state, stuckMax: r1(worst.max), stuckAt: worst.at, stuckNoRam: r1(worst2.max2), stuckNoRamAt: worst2.at2,
       wrecked: rivals.filter((r) => r.car.wrecked).length,
       kills: rivals.reduce((a, r) => a + r.car.kills, 0) - kills0,
       rams, shots, teleports, reverses,
@@ -637,6 +648,7 @@ export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type =
   return {
     type, mode, bots, secs: mean((r) => r.secs),
     stuckMax: Math.max(...res.map((r) => r.stuckMax)), stuckOver10: res.filter((r) => r.stuckMax > 10).length,
+    stuckNoRam: Math.max(...res.map((r) => r.stuckNoRam)), stuckNoRamOver10: res.filter((r) => r.stuckNoRam > 10).length,
     wrecked: mean((r) => r.wrecked), kills: mean((r) => r.kills), rams: mean((r) => r.rams), shots: mean((r) => r.shots),
     teleports: mean((r) => r.teleports), reverses: mean((r) => r.reverses), tips: mean((r) => r.tips),
     longestTip: Math.max(...res.map((r) => r.longestTip)), longTips: res.flatMap((r) => r.longTips), crashes: window.crash?.entries?.length ?? 0, runs: res,
@@ -700,7 +712,7 @@ export async function traps(game, { names = Object.keys(TRAPS), seeds = [0, 1, 2
       const [bot, ...rest] = game.rivals;
       bot.def = { ...bot.def, aggr: 0, gore: 0 }; // only drives
       const goal = { x: T.goal[0], z: T.goal[1] };
-      bot.race = Object.create(game.race, { pointAt: { value: () => goal }, cornersAhead: { value: () => [] } });
+      bot._raceGoal = () => ({ x: goal.x, y: 0, z: goal.z, gate: null }); // drives to the goal, not to a gate
       T.wrecks.forEach(([x, z, yaw], i) => {
         const c = rest[i].car;
         c.explode();
@@ -731,6 +743,7 @@ export async function traps(game, { names = Object.keys(TRAPS), seeds = [0, 1, 2
         await run(game, 2, () => void (maxDrop = Math.max(maxDrop, c.y - game.city.groundHeight(c.x, c.z))));
         row.spot.landedHull = r1(c.health);
         row.teleports = bot.teleports;
+        delete bot._raceGoal;
         out.push(row);
         continue;
       }
@@ -760,6 +773,7 @@ export async function traps(game, { names = Object.keys(TRAPS), seeds = [0, 1, 2
         b.lockRotations(false, true);
       });
       row.end = { x: r1(c.x), z: r1(c.z), toGoal: r1(Math.hypot(c.x - goal.x, c.z - goal.z)) };
+      delete bot._raceGoal;
       out.push(row);
     }
   }
@@ -835,6 +849,110 @@ export async function navGrid(game, { builds = 5 } = {}) {
     spotUnderTubeRoof: spot(-130, 0, 10),
   });
   return res;
+}
+
+// ---------------------------------------------------------------- NAV_PLAN session 3: paths and driving
+
+/**
+ * City: the simulation's cost per frame (NAV_PLAN session 3) — `runs` seeded battle royales (or races) with `bots`
+ * bots, `secs` s each after the countdown, my car on the autopilot; the mean and the 99th percentile of game.step (no
+ * rendering) and of the bots' share of it (think + path searches), ms.
+ */
+export async function frameCost(game, { runs = 3, secs = 30, bots = 19, type = 'royale', seed0 = 700 } = {}) {
+  if (game.test) throw new Error('open the city (no ?map=test)');
+  const random = Math.random;
+  const steps = [], ai = [];
+  let searches = 0, expanded = 0;
+  for (let k = 0; k < runs; k++) {
+    takeOver(game);
+    Math.random = seeded(seed0 + k);
+    Object.assign(game.solo, { game: type, mode: 'classic', seat: 'driver', bots });
+    game.restart();
+    game.autoDriver = autopilot(game);
+    game.car.applyDamage = () => {};
+    while (game.countdown > 0) game.step(DT);
+    let botMs = 0;
+    const wrap = (o, name) => {
+      const f = Object.getPrototypeOf(o)[name];
+      o[name] = function (...a) {
+        const t = performance.now();
+        const r = f.apply(this, a);
+        botMs += performance.now() - t;
+        return r;
+      };
+    };
+    for (const r of [...game.rivals, game.autoDriver]) wrap(r, 'think');
+    if (game.paths) wrap(game.paths, 'run');
+    const s0 = game.paths?.stats ? { ...game.paths.stats } : null;
+    await run(game, secs, () => {
+      if (game.state !== 'play') return false;
+      botMs = 0;
+      const t = performance.now();
+      game.step(DT);
+      steps.push(performance.now() - t);
+      ai.push(botMs);
+      return true;
+    });
+    if (s0) {
+      searches += game.paths.stats.searches - s0.searches;
+      expanded += game.paths.stats.expanded - s0.expanded;
+    }
+    for (const r of [...game.rivals, game.autoDriver]) delete r.think;
+    if (game.paths) delete game.paths.run;
+  }
+  Math.random = random;
+  const stat = (a) => {
+    const s = [...a].sort((x, y) => x - y);
+    return { mean: Math.round((a.reduce((x, y) => x + y, 0) / a.length) * 1000) / 1000, p99: Math.round(s[Math.floor(s.length * 0.99)] * 1000) / 1000, max: Math.round(s[s.length - 1] * 1000) / 1000 };
+  };
+  const frames = steps.length;
+  return { type, bots, frames, step: stat(steps), bots_ms: stat(ai), searchesPerS: r1(searches / (frames * DT)), expandedPerSearch: searches ? Math.round(expanded / searches) : 0 };
+}
+
+/**
+ * City (NAV_PLAN session 3): battle royale waypoints — `runs` seeded games of `secs` s with `bots` bots; every waypoint
+ * a bot was given (Rival.wp): how much room its floor has (under NAV.open 6 m — in a yard, a park, by a wall: session
+ * 2 kept them out), whether the bot got within 10 m of it before it was replaced (reached) and how long that took.
+ */
+export async function waypoints(game, { runs = 5, secs = 120, bots = 19, seed0 = 900 } = {}) {
+  const all = [];
+  const cur = new Map();
+  const close = (r, t) => {
+    const w = cur.get(r);
+    if (w) all.push({ ...w, secs: w.reached == null ? null : r1(w.reached - w.t0), left: r1(t - w.t0) });
+    cur.delete(r);
+  };
+  let T = 0;
+  const each = (t, rivals) => {
+    T = t;
+    for (const r of rivals) {
+      const w = cur.get(r);
+      if (r.car.wrecked) {
+        if (w) close(r, t);
+        continue;
+      }
+      if (!w || w.wp !== r.wp) {
+        if (w) close(r, t);
+        if (r.wp) {
+          const i = game.nav.cellAt(r.wp.x, r.wp.y + 0.5, r.wp.z);
+          cur.set(r, { wp: r.wp, room: r1(game.nav.roomAt(i)), t0: t, reached: null });
+        }
+        continue;
+      }
+      if (w.reached == null && Math.hypot(r.car.x - w.wp.x, r.car.z - w.wp.z) < 10.5) w.reached = t;
+    }
+  };
+  const res = await botBattles(game, { runs, secs, bots, type: 'royale', seed0, each: (t, rivals) => {
+    if (t === 0) for (const r of [...cur.keys()]) close(r, T);
+    each(t, rivals);
+  } });
+  for (const r of [...cur.keys()]) close(r, T);
+  const rows = all.map(({ wp, ...w }) => w);
+  const sum = (f) => {
+    const a = rows.filter(f), done = a.filter((w) => w.reached != null);
+    return { n: a.length, reached: done.length, share: a.length ? r1((done.length / a.length) * 100) : 0, meanSecs: done.length ? r1(done.reduce((s, w) => s + w.secs, 0) / done.length) : null, maxSecs: done.length ? Math.max(...done.map((w) => w.secs)) : null };
+  };
+  return { open: sum((w) => w.room >= 6), yards: sum((w) => w.room < 6), stuckMax: res.stuckMax, stuckOver10: res.stuckOver10, teleports: res.teleports, notReachedYards: rows.filter((w) => w.room < 6 && w.reached == null).slice(0, 20) };
 }
 
 // ---------------------------------------------------------------- session 3: damage, pedestrians, props, weapons

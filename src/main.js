@@ -5,7 +5,8 @@ import { Physics, initRapier, rapierStats } from './physics/rapier.js';
 import { Vehicle } from './physics/vehicle.js';
 import { buildCity } from './world/city.js';
 import { buildNav } from './nav/grid.js';
-import { navMesh } from './nav/debug.js';
+import { navMesh, pathLines } from './nav/debug.js';
+import { NavPaths } from './nav/path.js';
 import { Breakables } from './world/props.js';
 import { FX } from './effects/fx.js';
 import { Debris } from './effects/debris.js';
@@ -110,7 +111,11 @@ class Game {
     this.phys.addProps(this.breakables.items);
     // the bots' navigation grid, from the static colliders (NAV_PLAN.md); before any car joins the world
     this.nav = this.city.nav = buildNav(this.phys, this.city.bounds);
-    if (DEBUG_NAV) scene.add(navMesh(this.nav));
+    this.paths = this.city.paths = new NavPaths(this.nav);
+    if (DEBUG_NAV) {
+      scene.add(navMesh(this.nav));
+      scene.add((this.pathLines = pathLines()));
+    }
     this.mainCar = new Car(scene, this.city, this.fx, this.audio, this.debris, QUALITY);
     this._addBody(this.mainCar);
     this.car = this.mainCar; // машина, в которой я сижу (по сети может быть чужая — если я в её пушке)
@@ -1301,6 +1306,10 @@ class Game {
         ctx.myProgress = ctx.playerProgress;
         drive = this.state !== 'play' ? STOP_INPUT : this.countdown > 0 ? NO_INPUT : this.autoDriver.think(dt, ctx);
       }
+      // the bots' path searches asked for this frame (a budget per frame), wrecks and crowds for their costs
+      this.paths.update(dt, this.cars, this.peds);
+      this.paths.run();
+      this.pathLines?.update(this.autoDriver ? [...this.rivals, this.autoDriver] : this.rivals);
       // пушки
       const canShoot = this.state === 'play' && this.countdown <= 0 && !this.netPaused;
       const myGun = this.seat === 'gunner' || this.mode !== 'crew'; // стреляю я (в классике — водитель)

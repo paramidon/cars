@@ -17,7 +17,7 @@ below. Run them in order. At the end of every session, tick its checkbox in [Sta
 
 - [x] Session 1: getting out of traps (smart escape, nearby teleport as a last resort)
 - [x] Session 2: navigation data — a layered nav grid built from the map's 3D colliders
-- [ ] Session 3: paths and driving — A*, path following, speed planning, local avoidance, all modes on the nav
+- [x] Session 3: paths and driving — A*, path following, speed planning, local avoidance, all modes on the nav
 - [ ] Session 4: 3D — ramps, jumps, drops, decks and tunnels; bots on the test ground
 
 ## Decisions already made (with the user, 2026-10-10)
@@ -243,6 +243,19 @@ Also:
      — the colliders' height range). Upright boxes and cylinders are cheapest (their bottom needs no ray).
    - Floors are sampled at column centres (`NAV.cell` 1.5 m): a drivable strip narrower than that (a plank, a thin
      bridge) may be missed or broken — a finer cell for such a map, or a link along it.
+6. From session 3 (paths, `src/nav/path.js`, `Rival._go/_plan/_pursue` in `racers.js`):
+   - A* follows the grid's 8 links only; links (jumps, drops, pads) need their own edges in `NavPaths.find` (a link
+     list per floor, its cost, the speed range it needs) and `Rival._pursue` / `_pathSpeed` must know a leg is a link
+     (hold the speed range to the lip, don't brake for the "corner" at a lip, no steering in the air).
+   - `NavPaths.lineFree` (straight legs, the look-ahead chord, the direct line to a goal) follows the floor a step at a
+     time (`NAV.step` + 0.3 per 0.75 m sample) and never leaves the level it is on: a leg over a drop or a jump is
+     always "blocked" — a link leg must skip that test.
+   - Race gates have no height: `Rival._raceGoal` and `_gateLeg` look for the gate's floor at `y` 0 (the highest
+     floor ≤ 1 m). A gate on a deck or in a tunnel needs a `y` from the map.
+   - The car's place on its path is 2D (`projectOn`): a path crossing itself on two levels (a ramp up to a deck over the
+     street it started on) may snap to the wrong level. Project with the height too.
+   - The costs know nothing of slopes: a ramp costs like the flat (a steep one should cost more, and a bot should slow
+     down before a crest).
 
 **Acceptance**
 
@@ -463,3 +476,138 @@ either. A race run after the royale rows in the same page gave 38 kills; in a fr
   or broken; session 4 may need a finer cell on such maps or links for them.
 - Session 4's links (jumps off ramp lips, drops off the deck, pads) aren't in the grid yet: the ramps' lips and the
   deck's edges are plain edges (unwalkable floors).
+
+### Session 3 (2026-10-10): paths and driving
+
+**What was done** (`src/nav/path.js` — new, `src/racers.js`, `src/main.js`, `src/nav/debug.js`, `src/nav/grid.js`,
+`src/zone.js`, `tests/physics.js`)
+
+- **`NavPaths`** (`game.paths`, also `city.paths`; constants `PATH`): weighted A* over the walkable floors of the main
+  area (the grid's 8 links, so layers come with them), typed arrays with a search stamp (no clearing), an indexed heap.
+  Cost per metre: 1, plus up to +3 near unwalkable floors (the square of the closeness under 8 m of room — a fast car
+  needs room, so streets win over block interiors), plus up to +4 under 3 m of room (alleys a car turns into only in
+  several goes), +6 within 4 m of a wreck or a car standing still for 2 s, +10 within 5 m of the bot's own traps (10 s),
+  more behind a moving car within 8 m (up to +4 at 10 m/s: a path doesn't start with a U-turn), up to −50% through a
+  crowd for a butcher (`gore` 1; crowds counted per 6 m cell every 0.5 s), ×0.7 on the last path's floors for the same
+  gate or waypoint (no flipping between two ways round a block). Heuristic weight 1.4, up to 2.0 for goals 300 m away.
+  A search stops at 12 000 floors and returns the way to the floor nearest the goal (the bot searches again 30 m before
+  that end). Searches run from a queue once a frame after the bots think (`Game.step`), oldest first, until 3000
+  floors are expanded (the first always runs).
+- **Straight legs:** `smooth()` pulls the floor path into legs: from each corner the farthest floor (≤ 60 m) a straight
+  line reaches with 3 m of room all along it (`lineFree`: a sample every 0.75 m, the floor under it followed on its
+  level a step at a time), else 2.1 m (an alley), else the next floor. The first try checked a strip ±0.7 m wide with
+  offset samples: legs grazed trees and poles (a floor next to an unwalkable one may be 0.6 m from a tree), cars hit
+  them at 100 km/h. `polyline()` keeps the corners (vertices within 8 m summed, ≥ 0.3 rad).
+- **Driving** (`Rival._go`, `_plan`, `_pursue`, `_pathSpeed`, constants `DRIVE`): every mode asks for a goal — race:
+  the next gate (`_raceGoal`; the path goes on along a cached gate-to-gate leg, and on passing a gate the rest of the
+  path is kept and the next leg appended, no search); hunt: the target car; gore: the pedestrian; battle royale: the
+  zone waypoint or, by the wall, its centre. A goal that isn't a gate, within 45 m with a straight line of 2.1 m room to
+  it, is driven at directly (a hunter at its target with the lead, as before). New path when the goal moves (fixed:
+  1 m; moving: 3 m + 15% of its distance), the car is 7 m off the path, after an escape, held up by a car, or 30 m
+  before a partial path's end; at most one search per bot per 0.4 s. The point steered at is 7 m + 0.5 s ahead on the
+  path, nearer (0.6 of it, then the next vertex) if the straight line to it lacks room; racers shift it by their lane
+  where that line has room (re-checked every 0.15 s). Speed: brake (15 m/s²) to each corner's speed 5 m before it, the
+  corner speed = `def.corner` (90°) × √(sin 45° / sin(angle/2)), × down to 0.35 under 5 m of room at the corner. The
+  old formula (made for the route's 90° corners) slowed every 23° kink to 59 km/h. Steering off the nose: over 0.6 rad
+  18 m/s, 1 rad and more 10 m/s (was 10 m/s past 0.6 rad: every kink braked hard).
+- **Local avoidance** (`Rival._avoidCars`, `AVOID`): cars and wrecks ahead (2 m past my nose up to 6 m + 1.1 s of
+  speed, within 3 m of the line to the steering point; moving cars only if I close in at 2 m/s or more; not the hunt
+  target; not when the steering point is over 1.2 rad off the nose — it has to turn first): the nearest of ±0.25, 0.5,
+  0.8 rad that is clear and has 10 m of drivable floor (the side taken last time first, for 1 s); none — slow to the
+  blocker's speed but not below 4 m/s, and search again (a still car costs extra). The first version braked to 0 behind
+  a wreck and never counted as stuck: in `wreckSide`, `boxed`, `caged` the bot sat 20 s and was teleported; and with
+  wrecks beside it counted as "ahead" it never pushed into the wall, so the escape didn't know where the obstacle was.
+- **Escape:** the many-point turn is session 1's; `_aroundTrap`'s sideways point is gone: the trap spot goes into
+  `traps` (costs above) and the bot searches again. `_navPoint` (the last reader of `city.roads` outside the route) and
+  `_clearLine` are gone; `_sees` (the 2D sight line) is only for picking pedestrians. Bots no longer use
+  `cornersAhead`/`pointAt` (`race.project` still serves the respawn's course distance and the standings).
+- **`NAV.open` 6 → 3 m** (spawns and waypoints); `?debug=nav` draws every bot's path (magenta, `pathLines`).
+- **Tests:** `frameCost()` (step cost with 19 bots, the bots' share, searches), `waypoints()` (royale waypoints in
+  yards: reached or not), `botBattles()` also reports `stuckNoRam` (the stuck time without ramming the hunt target
+  within 15 m, as the `STUCK` rule counts it); `traps()` sets the goal through `_raceGoal`.
+
+**Measured.** Rows are statistics: the same seed gives a different game, and the sim isn't deterministic between pages.
+The session-2 code was run alongside as a baseline (a git worktree on a second dev server, same tests).
+
+Scripted traps (`traps()`, 5 starts each; "after out" — the longest stay within 6 m of one spot more than 12 m from the
+goal; "end" — distance to the goal at 30 s)
+
+| Trap | Out by itself | Out after, s | Legs back / forward | After out, max s (baseline) | End, m (baseline) |
+| --- | --- | --- | --- | --- | --- |
+| Tree and building corner | 5 / 5 | 4.4–5.5 | 1 / 1 | 1.5 (0.7–12.3) | 4.9–5.3 (1.5–28) |
+| Wreck ahead, wreck beside | 5 / 5 | 1.4–1.6 | 0–1 / 0–1 | 0.7 (0.8–1.1) | 5.5–7.1 (2.4–5.7) |
+| Building ahead, wrecks both sides | 5 / 5 | 3.2–9.4 | 1–5 / 0–4 | 2.9 (2.8–6.2) | 2.9–5.3 (6.2–9.8) |
+| … and a wreck across the tail | 5 / 5 | 6.6–11.5 | 6–8 / 4–6 | 4.7 (0.7–6.8) | 2.7–7.3 (2.7–28.9) |
+| … pinned | 0 / 5 | — | 12–16 / 19–20 | teleported at 20.0 s, 8–9.8 m away, nearest car 6.2 m, 2 m up | |
+| 6.5 m alley | 5 / 5 | 2.9–6.9 | 0–5 / 0–4 | 6.6 in 1 of 5, else ≤ 2.1 (0.3–0.5) | 2.4–6.1 (1.4–8.4) |
+| Teleport by 6 parked cars | — | — | — | spot 12.5–13.7 m, nearest car 6.1–6.8 m, 2 m up, full hull | |
+
+Every trap but `pinned` is left by the bot itself and it reaches the goal (the baseline didn't in 3 of 25: it drove
+into the goal's building elsewhere). One alley start of 30 stays 6.6 s after "out" (turning round inside the alley,
+see Left for later).
+
+Race pace. One racer alone, no hunting (aggr 0, gore 0), 9 gates (a lap and the first gate): **49.3–50.1 s**
+(4 starts), the baseline's route following 50.3–53.4 s — paths cut across plazas where the route kept to the street
+middles. `botLaps()` (7 bots, 25 s, mixed personalities; noisy — runs of the same code differ by up to 5 km/h):
+average speed 53.4–58.5 km/h (5 runs over the session, mean 56.6), the baseline 57.1–61.5 (3 runs); gates passed per
+run 14.2–16.8 (mean 15.6), the baseline 15.2–15.8. So the acceptance's "not below ≈ 58–62 km/h" is met by 2 runs of 5:
+the bots pass as many gates on shorter paths (less distance for the same progress), and a lone racer laps faster.
+
+`botBattles()` (city, seeded games of 120 s; per game)
+
+| | Games | Stuck max, s (games > 10 s) | Without rams | Wrecked | Ped kills | Rams > 4.5 m/s | Shots | Teleports | Back-ups |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Royale, 19 bots | 10 | 9.4 (0) | 7.7 | 18.3 | 65.8 | 63.2 | 154 | 0 | 12.9 |
+| … baseline | 10 | 9.2–11 (0–2) | 10.3 | 18.9 | 53.6–60.7 | 52.8–55.9 | 119–125 | 0 | 11.5–11.7 |
+| Race, 7 bots | 10 | 6.6 (0) | 5.7 | 3.1 | 52.7 | 20.3 | 91.6 | 0 | 6.1 |
+| … baseline | 10 | 7.2–8.1 (0) | 8.1 | 4.0–4.1 | 41.3–42.9 | 19.2–20.1 | 66–76 | 0 | 5.4–7.4 |
+| Royale crew, 19 bots | 5 | 7.2 (0) | 7.2 | 19 | 46 | 22.6 | 195 | 0 | 6.2 |
+| … baseline | 5 | 6 (0) | 5.4 | 19 | 40.8 | 28.6 | 176 | 0 | 8.2 |
+| Race crew, 7 bots | 5 | 4.9 (0) | 4.9 | 5.8 | 45 | 10.8 | 148 | 0 | 4.4 |
+| … baseline | 5 | 5 (0) | 5 | 6 | 47.6 | 10.6 | 138 | 0 | 4.8 |
+
+Kills are up in the classic rows (butchers route through crowds, hunters reach their targets), wrecks the same, no
+teleports. Intermediate versions in the session gave 1–4 games over 10 s per row (bots braking to a standstill behind
+wrecks, scrums); the baseline itself gave 2 of 10 in one royale run.
+
+Battle royale waypoints (`waypoints()`, 5 games, 19 bots): with `NAV.open` 3, 46% of the waypoints (183 of 395) have under 6 m of room (yards, parks, by walls — kept out before); bots reach 62% of them (mean 10.2 s) and 59% of the open ones (10.7 s). The baseline (open ≥ 6 m only)
+reached 48% (mean 12.2 s). Not reached: the bot went hunting, or the zone moved on.
+
+Cost (`frameCost()`, battle royale, 19 bots, 3 × 30 s; `game.step` without rendering). Desktop window, the two codes
+alternated: **1.02 / 1.13 ms against 1.07 / 1.03** (+2%); the bots' share 0.072 / 0.081 ms against 0.051 / 0.045
+(+0.03 ms). Phone-sized 375 × 812 `?q=low` (step and render, one tab, the codes alternated): step 1.39–1.66 against
+1.31–1.49 ms (+8%), of it the bots (think + searches) 0.14–0.18 against 0.08–0.11 ms; the rest is the game played
+differently (more cars alive and fighting: physics +0.02–0.05 ms). With rendering (1.1–1.9 ms) the frame is +3–4%.
+~17 searches a second, ~190 floors each, ~0.05 ms. The machine's speed drifts by ±15% over minutes (the same code
+gave 1.11 and 1.36 ms in two tabs), so only alternated runs compare. An earlier version did 811–1129 floors per
+search: butchers' crowd discount had weakened their heuristic to 0.7 (7–10 thousand floors for 120 m), and many long
+searches hit the 12 000 cap.
+
+**Problems found and fixed during the session**
+
+- Legs grazed trees (the ±0.7 m strip test): room-based legs (above).
+- The route's corner formula braked for every kink: the radius-based one (above). A pure racer went from 71–74 km/h
+  alone (behind the baseline's 85) to a faster lap than the baseline.
+- On passing a gate a fresh search took a different way than the planned continuation, often a sharp turn right at
+  the gate (the car nearly stopped): the path is spliced instead.
+- Paths through block interiors (shorter, slower): the room cost up to 8 m.
+- Braking to 0 behind wrecks (20 s teleports in three traps): crawl at 4 m/s, stuck counted when pushing.
+- Every new search for the same goal could start the other way round a block as the car turned (`caged`: 17 s at an
+  alley mouth): heading cost behind the car, alley cost, ×0.7 on the last path's floors (fixed goals only: for a hunt
+  target the old way leads to where it was — with it on for hunts too, 4 of 25 games had a bot over 10 s).
+- Expensive searches: the heuristic weight by distance, butchers' heuristic not discounted.
+
+**Left for later** (what concerns 3D is in session 4's scope, item 6)
+
+- Turning round in a narrow place: the path may start behind the car in an alley (both ways out cost about the same),
+  and the bot drives into the alley's walls until the many-point turn gets it round (`alley` start 3: 6.6 s).
+  Options: (a) start the many-point turn on purpose when the path starts more than ~2 rad off the nose and the room
+  at the car is under ~3.5 m (cheap, reuses `_startEscape`'s legs; **recommended**); (b) A* over (floor, heading) with
+  the car's turning radius (8× the states, slower searches); (c) a stronger heading cost where room is low.
+- `botBattles()`' `stuckMax` still counts a hunter ramming in a scrum (`stuckNoRam` doesn't): the remaining long
+  stays are mostly scrums (rams went up from ~54 to ~63 per royale).
+- The grid's build time on a real phone is still not measured (no phone here); see session 2's options.
+- Local avoidance looks at cars analytically (centres in a corridor, no shape): a wreck lying across the corridor's
+  edge may be missed. Rapier shape casts (as the escape uses) if it shows.
+- Lanes only shift the steering point; with every racer on the same cached gate legs a jam at a narrow gate is
+  possible (none seen).

@@ -14,7 +14,7 @@ export const NAV = {
   slope: 32, // ° — a floor's normal at most this far from up (the curbs' bevels are ~27°, ramps ≤ 13°)
   clear: 2, // m of free room above a floor (the car is 1.4 m tall)
   inflate: 1.1, // m — the car's half width and a margin: no solid this close to a walkable floor's centre
-  open: 6, // m — "open" floors (spawns, waypoints): no unwalkable floor this close (in the city: streets and squares)
+  open: 3, // m — "open" floors (spawns, waypoints): no unwalkable floor this close (not a gap by a wall or a tree)
 };
 
 // directions to the 8 neighbours: dx, dz (the index into link[] is the direction)

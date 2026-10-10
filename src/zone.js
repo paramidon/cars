@@ -25,8 +25,8 @@ export function navSpot(nav, i, want = null, rnd = Math.random) {
 }
 
 /**
- * An open floor: reachable, with `room` m of walkable floor all round — a street or a square rather than a gap between
- * a wall and a tree or a yard (today's bots steer straight at their waypoints). A map without such room gets less.
+ * An open floor: reachable, with `room` m of walkable floor all round — not a gap between a wall and a tree (a car
+ * parked or a waypoint there would scrape them). A map without such room gets less.
  */
 const OPEN = [NAV.open, NAV.open / 2, 0];
 const open = (nav, i, room) => nav.reachable(i) && nav.roomAt(i) >= room;

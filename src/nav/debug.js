@@ -1,6 +1,7 @@
 /**
  * `?debug=nav`: the nav grid drawn over the map — a small square on every floor, coloured by its kind and layer;
- * unwalkable floors (a solid within NAV.inflate, an edge) dark red, walkable ones cut off from the main area purple.
+ * unwalkable floors (a solid within NAV.inflate, an edge) dark red, walkable ones cut off from the main area purple;
+ * and the bots' paths.
  */
 import * as THREE from 'three';
 
@@ -36,4 +37,27 @@ export function navMesh(nav) {
   mesh.renderOrder = 5;
   mesh.frustumCulled = false;
   return mesh;
+}
+
+/** `?debug=nav`: every bot's current path, a magenta line; update(bots) once a frame. */
+export function pathLines(max = 4096) {
+  const pos = new Float32Array(max * 6);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.LineBasicMaterial({ color: '#ff40ff', depthTest: false, transparent: true, fog: false });
+  const lines = new THREE.LineSegments(geo, mat);
+  lines.name = 'nav-paths';
+  lines.renderOrder = 6;
+  lines.frustumCulled = false;
+  lines.update = (bots) => {
+    let k = 0;
+    for (const b of bots) {
+      const P = b.path;
+      if (!P) continue;
+      for (let i = 0; i + 1 < P.x.length && k < max; i++, k++) pos.set([P.x[i], P.y[i] + 0.4, P.z[i], P.x[i + 1], P.y[i + 1] + 0.4, P.z[i + 1]], k * 6);
+    }
+    geo.setDrawRange(0, k * 2);
+    geo.attributes.position.needsUpdate = true;
+  };
+  return lines;
 }

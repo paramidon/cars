@@ -3,6 +3,8 @@ import { ST } from './pedestrians.js';
 import { CarTag } from './tag.js';
 import { ZONE, spotNear, freeSpotNear } from './zone.js';
 import { VEH } from './physics/vehicle.js';
+import { RACE } from './race.js';
+import { PATH, projectOn, pointOn, joinPaths, polyline } from './nav/path.js';
 import { clamp, lerp, rand } from './utils.js';
 
 /**
@@ -114,12 +116,37 @@ const ESCAPE = {
   legs: 6, // legs of a many-point turn at most
   look: 8, // m the casts look
   flip: 3, // stuck at the same spot this many times on one side: the other side
-  trap: 10, // s the bot steers around the spot it got stuck at
-  near: 4.5, // m — a line to the target passing this close to the trap goes around it…
-  around: 7, // m — … through a point this far to the side of it…
-  out: 2.5, // m — … and this far out from the obstacle, until the bot is within `reach` m of that point
-  reach: 5,
+  probe: [7, 2.5], // m — a side is picked only if the floor this far along the obstacle and this far out is free
+  trap: 10, // s its paths keep off the spot it got stuck at (PATH.trap, PATH.trapCost)
   again: 6, // m — stuck again this close to the last trap: try its other side
+};
+/** Driving a path (NAV_PLAN session 3). */
+const DRIVE = {
+  look: [7, 0.5], // m — the point steered at is look[0] + look[1] × speed (m/s) ahead along the path
+  stray: 7, // m off the path: a new one
+  replan: 0.4, // s at least between two searches of one bot
+  moving: [3, 0.15], // a moving goal (a car, a pedestrian) that has moved moving[0] + moving[1] × its distance from where the path ends: a new path
+  direct: 45, // m — a goal (not a gate) this close with a straight drivable strip to it: straight at it, no path
+  recheck: 0.15, // s between looks at that strip (and at the line to the point steered at on a path)
+  partial: 30, // m — a path that stops short of its goal (PATH.max) is searched again this far from its end
+  decel: 15, // m/s² — braking before a corner of the path…
+  margin: 5, // m — … to be down to the corner's speed this far before it
+  ahead: 100, // m of path looked at for corners
+  narrow: [1.5, 5, 0.35], // a corner with room (NavGrid.roomAt) narrow[1] m or more: its full speed; less — down to narrow[2] of it at narrow[0]
+  sharp: [0.6, 1, 18, 10], // rad off the nose → m/s: steering sharp[0] rad off, at most sharp[2] m/s; sharp[1] and more — sharp[3]
+};
+/** Not driving into cars and wrecks, which the grid doesn't know (NAV_PLAN session 3). */
+const AVOID = {
+  look: [6, 1.1], // m ahead: look[0] + look[1] × speed (m/s)
+  width: 3, // m — a car whose centre is this close to the line I'd drive, and `front` m or more ahead (not beside me), is in the way…
+  front: 2,
+  closing: 2, // m/s — … unless it's moving and I close in on it slower than this (it drives ahead of me); wrecks always
+  turns: [0.25, 0.5, 0.8], // rad off the way to the goal tried, each side (the side taken last time first, for `keep` s)
+  keep: 1,
+  free: 10, // m of drivable floor the turned way needs
+  behind: 1.2, // rad — steering for a point this far off the nose or more: it has to turn first, nothing to avoid yet
+  crawl: 4, // m/s — no way past: down to the blocker's speed, but not below this (it nudges a wreck or a stuck car
+  // aside, or gets stuck against it and turns out of it, rather than waiting behind it for good)
 };
 const at = (pair, k) => lerp(pair[0], pair[1], k);
 // пара диапазонов [[от, до] при 0, [от, до] при 1] → диапазон при k
@@ -187,20 +214,21 @@ export class Rival {
     return !!this.zone && this.zone.unsafe(x, z, ahead, ZONE_SAFE.margin);
   }
 
-  /** Королевская битва: кататься по улицам внутри зоны, ближе к её середине; новая точка — когда доехал. */
+  /**
+   * Battle royale: where to drive — a spot near the zone's middle (a new one once there), or, by the wall or outside,
+   * the middle itself. { x, y, z }
+   */
   _roam() {
     const car = this.car, z = this.zone;
     if (this._unsafe(car.x, car.z, ZONE_SAFE.flee)) {
-      // у стены или уже снаружи — прямиком к центру (за домами — по улицам)
-      const c = { x: z.cx, z: z.cz };
       this.wp = null;
-      return this._clearLine(c.x, c.z) ? c : this._navPoint(c);
+      return { x: z.cx, y: car.y, z: z.cz };
     }
     const wp = this.wp;
     if (!wp || Math.hypot(wp.x - car.x, wp.z - car.z) < 10 || Math.hypot(wp.x - z.cx, wp.z - z.cz) > z.radius * 0.75) {
       this.wp = spotNear(this.city.nav, z.cx, z.cz, Math.max(12, z.radius * 0.6));
     }
-    return this._clearLine(this.wp.x, this.wp.z) ? this.wp : this._navPoint(this.wp);
+    return this.wp;
   }
 
   get name() {
@@ -230,8 +258,24 @@ export class Rival {
     this.reverseT = 0;
     this.stuckAt = null; // where the bot has been for stuckAt.t s (STUCK)
     this.esc = null; // getting out of a trap: { back, t, ox, oz, legs, x, z } — a leg (back or forward) of a turn to the way out, from (x, z)
-    this.trap = null; // where it got stuck: { x, z, nx, nz, sx, sz, t, tries } — steered around for ESCAPE.trap s
-    this.lastTrap = null; // … the last one, also once passed: stuck there again — the other side
+    this.traps = []; // where it got stuck lately: { x, z, t } — its paths keep off them for t more s
+    this.lastTrap = null; // the last one: { x, z, sx, sz, tries } — stuck there again: the same side, then the other
+    this.path = null; // the path it drives (nav/path.js polyline + { kind, gx, gz, gate }), or null
+    this.pathK = 0; // the leg of it the car is on…
+    this.pathS = 0; // … and how far along it
+    this.onPath = false; // steering along the path this frame (else straight at the goal)
+    this.want = null; // the goal of the next search: { kind, x, y, z, gate }
+    this.replan = false; // a new path wanted whatever the goal (after an escape)
+    this.replanT = 0; // s before it may search again
+    this.gi = 0; // the gate it drives to
+    this.lookT = 0; // _pursue: s before it looks at the line to its look-ahead point again…
+    this.lookK = 0; // … which of its three distances fits…
+    this.inLane = false; // … and whether its lane does
+    this.direct = false; // the goal is close and the way to it open: straight at it (looked at every DRIVE.recheck s)
+    this.directT = 0;
+    this.directKind = null;
+    this.avSide = 0; // the side it went round a car on last (AVOID.keep s)
+    this.avSideT = 0;
     this.teleports = 0;
     this.backT = 0; // отъезд назад для нового тарана
     this.chargeT = 0; // пока > 0, новый отъезд не начинаем — даём разогнаться
@@ -265,7 +309,8 @@ export class Rival {
     return { ang: Math.atan2(dx * -c + dz * s, dx * s + dz * c), d: Math.hypot(dx, dz) };
   }
 
-  _clearLine(x, z) {
+  /** A building, a wall, a statue or a pump between the car and (x, z) hides it (seeing, not driving). */
+  _sees(x, z) {
     const car = this.car;
     const d = Math.hypot(x - car.x, z - car.z) || 1;
     return !this.city.world.raycast(car.x, car.z, (x - car.x) / d, (z - car.z) / d, d, losFilter);
@@ -356,7 +401,7 @@ export class Rival {
       if (d > range || Math.abs(ang) > cone) continue;
       const lying = p.state === ST.DOWN || p.state === ST.GETUP;
       const sc = d * (lying ? 0.6 : 1) * (1 + Math.abs(ang));
-      if (sc >= bs || !this._clearLine(p.x, p.z)) continue;
+      if (sc >= bs || !this._sees(p.x, p.z)) continue;
       bs = sc;
       best = p;
     }
@@ -402,32 +447,6 @@ export class Rival {
     this.preyZ = p.z;
   }
 
-  /** Цель за домами: ехать по улицам к перекрёстку, который ближе к цели. */
-  _navPoint(T) {
-    const car = this.car, R = this.city.roads, N = R.length - 1;
-    const cell = R[1] - R[0];
-    const fx = (car.x - R[0]) / cell, fz = (car.z - R[0]) / cell;
-    const ix = Math.max(0, Math.min(N, Math.round(fx))), iz = Math.max(0, Math.min(N, Math.round(fz)));
-    const onV = Math.abs(car.x - R[ix]) < 8, onH = Math.abs(car.z - R[iz]) < 8;
-    const cl = (i) => Math.max(0, Math.min(N, i));
-    let cands;
-    if (onV && onH) cands = [[ix + 1, iz], [ix - 1, iz], [ix, iz + 1], [ix, iz - 1]]; // на перекрёстке
-    else if (onV) cands = [[ix, Math.floor(fz)], [ix, Math.ceil(fz)]]; // на улице вдоль Z
-    else if (onH) cands = [[Math.floor(fx), iz], [Math.ceil(fx), iz]]; // на улице вдоль X
-    else cands = [[ix, iz]];
-    let best = null, bs = Infinity;
-    for (const [i, j] of cands) {
-      const nx = R[cl(i)], nz = R[cl(j)];
-      if (Math.hypot(nx - car.x, nz - car.z) < 6) continue;
-      const sc = Math.hypot(nx - T.x, nz - T.z);
-      if (sc < bs) {
-        bs = sc;
-        best = { x: nx, z: nz };
-      }
-    }
-    return best || { x: R[ix], z: R[iz] };
-  }
-
   /** Стоит ли стрелять по машине: кто-то почти точно по курсу, в досягаемости и не за стеной. */
   _shouldFire(cars, shellSpeed) {
     const car = this.car, a = this.def.aggr;
@@ -470,7 +489,7 @@ export class Rival {
    * ctx: { cars, peds, running, raceTime, playerProgress, myProgress, shellSpeed }
    */
   think(dt, ctx) {
-    const car = this.car, inp = this.inp, race = this.race, def = this.def;
+    const car = this.car, inp = this.inp, def = this.def;
     this.cars = ctx.cars;
     inp.fire = false;
     inp.handbrake = false;
@@ -482,10 +501,14 @@ export class Rival {
       return inp;
     }
 
-    const pr = race.project(car.x, car.z);
     const v = car.speed;
     const finished = this.tr.finished;
     let tx, tz, maxV;
+    this.dt = dt;
+    this.replanT -= dt;
+    this.avSideT -= dt;
+    for (const t of this.traps) t.t -= dt;
+    if (this.traps.length && this.traps.some((t) => t.t <= 0)) this.traps = this.traps.filter((t) => t.t > 0);
 
     // битва: у стены или снаружи — не до охоты, сначала спастись
     const flee = this._unsafe(car.x, car.z, ZONE_SAFE.flee);
@@ -498,33 +521,23 @@ export class Rival {
       if (this.mode !== 'hunt') this._goreDecision(dt, finished ? null : ctx.peds);
     }
 
+    // where to: straight at the goal if it's close and the way is open, else along a path (_go)
+    let p;
     if (this.mode === 'hunt') {
-      // погоня: напрямую с упреждением, а если цель за домами — по улицам
+      // the target car, aimed at with a lead when going straight at it
       const T = this.target;
       const d = Math.hypot(T.x - car.x, T.z - car.z) || 1;
       const lead = Math.min(1.2, d / ctx.shellSpeed);
-      const lx = T.x + T.vx * lead, lz = T.z + T.vz * lead;
-      if (this._clearLine(lx, lz)) {
-        tx = lx;
-        tz = lz;
-      } else {
-        const n = this._navPoint(T);
-        tx = n.x;
-        tz = n.z;
-      }
+      p = this._go('hunt', T.x, T.y, T.z, v, true, null, T.x + T.vx * lead, T.z + T.vz * lead);
       maxV = TOP_SPEED * def.speed;
     } else if (this.mode === 'gore') {
-      // за пешеходом: прямо на него, если за углом — бросаем (выбор заново)
-      const p = this.prey;
-      tx = p.x;
-      tz = p.z;
+      const q = this.prey;
+      p = this._go('gore', q.x, q.y ?? car.y, q.z, v, true);
       maxV = TOP_SPEED * def.speed;
-      if (!this._clearLine(tx, tz)) this.preyT += dt * 3;
     } else if (this.zone) {
       // королевская битва: трассы нет — катаемся внутри зоны
-      const p = this._roam();
-      tx = p.x;
-      tz = p.z;
+      const q = this._roam();
+      p = this._go('zone', q.x, q.y ?? car.y, q.z, v, false);
       maxV = TOP_SPEED * def.speed * (flee ? 1 : 0.8);
     } else {
       // гонка по трассе; гонщики «на резинке»: отставший прибавляет, убежавший сбрасывает
@@ -534,39 +547,36 @@ export class Rival {
         this.boost += (boostT - this.boost) * Math.min(1, dt * 0.5);
       } else this.boost = 0.92;
       maxV = TOP_SPEED * def.speed * this.boost * (finished ? 0.55 : 1);
-      const p = race.pointAt(pr.s + 9 + v * 0.55, def.lane);
-      tx = p.x;
-      tz = p.z;
+      const g = this._raceGoal();
+      p = this._go('race', g.x, g.y, g.z, v, false, g.gate);
     }
+    tx = p.x;
+    tz = p.z;
 
-    // the spot it just got stuck at: around it, not into it again
-    if (this.trap) {
-      const p = this._aroundTrap(dt, tx, tz);
-      if (p) {
-        tx = p.x;
-        tz = p.z;
+    // speed: slow down before the path's corners in time
+    let target = this.onPath ? this._pathSpeed(maxV) : maxV;
+    // cars and wrecks in the way (the grid doesn't know them): round them, or slow down behind
+    const av = this.esc || this.backT > 0 ? null : this._avoidCars(tx, tz, v);
+    if (av) {
+      tx = av.x;
+      tz = av.z;
+      if (av.slow != null) {
+        target = Math.min(target, av.slow);
+        if (v < AVOID.crawl + 1) this.replan = true; // held up: a way round (a car standing still costs extra, PATH.still)
       }
     }
 
     // руль: угол до цели
     const { ang } = this._bearing(tx, tz);
     let steer = clamp(ang * 2.2, -1, 1);
-
-    // скорость: перед поворотами трассы тормозим заранее; в крутом развороте — медленно
-    let target = maxV;
-    if (this.mode === 'race' && !this.zone) {
-      for (const cn of race.cornersAhead(pr.s, 2)) {
-        if (cn.angle < 0.3) continue;
-        const vc = def.corner * (1.5 - 0.5 * Math.min(1, cn.angle / (Math.PI / 2)));
-        target = Math.min(target, Math.sqrt(vc * vc + 2 * 15 * Math.max(0, cn.dist - 5)));
-      }
-    }
-    if (Math.abs(ang) > 0.6) target = Math.min(target, 10);
+    // facing away from where it steers: slow (DRIVE.sharp: 18 m/s at 0.6 rad off, down to 10 at 1 rad and more)
+    const off = Math.abs(ang);
+    if (off > DRIVE.sharp[0]) target = Math.min(target, lerp(DRIVE.sharp[2], DRIVE.sharp[3], clamp((off - DRIVE.sharp[0]) / (DRIVE.sharp[1] - DRIVE.sharp[0]), 0, 1)));
     let throttle = v < target - 0.5 ? 1 : 0;
     let brake = v > target + 1.5 ? 1 : 0;
 
-    // stuck: turn out of it (_startEscape: back while there is room behind, forward when that runs out…), then steer
-    // around that spot for a while (_aroundTrap); no way out in STUCK.time s — a free spot nearby (respawn)
+    // stuck: turn out of it (_startEscape: back while there is room behind, forward when that runs out…), then a new
+    // path that keeps off that spot for a while; no way out in STUCK.time s — a free spot nearby (respawn)
     if (v < 1.5 && throttle > 0 && !this.esc) this.stuckT += dt;
     else this.stuckT = Math.max(0, this.stuckT - dt * 2);
     if (this.stuckT > ESCAPE.stuck && !this.esc) {
@@ -664,6 +674,7 @@ export class Rival {
    * Stuck pushing on towards (tx, tz): find what it hit (the walls it touches, cars against it; nothing — straight
    * ahead), pick the side to get past it (towards the target and not into a building; stuck at the same spot again
    * and again — the other side every ESCAPE.flip tries) and turn towards there: back first if there's room behind.
+   * The spot is a trap for ESCAPE.trap s: the new path keeps off it.
    */
   _startEscape(tx, tz) {
     const car = this.car;
@@ -690,9 +701,9 @@ export class Rival {
     let best = null, bs = -Infinity;
     for (const k of [1, -1]) {
       const sx = -nz * k, sz = nx * k; // along the obstacle, one way or the other
-      const ax = px + sx * ESCAPE.around + nx * ESCAPE.out, az = pz + sz * ESCAPE.around + nz * ESCAPE.out;
+      const ax = px + sx * ESCAPE.probe[0] + nx * ESCAPE.probe[1], az = pz + sz * ESCAPE.probe[0] + nz * ESCAPE.probe[1];
       let sc = sx * (tx - car.x) + sz * (tz - car.z);
-      if (!this._clearLine(ax, az)) sc -= 1000;
+      if (!this.city.nav.isFree(ax, car.y, az)) sc -= 1000;
       // the side tried last time: kept for a few tries, then the other one
       if (old && old.sx * sx + old.sz * sz > 0) sc += tries % ESCAPE.flip ? 2000 : -2000;
       if (sc > bs) {
@@ -700,7 +711,14 @@ export class Rival {
         best = { sx, sz };
       }
     }
-    this.trap = this.lastTrap = { x: px, z: pz, nx, nz, sx: best.sx, sz: best.sz, t: ESCAPE.trap, tries };
+    this.lastTrap = { x: px, z: pz, sx: best.sx, sz: best.sz, tries };
+    // ramming a target close by is not a trap
+    if (!(this.mode === 'hunt' && Math.hypot(this.target.x - car.x, this.target.z - car.z) < STUCK.ram)) {
+      const near = this.traps.find((t) => Math.hypot(t.x - px, t.z - pz) < ESCAPE.again);
+      if (near) near.t = ESCAPE.trap;
+      else this.traps.push({ x: px, z: pz, t: ESCAPE.trap });
+      this.replan = true;
+    }
     // the way out: along the obstacle and away from it
     let ox = best.sx + nx * 0.8, oz = best.sz + nz * 0.8;
     l = Math.hypot(ox, oz);
@@ -714,29 +732,210 @@ export class Rival {
   _endEscape() {
     this.esc = null;
     this.stuckT = 0.6; // still stuck — the next try comes sooner
+    this.replan = true; // from where it got to, keeping off the trap
   }
 
-  /** Heading for (tx, tz) past the trap's spot: a point to its side instead; null — the line doesn't pass near it. */
-  _aroundTrap(dt, tx, tz) {
-    const T = this.trap, car = this.car;
-    T.t -= dt;
-    if (T.t <= 0) {
-      this.trap = null;
-      return null;
+  // ------------------------------------------------------------------ paths (NAV_PLAN session 3)
+
+  /**
+   * Where to steer for the goal (gx, gy, gz) of this kind ('race', 'hunt', 'gore', 'zone'): a point along the path to
+   * it, asking for a new path when there's none, the goal has moved (moving: by DRIVE.moving, else by 1 m), the gate
+   * changed or the car has left it (searched in Game's frame budget: meanwhile the old path or a straight line). A goal
+   * that isn't a gate, within DRIVE.direct with a straight drivable strip to it: straight at (dx, dz) — the target car
+   * with a lead, the pedestrian. { x, z }
+   */
+  _go(kind, gx, gy, gz, v, moving, gate = null, dx = gx, dz = gz) {
+    const car = this.car, paths = this.city.paths;
+    this.onPath = false;
+    // (looked at every DRIVE.recheck s: a long line costs a hundred floor lookups)
+    this.directT -= this.dt;
+    if (this.directT <= 0 || this.directKind !== kind) {
+      this.directT = DRIVE.recheck;
+      this.directKind = kind;
+      this.direct = kind !== 'race' && Math.hypot(dx - car.x, dz - car.z) < DRIVE.direct && paths.lineFree(car.x, car.y, car.z, dx, dz, PATH.narrow, 1.5);
     }
-    // ramming a target close by is not a trap
-    if (this.mode === 'hunt' && Math.hypot(this.target.x - car.x, this.target.z - car.z) < STUCK.ram) return null;
-    const dx = tx - car.x, dz = tz - car.z, L = Math.hypot(dx, dz) || 1;
-    const rx = T.x - car.x, rz = T.z - car.z;
-    const along = (rx * dx + rz * dz) / L;
-    if (along < 0 || along > L + ESCAPE.near || Math.abs(rx * dz - rz * dx) / L > ESCAPE.near) return null;
-    const ax = T.x + T.sx * ESCAPE.around + T.nx * ESCAPE.out, az = T.z + T.sz * ESCAPE.around + T.nz * ESCAPE.out;
-    // got there (or it's inside the turning circle: it would orbit it) — on to the target
-    if (Math.hypot(ax - car.x, az - car.z) < ESCAPE.reach) {
-      this.trap = null;
-      return null;
+    if (this.direct) return { x: dx, z: dz };
+    let P = this.path;
+    // a gate passed: the path already goes on to the next one — keep driving it, with the leg after that added
+    if (P && kind === 'race' && gate != null && P.gate === (gate + this.race.cps.length - 1) % this.race.cps.length && !this.replan) {
+      const k = Math.min(this.pathK + 1, P.x.length - 1);
+      const rest = polyline([car.x, ...P.x.slice(k)], [car.y, ...P.y.slice(k)], [car.z, ...P.z.slice(k)]);
+      const g = this.race.cps[gate];
+      P = this.path = Object.assign(joinPaths(rest, this._gateLeg(paths, gate)), { kind, gx: g.x, gz: g.z, gate });
+      this.pathK = 0;
+      this.lookT = 0;
     }
-    return { x: ax, z: az };
+    let need = this.replan || !P || P.kind !== kind || P.gate !== gate;
+    if (!need) {
+      const tol = moving ? DRIVE.moving[0] + DRIVE.moving[1] * Math.hypot(gx - car.x, gz - car.z) : 1;
+      need = Math.hypot(P.gx - gx, P.gz - gz) > tol;
+    }
+    const q = P ? this._pursue(v, kind === 'race') : null;
+    if (!q || (P.partial && P.length - this.pathS < DRIVE.partial)) need = true;
+    if (need && this.replanT <= 0) {
+      this.want = { kind, x: gx, y: gy, z: gz, gate };
+      paths.ask(this);
+    }
+    if (!q) return { x: dx, z: dz };
+    this.onPath = true;
+    return q;
+  }
+
+  /** The search (NavPaths.run calls it): a path from the car to `want`, then on to the next gate in a race. */
+  _plan(paths) {
+    const w = this.want, car = this.car;
+    this.replanT = DRIVE.replan;
+    this.replan = false;
+    if (!w || car.wrecked) return;
+    const a = paths.floorAt(car.x, car.y, car.z, 6, car.yaw);
+    const b = paths.floorAt(w.x, w.y, w.z, 10);
+    // the same fixed goal (a gate, a waypoint) as the path it drives: keep to that way unless another is clearly better
+    // (not for a car or a pedestrian: the old way leads to where they were)
+    const old = this.path, same = old?.cells && old.kind === w.kind && (w.kind === 'race' || w.kind === 'zone') && Math.hypot(old.gx - w.x, old.gz - w.z) < 1;
+    const cells = paths.find(a, b, {
+      traps: this.traps.length ? this.traps : null, gore: this.def.gore, car: { x: car.x, z: car.z, yaw: car.yaw, v: car.vF }, prefer: same ? old.cells : null,
+    });
+    if (!cells) {
+      this.path = null;
+      return;
+    }
+    let P = paths.smooth(cells, car.x, car.y, car.z);
+    // past the gate the way goes on to the next one: the corner after the gate is braked for in time
+    if (w.gate != null) P = joinPaths(P, this._gateLeg(paths, w.gate));
+    // (a search that stopped short leads towards the goal: searched again near its end)
+    this.path = Object.assign(P, { kind: w.kind, gx: w.x, gz: w.z, gate: w.gate, partial: paths.capped, cells });
+    this.pathK = 0;
+    this.pathS = 0;
+    this.lookT = 0;
+  }
+
+  /** The way from gate gi to the next one (found once per map, without wrecks). */
+  _gateLeg(paths, gi) {
+    const cps = this.race.cps, A = cps[gi], B = cps[(gi + 1) % cps.length];
+    const key = `${A.x},${A.z}>${B.x},${B.z}`;
+    let leg = paths.cache.get(key);
+    if (!leg) {
+      const cells = paths.find(paths.floorAt(A.x, 0, A.z, 10), paths.floorAt(B.x, 0, B.z, 10), { wrecks: false });
+      leg = cells ? paths.smooth(cells) : polyline([A.x], [0], [A.z]);
+      paths.cache.set(key, leg);
+    }
+    return leg;
+  }
+
+  /** The gate to drive to: the next one; after the finish, round the course again. { x, y, z, gate } */
+  _raceGoal() {
+    const cps = this.race.cps, car = this.car;
+    if (!this.tr.finished) this.gi = this.tr.next;
+    else if (Math.hypot(cps[this.gi].x - car.x, cps[this.gi].z - car.z) < RACE.radius) this.gi = (this.gi + 1) % cps.length;
+    const cp = cps[this.gi];
+    return { x: cp.x, y: 0, z: cp.z, gate: this.gi };
+  }
+
+  /**
+   * The point to steer at on the path: DRIVE.look ahead of the car's place on it, nearer if the straight line to it
+   * isn't drivable (it would cut a corner through a wall), shifted by the bot's lane in a race where there's room.
+   * null — the car is off the path by more than DRIVE.stray.
+   */
+  _pursue(v, lane) {
+    const P = this.path, car = this.car, paths = this.city.paths;
+    const pr = projectOn(P, car.x, car.z, this.pathK);
+    if (pr.d > DRIVE.stray) return null;
+    this.pathK = pr.k;
+    this.pathS = pr.s;
+    const look = DRIVE.look[0] + DRIVE.look[1] * v, vs = P.s[Math.min(pr.k + 1, P.s.length - 1)] - pr.s;
+    const L = lane ? this.def.lane : 0;
+    // which look-ahead (and whether the lane fits) is looked at every DRIVE.recheck s, kept in between
+    this.lookT -= this.dt;
+    if (this.lookT > 0) {
+      const q = pointOn(P, pr.s + (this.lookK === 2 ? Math.min(look * 0.6, Math.max(2, vs)) : look * (this.lookK ? 0.6 : 1)));
+      return this.inLane && L ? { x: q.x - q.dz * L, z: q.z + q.dx * L } : q;
+    }
+    this.lookT = DRIVE.recheck;
+    let q = null;
+    for (this.lookK = 0; this.lookK < 3; this.lookK++) {
+      q = pointOn(P, pr.s + (this.lookK === 2 ? Math.min(look * 0.6, Math.max(2, vs)) : look * (this.lookK ? 0.6 : 1)));
+      if (paths.lineFree(car.x, car.y, car.z, q.x, q.z, PATH.narrow, 1.5)) break;
+    }
+    this.lookK = Math.min(this.lookK, 2);
+    this.inLane = false;
+    if (L) {
+      const lx = q.x - q.dz * L, lz = q.z + q.dx * L;
+      if (paths.lineFree(car.x, car.y, car.z, lx, lz, PATH.narrow, 1.5)) {
+        this.inLane = true;
+        return { x: lx, z: lz };
+      }
+    }
+    return q;
+  }
+
+  /**
+   * The top speed (≤ maxV) that brakes in time for every corner of the path within DRIVE.ahead; slower where the corner
+   * is narrow (DRIVE.narrow: less room to swing wide).
+   */
+  _pathSpeed(maxV) {
+    const P = this.path, corner = this.def.corner, nav = this.city.nav, N = DRIVE.narrow;
+    let target = maxV;
+    for (const cn of P.corners) {
+      const dist = cn.s - this.pathS;
+      if (dist < -3) continue;
+      if (dist > DRIVE.ahead) break;
+      // def.corner is the speed for 90°; the radius a turn of the same chord allows grows as 1 / sin(angle / 2)
+      if (cn.room == null) {
+        const i = nav.cellAt(P.x[cn.k], P.y[cn.k] + 0.5, P.z[cn.k]);
+        cn.room = i >= 0 ? nav.roomAt(i) : N[1];
+      }
+      const vc = corner * Math.sqrt(Math.SQRT1_2 / Math.sin(Math.min(cn.angle, Math.PI) / 2)) * clamp((cn.room - N[0]) / (N[1] - N[0]), N[2], 1);
+      target = Math.min(target, Math.sqrt(vc * vc + 2 * DRIVE.decel * Math.max(0, dist - DRIVE.margin)));
+    }
+    return target;
+  }
+
+  /**
+   * A car or a wreck in the way to (tx, tz) (within AVOID.look, not a car I'm hunting, not one driving ahead of me as
+   * fast): the nearest heading off that way, AVOID.turns each side, that is clear of cars and has AVOID.free m of
+   * drivable floor → { x, z } a point that way; none — { x: tx, z: tz, slow } (slow down to the blocker's speed, but
+   * not below AVOID.crawl).
+   * null — nothing in the way.
+   */
+  _avoidCars(tx, tz, v) {
+    const car = this.car, look = AVOID.look[0] + AVOID.look[1] * v;
+    if (Math.abs(this._bearing(tx, tz).ang) > AVOID.behind) return null;
+    const near = (this._near ??= []);
+    near.length = 0;
+    for (const o of this.cars ?? []) {
+      if (o === car || (this.mode === 'hunt' && o === this.target)) continue;
+      const dx = o.x - car.x, dz = o.z - car.z;
+      if (dx * dx + dz * dz < (look + 3) ** 2 && Math.abs(o.y - car.y) < 3) near.push(o);
+    }
+    if (!near.length) return null;
+    const blocker = (h) => {
+      const hx = Math.sin(h), hz = Math.cos(h);
+      for (const o of near) {
+        const ox = o.x - car.x, oz = o.z - car.z, along = ox * hx + oz * hz;
+        if (along < AVOID.front || along > look || Math.abs(ox * hz - oz * hx) > AVOID.width) continue;
+        if (!o.wrecked && v - (o.vx * hx + o.vz * hz) < AVOID.closing) continue;
+        return o;
+      }
+      return null;
+    };
+    const a0 = Math.atan2(tx - car.x, tz - car.z);
+    const o = blocker(a0);
+    if (!o) return null;
+    // a heading a0 − side × turn: side 1 — to the right; first away from the blocker (or the side taken just before)
+    const right = (o.x - car.x) * -Math.cos(a0) + (o.z - car.z) * Math.sin(a0) > 0;
+    const first = this.avSideT > 0 ? this.avSide : right ? -1 : 1;
+    for (const turn of AVOID.turns) {
+      for (const side of [first, -first]) {
+        const h = a0 - side * turn;
+        if (blocker(h)) continue;
+        const hx = Math.sin(h), hz = Math.cos(h);
+        if (!this.city.paths.lineFree(car.x, car.y, car.z, car.x + hx * AVOID.free, car.z + hz * AVOID.free, PATH.narrow, 1.5)) continue;
+        this.avSide = side;
+        this.avSideT = AVOID.keep;
+        return { x: car.x + hx * 12, z: car.z + hz * 12 };
+      }
+    }
+    return { x: tx, z: tz, slow: Math.max(AVOID.crawl, o.vx * Math.sin(a0) + o.vz * Math.cos(a0)) };
   }
 
   /** (x, z) is in human car h's view: ahead of it (or close), not far, not behind a building. */
@@ -787,7 +986,9 @@ export class Rival {
     this.reverseT = 0;
     this.stuckAt = null;
     this.esc = null;
-    this.trap = this.lastTrap = null;
+    this.traps = [];
+    this.lastTrap = null;
+    this.path = null;
     this.mode = 'race';
     this.target = null;
     this.prey = null;

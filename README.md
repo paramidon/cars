@@ -12,7 +12,7 @@ lose by wrecking your own car or running out of time.
 
 - **Race** — 3 laps through checkpoints, as described above.
 - **Battle royale** — all cars are scattered around the city (at least 45 m apart, on open spots of the bots' nav grid —
-  streets and squares, heading along them), every man for himself.
+  3 m of drivable floor all round, heading along the longest free line), every man for himself.
   There is no track and no timer; instead there is a red cylindrical zone visible from anywhere in the city (and on the minimap). Its center is a random point in the city, but at most 0.62 of the map's half width from its middle (in the city: at least one block away from the wall — `ZONE.centerIn`) and not inside a building: on a floor of the nav grid that can be driven to from the rest of the map (a road, sidewalk, plaza or courtyard, not a closed yard) with nothing solid within 4 m (`ZONE.centerFree`). After 5 s it
   starts to shrink and collapses to a point in about 2 minutes; outside it the car's hull melts — 2.5 per second at first,
   up to 8 at the end. The last survivor wins, or whoever first runs down 50 pedestrians. In the battle, bots cruise between open spots of the nav grid
@@ -44,13 +44,34 @@ lose by wrecking your own car or running out of time.
   Racers are rubber-banded: if they fall far behind they ease off a little, if they get ahead they press a little. For the first ~10 s
   everyone drives together. So that two cars don't circle forever firing and missing, hunting has patience: every hit resets it,
   and without hits the bot gives up the victim after a few seconds and follows the track for a while (if the victim is hunting
-  it back, patience runs out faster). Everyone runs over pedestrians (it repairs their hull too). A bot stuck pushing on
+  it back, patience runs out faster). Everyone runs over pedestrians (it repairs their hull too).
+
+  Bots drive along paths on the nav grid (`src/nav/path.js`, `NAV_PLAN.md`): A* over the walkable floors, where a metre
+  costs more near walls, trees and poles (up to 4× right by them — a fast car needs room), up to 8× in a gap narrower
+  than 3 m (an alley a car turns into only in several goes), +6 within 4 m of a wreck or of a car standing still for 2 s
+  (a jam), up to half less through a crowd for
+  a butcher (`gore` 1), and more behind a moving car within 8 m, so a path doesn't start with a U-turn; a new path to
+  the same gate or waypoint pays 0.7 of the cost on the last one's floors, so it doesn't flip between two ways round a block as the
+  car turns. Sidewalks cost the same as roads. The floor path is pulled into straight legs with 3 m of room along them (2.1 m in an alley, where
+  there's no more); the bot steers at a point 7 m + 0.5 s of its speed ahead on it — nearer if the straight line there
+  would cut through a wall — and brakes in time for the path's corners: its personality's corner speed (`corner`, for
+  90°) grows as 1/√sin(angle/2) for gentler turns, and drops to 0.35 of that where the corner has less than 5 m of
+  room (into an alley). In a race it drives to the next gate with the way on to the gate
+  after it already planned (and racers keep their lanes where there's room); a hunter, a butcher or a survivor whose
+  goal (the car, the pedestrian, the waypoint) is within 45 m with a straight drivable line to it goes straight at it.
+  Searches run from a queue (once a frame's searches have looked at 3000 floors, the rest wait for the next frame); a bot
+  gets a new path when its goal moves, when it is 7 m off its path, after an escape or when it's held up by a car. Cars and wrecks the grid doesn't know: one in the way (ahead within 6 m + 1.1 s of the
+  speed, its centre within 3 m of the line; a moving car only if the bot closes in on it at 2 m/s or more) is passed
+  0.25, 0.5 or 0.8 rad to one side where the grid has 10 m of room; with no way past, the bot slows down to its speed,
+  but not below 4 m/s — it nudges a wreck aside or gets stuck against it and out as below, rather than waiting behind it
+  for good. A bot steering more than 0.6 rad off its nose slows to 18 m/s, at 1 rad and more to 10 m/s. A hunter rams
+  its target, never avoids it. A bot stuck pushing on
   (under 1.5 m/s for 1.4 s) gets itself out: it looks behind (a cast of its box against walls and cars) and, if there is
   at least 1 m of room, backs up, the nose swinging away from what it hit towards the side that leads to its target;
   with no room behind it pulls forward instead, and when that way runs out too it switches — a many-point turn of up to
   6 legs, each until there is 0.4 m left (plus 0.25 s of its speed) or it hasn't moved 0.3 m in 1 s, 3 s pass or the
-  nose points the way out; while cars or a wall are along its sides and there are 2 m that way it goes straight first. Then for 10 s it steers through a point 7 m to the side
-  of that spot instead of driving into it again (stuck there again 3 times, it tries the other side). Only a bot that
+  nose points the way out; while cars or a wall are along its sides and there are 2 m that way it goes straight first. Then it takes a new path
+  that keeps off that spot for 10 s (a metre within 5 m of it costs +10; stuck there again 3 times, it turns out to the other side). Only a bot that
   hasn't got more than 8 m away from one spot for 20 s (ramming a target within 15 m doesn't count) is put on the
   nearest free floor of the nav grid 8–30 m away (no solid within 2.8 m, 1.5 m of walkable floor all round, no car
   within 6 m on its level; out of the players' view if it can, inside the zone in battle royale, not past its next gate
@@ -223,14 +244,16 @@ the arcade handling, damage, tripping and self-righting. How it was built and me
   cylinder test above the floor, so curbs and ramps under it don't count, and breakable props never do). The biggest
   connected set of walkable floors is where cars can go; each floor also keeps its kind (the collider under it: road,
   sidewalk, ramp, deck) and its room — the distance to the nearest unwalkable floor. Spawns, the zone's centre and
-  waypoints and a stuck bot's teleport spot come from it (spawns and waypoints on "open" floors: 6 m of walkable floor
-  all round, `NAV.open`); the bots still steer the old way until `NAV_PLAN.md` session 3. Building it takes 0.13–0.3 s
+  waypoints and a stuck bot's teleport spot come from it (spawns and waypoints on "open" floors: 3 m of walkable floor
+  all round, `NAV.open`), and the bots drive paths on it (see Rivals). Building it takes 0.13–0.3 s
   on a desktop (city: 59 055 floors; test ground: 65 971, 318 of them on a second layer — the street over the tube)
   and 1.7–1.9 MB. `?debug=nav` draws it: a square per floor, coloured by kind (road green, sidewalk blue, ramp
-  yellow, deck grey), upper layers lighter; unwalkable floors small dark red.
+  yellow, deck grey), upper layers lighter; unwalkable floors small dark red; and every bot's current path in magenta.
 - **Cost** (a desktop PC, a phone-sized 375 × 812 window, `?q=low`): a battle royale of 20 cars takes ~3.3 ms a frame
   — the simulation 1.6 ms (of it the physics 0.7: Rapier's world 0.37, the cars' controls and suspension 0.24), the
   rendering 1.8 ms; with 2 cars 2.2 ms. Rapier adds ~2.2 MB to the bundle (0.85 MB gzipped) and 10–60 ms to the boot.
+  The bots' paths add ~0.03–0.06 ms a frame with 19 bots (~17 searches a second, ~200 floors each; once a frame's
+  searches have looked at 3000 floors the rest wait for the next frame, and one search stops at 12 000).
 
 Settings — `PHYS` in `src/physics/rapier.js`, `VEH` and `GHOST` in `src/physics/vehicle.js`. Measurements —
 `tests/physics.js` (single player) and `tests/net.js` (two clients), run in the browser.
@@ -352,7 +375,7 @@ URL parameters:
   (default: phone — low, desktop — high);
 - `?peds=100` — how many live pedestrians to keep in the city (default 84 on desktop, 54 on a phone);
 - `?map=test` — the test ground instead of the city;
-- `?debug` — FPS counter; `?debug=nav` — also draws the bots' nav grid (see [Physics](#physics));
+- `?debug` — FPS counter; `?debug=nav` — also draws the bots' nav grid and their paths (magenta lines; see [Physics](#physics));
 - `?mute` — start muted without touching saved settings (automated tests run this way, together with Chromium's `--mute-audio`).
 
 ## If the game crashes
@@ -387,14 +410,17 @@ src/
                       self-righting, wall / landing / roof hits, blasts; a ghost of another player's car (network)
   world/city.js       city generation (and the test ground), pedestrian graph, minimap
   race.js             track, checkpoint gates, laps, timer (settings — RACE at the top of the file)
-  racers.js           rivals: personalities (RIVALS), AI — track, hunting cars and pedestrians, car hits (CAR_HIT)
+  racers.js           rivals: personalities (RIVALS), AI — driving paths to gates and targets, hunting cars and
+                      pedestrians, avoiding cars, getting out of traps, car hits (CAR_HIT)
   tag.js              label above a car: name and hull bar
   gunner.js           bot gunner in the turret (crew mode): target choice, turning, firing (settings — GUNNER)
   zone.js             battle royale: cylindrical zone, spawn points, zone centre, a stuck bot's teleport spot
                       (settings — ZONE, SPOT)
   nav/grid.js         the bots' nav grid: layered floors from the static colliders, links, walkable floors,
                       queries — cellAt, isFree, nearestFree, randomCell, axis (settings — NAV)
-  nav/debug.js        ?debug=nav: the grid drawn over the map
+  nav/path.js         the bots' paths: A* over the nav grid (costs, a search budget per frame), straight legs,
+                      following a path (settings — PATH)
+  nav/debug.js        ?debug=nav: the grid and the bots' paths drawn over the map
   net/client.js       server connection, game version for rooms, the round trip to the server
   net/lobby.js        the multiplayer screen: connecting, rooms, start
   net/netplay.js      network race: own/remote cars, snapshots (full pose, packed rotation), events, victory claims
@@ -419,7 +445,7 @@ Pedestrians (all body parts) are drawn in ~6 draw calls via
 Main tuning numbers: `PHYS` in `src/physics/rapier.js` (gravity, the step and `maxSteps` per frame, ground and wall friction) and `VEH` in `src/physics/vehicle.js` (`mass`, centre of mass — `com`, `inertia`, chassis shape — `lower`/`cabin`, its `friction`/`restitution`, `angularDamping`, suspension — `wheelRadius`/`rest`/`travel`/`stiffness`/`compression`/`relaxation`, the arcade layer's fade with lean — `upFull`/`upNone`, grip against obstacles — `leanGrip`, the flip rule — `flipUp`/`flipAfter`/`flipStill`/`flipSlow`/`flipSlowRate`/`flipMax`/`rightRate`/`rightLift`/`rightTime`, tripping — `tripAccel`/`trip`/`tripTime`, wall hits — `wallNormal`, landing and roof damage — `landAir`/`landSafe`/`landScale`/`roofSafe`/`roofScale`, blasts — `blastLift`/`blastSpin`, pads — `boost`/`launch`; `GHOST` — other players' cars over the network: the spring's `rate`, how far a snapshot is carried forward — `ahead`, `sink`, `snap`, passing through — `deep`/`loose`, easing two overlapping cars apart — `ease`, a just-hit ghost — `holdShow`/`hold`, reconciling knocks — `knockWindow`), `SNAP_HZ`/`LEAD_MAX` in `src/net/netplay.js` (snapshots a second, the most a snapshot is carried forward for the network's delay), `P` in `src/car.js` (thrust, grip, steering at speed — the `yawCap` table and `hardFrom`/`hardTo`/`steerTime`/`yawResp`, steering return — `steerReturn`/`yawUnwind`, damage threshold and multiplier),
 `HEAL` in `src/main.js` (repair for kills), `RACE` in `src/race.js` (laps, pace, time bonuses),
 `CANNON` in `src/cannon.js` (reload, damage, blast radius), `MG` in `src/mg.js` (machine gun), `MOLOTOV` in `src/molotov.js` (cocktails), `RIVALS` (personality `aggr`/`gore`, speed; battle bots beyond seven reuse the same personalities under names from `EXTRA`), `MAX_CARS`/`MAX_CARS_ROYALE` (cars in a race / in battle),
-`HUNT`/`GORE`/`PREY_WEIGHT`/`HUNT_DELAY`, `ESCAPE`, `STUCK` and `CAR_HIT` in `src/racers.js` (how personality scales turn into behavior,
-whom hunters go after, how a stuck bot gets out and when it is put elsewhere, ram damage), `SPOT` in `src/zone.js` (where
-it is put), `NAV` in `src/nav/grid.js` (the nav grid: cell size, step, slope, clearance, inflation, open spots), `RACE.goreWin` (how many pedestrians to win), `KNOCK_SPEED`/`KILL_SPEED` and pedestrian reactions in `_panic()`
+`HUNT`/`GORE`/`PREY_WEIGHT`/`HUNT_DELAY`, `DRIVE`, `AVOID`, `ESCAPE`, `STUCK` and `CAR_HIT` in `src/racers.js` (how personality scales turn into behavior,
+whom hunters go after, how a bot drives a path and brakes for its corners, passes cars and wrecks, how a stuck bot gets out and when it is put elsewhere, ram damage), `SPOT` in `src/zone.js` (where
+it is put), `NAV` in `src/nav/grid.js` (the nav grid: cell size, step, slope, clearance, inflation, open spots), `PATH` in `src/nav/path.js` (path costs — room, alleys, wrecks, traps, crowds, turning back —, the search budget, straight legs, corners), `RACE.goreWin` (how many pedestrians to win), `KNOCK_SPEED`/`KILL_SPEED` and pedestrian reactions in `_panic()`
 in `src/pedestrians.js`, `QUALITY`/`CITY` in `src/config.js`.
