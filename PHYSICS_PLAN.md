@@ -29,7 +29,7 @@ given below. Run them in order. At the end of every session, tick its checkbox i
 - [x] Session 4: networking
 - [x] Session 5: bots on the new physics
 - [x] Session 6: remove the old physics, docs, performance
-- [ ] Session 7 (optional): carry over the non-physics changes from `claude/test-verticals`
+- [x] Session 7 (optional): carry over the non-physics changes from `claude/test-verticals`
 
 ## Why
 
@@ -984,3 +984,26 @@ here): open the game with `?q=low&debug` on one.
 - Real phone FPS (above).
 
 The branch is ready to merge; ask the user before merging it into `master`.
+
+### Session 7 (2026-10-10): carry-over of the non-physics changes
+
+The user asked for Session 7 as a whole, so all five items were ported without asking one by one. None of
+`claude/test-verticals`' physics code was touched.
+
+- **Pedestrians 1.85 m** (`PED_HEIGHT` in `pedestrians.js`): the model is built 1.91 m tall, so the root matrix is scaled by
+  1.85 / 1.91 about the feet. Hit boxes and gameplay numbers are unchanged.
+- **Respawn** (`RESPAWN`: 15 s, 50 m): on the test ground a dead pedestrian's spot refills after 15 s only with no car
+  within 50 m (was 5 s / 8 m). In the city each missing pedestrian gets a due time (`dueAt`, 15 s after it went missing),
+  and the new one appears only 50–170 m from the human player and 50 m from every car (was 45 m / 30 m). Measured: the
+  test ground refilled at 15.0 s with the car far away and not at all with the car 30 m away; in the city 10 removed
+  pedestrians were back between 15 and 30 s.
+- **100 m grid:** white lines (0.3 m wide) at −100, 0 and +100 on both axes instead of the 20 m grid; they still stop at the
+  tube's open trenches.
+- **Flight bonus «ПОЛЁТ N С»:** `Vehicle._land` now passes the flight time too: `car.onLand(air, impact)`. In `main.js`, for
+  the car I'm in, a flight of ≥ 0.8 s (`AIR_BONUS_MIN`) gives `round(air × 10) × 10` points, and any landing above 4 m/s
+  shakes the camera. Measured: the big ramp at full throttle from 40 m gives «ПОЛЁТ 0.9 С +90».
+- **Pad popups:** `Vehicle.preStep` calls `car.onPad(type)` when the car drives onto a pad: «УСКОРИТЕЛЬ!» / «КАТАПУЛЬТА!» and a
+  camera shake (0.15 / 0.4).
+- **Docs:** README (test ground, pedestrians, points) and the test ground's note in `index.html` are updated.
+- **Problems found:** none new. Initialising `Pedestrians.dueAt` in the constructor (and not only in `reset`) was a fix
+  made while porting, so `update` can't run before `reset`.

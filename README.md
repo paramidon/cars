@@ -92,8 +92,9 @@ lose by wrecking your own car or running out of time.
 - **The city** is generated procedurally (with a fixed seed): 6×6 blocks — office towers, apartment blocks,
   shops with awnings, houses with pitched roofs, parks with a fountain, a plaza with a monument and columns,
   gas stations. Roads with markings and zebra crossings, sidewalks with curbs, a boundary wall around the perimeter.
-- **Pedestrians** walk along a sidewalk graph and cross roads at zebra crossings. The crowd is replenished: the dead are replaced
-  by new ones — 45–170 m from the player and only where there is no car within 30 m. When they notice a speeding car or an explosion
+- **Pedestrians** walk along a sidewalk graph and cross roads at zebra crossings. They are 1.85 m tall (`PED_HEIGHT`). The crowd is replenished: each missing
+  pedestrian is replaced 15 s after it went missing (`RESPAWN.time`) by a new one — 50–170 m from the player and only where there is no
+  car within 50 m (`RESPAWN.dist`). When they notice a speeding car or an explosion
   they get scared: some freeze, some run waving their arms (sometimes in the wrong direction).
 - **Running people over**: at low speed (up to ~40 km/h) a pedestrian is only knocked down — lies there writhing, gets up after a couple of seconds
   and runs away. Someone who is down can be crushed by driving over them. Above 40 km/h the body
@@ -114,7 +115,7 @@ lose by wrecking your own car or running out of time.
   A hull bar with a number is shown above your car.
 - **Blood repair**: every kill repairs the hull a little (hit +6, crushed +8, gibbed +8,
   blown up with the cannon only +2 — running over pays better).
-- **Points and combos**: kills no more than 4 s apart (`COMBO_TIME`) multiply points, and the streak gets a name: 2 — "дуплет", 3 — "триплет", 4 — "каре", 5 — "пятилетка", 6 — "кровавая баня", 7 — "джекпот 777", 8 — "жатва", 9 and more — "беспредел ×N" (each tier has several random captions, list — `SERIES` in `src/words.js`); bonuses for air time, wall hits, etc.
+- **Points and combos**: kills no more than 4 s apart (`COMBO_TIME`) multiply points, and the streak gets a name: 2 — "дуплет", 3 — "триплет", 4 — "каре", 5 — "пятилетка", 6 — "кровавая баня", 7 — "джекпот 777", 8 — "жатва", 9 and more — "беспредел ×N" (each tier has several random captions, list — `SERIES` in `src/words.js`); a flight of 0.8 s or more in the air gives a bonus when the car lands: «ПОЛЁТ N С», 10 points per 0.1 s (`AIR_BONUS_MIN` in `main.js`); bonuses for wall hits, etc.
   Every kill comes with a caption from a "culinary" vocabulary — "КОТЛЕТА!", "ОТБИВНАЯ!", "ФАРШ!",
   "ЛАВАШ!", "ДУРШЛАГ!"… The lists live in `src/words.js`, add your own.
 - **Bloody tire tracks** appear only when a wheel has rolled through a pool or spot of blood, and trail
@@ -124,10 +125,10 @@ lose by wrecking your own car or running out of time.
   screams) and "mute all sound". A slider plays a sample right away; settings are remembered in the browser.
   The engine is only heard during a race — it is silent in the menu, in pause and on the results screen.
 - **Test ground** — the «ТЕСТОВЫЙ ПОЛИГОН» button in the main menu (or `?map=test`; back — «В ГОРОД»).
-  A lot the same size as the city and behind the same wall, but instead of blocks it is flat asphalt with a 20 m grid,
+  A lot the same size as the city and behind the same wall, but instead of blocks it is flat asphalt with a white 100 m grid (lines at −100, 0 and +100 on both axes),
   two buildings and a row of street props. Pedestrians stand in place and don't get scared (one knocked down gets up and stands where they fell):
   one with Molotov cocktails (throws as usual), a crowd of 20 further away, and beyond it a line of 50 spaced 2 m apart. A dead one
-  stands up again in their spot after 5 s if no car is within 8 m. It also has vertical play for the physics:
+  stands up again in their spot after 15 s if no car is within 50 m. It also has vertical play for the physics:
   - a big 3.5 m ramp in front of the line of 50: at ~108 km/h you land right in it, nose first; with one side up it
     you roll over;
   - three 1.2 m kickers with a boost pad before them, and a ramp over the tube's exit trench (clears it from ~79 km/h);
@@ -136,7 +137,7 @@ lose by wrecking your own car or running out of time.
     under the tunnel's ceiling;
   - a 6 m deck reached by a 40 m ramp, with eight pedestrians on it;
   - orange boost pads (130 km/h along the heading) and a red catapult (18 m/s straight up) right before a 4.5 m wall
-    (it clears the wall from ~65 km/h).
+    (it clears the wall from ~65 km/h); driving onto a pad shows «УСКОРИТЕЛЬ!» / «КАТАПУЛЬТА!» and shakes the camera.
 
   No rivals, no track, no timer and no win condition — only
   your own car; if it gets wrecked — «ЕЩЁ ЗАЕЗД». Single player only (online only from a test script). New mechanics

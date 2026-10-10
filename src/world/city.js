@@ -655,22 +655,23 @@ export function buildCity(scene, quality, test = false) {
   if (test) pedLayout = testGround();
 
   /**
-   * Тестовый полигон: разметка-сетка через 20 м, два дома, ряд уличной мелочи. Пешеходы стоят на местах:
+   * Тестовый полигон: белая сетка через 100 м, два дома, ряд уличной мелочи. Пешеходы стоят на местах:
    * один с коктейлями, поодаль толпа, дальше шеренга из 50. Возвращает их места { x, z, yaw, molotov }.
    */
   function testGround() {
     const sx = roads[3] - 3.5, sz = roads[1] + RD / 2 + 12; // старт машины (как spawn ниже)
     const lim = edge - 2;
-    for (let p = -160; p <= 160; p += 20) {
-      markRect(p - 0.08, -lim, p + 0.08, lim);
+    // a white 100 m grid for judging distances (lines at −100, 0, +100 on both axes)
+    for (let p = -100; p <= 100; p += 100) {
+      markRect(p - 0.15, -lim, p + 0.15, lim, MY, WHITE);
       // lines across the tube's open trenches stop at their edges
       let x = -lim;
       for (const h of holes) {
         if (p <= h[1] || p >= h[3]) continue;
-        markRect(x, p - 0.08, h[0], p + 0.08);
+        markRect(x, p - 0.15, h[0], p + 0.15, MY, WHITE);
         x = h[2];
       }
-      markRect(x, p - 0.08, lim, p + 0.08);
+      markRect(x, p - 0.15, lim, p + 0.15, MY, WHITE);
     }
     const pad = (x0, z0, x1, z1) => {
       g.walk.flat(x0, z0, x1, z1, CURB, WHITE, 4);

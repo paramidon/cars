@@ -19,7 +19,11 @@ export const KILL_SPEED = 11; // ≈ 40 км/ч
 const GIB_SPEED = 24;
 const GETUP_TIME = 0.7;
 const LED_TIMEOUT = 10; // по сети: стоящего нет в стольких снимках хоста подряд — у хоста он уже не стоит
-const FIXED_RESPAWN = 5; // с — на тестовом полигоне погибший снова встаёт на своё место (если рядом нет машины)
+/** Respawn, the same in the city and on the test ground. */
+export const RESPAWN = {
+  time: 15, // s — a pedestrian who died (or went missing) is replaced this long after
+  dist: 50, // m — and only where no car is closer than this (in the city — also this far from the human player)
+};
 const r2 = (v) => Math.round(v * 100) / 100;
 
 const _root = new THREE.Matrix4();
@@ -31,6 +35,9 @@ const _zero = new THREE.Matrix4().makeScale(0, 0, 0);
 const _c = new THREE.Color();
 const _q = new THREE.Quaternion();
 const _ax = new THREE.Vector3();
+export const PED_HEIGHT = 1.85; // m, feet to the top of the hair
+const MODEL_HEIGHT = 1.91; // m — the body parts below as built (hair top at 1.86 + 0.05)
+const _pedScale = new THREE.Vector3().setScalar(PED_HEIGHT / MODEL_HEIGHT);
 
 /** Локальная матрица части тела: T(pivot)·Rz·Rx·T(offset), собранная вручную без аллокаций. */
 function local(px, py, pz, rx, rz, ox, oy, oz) {
@@ -180,6 +187,7 @@ export class Pedestrians {
     this.onEvent = null; // (type, ped)
     this.time = 0;
     this.spawnTimer = 0;
+    this.dueAt = []; // city: when each missing pedestrian is due to be replaced (sorted)
     // сеть: null — играю один; 'host' — толпу считаю я и рассылаю снимки; 'guest' — стоящих ведёт хост
     this.netRole = null;
     this.onNet = null; // (строка) — мой удар по пешеходу: разослать остальным
@@ -221,6 +229,7 @@ export class Pedestrians {
   reset(cars) {
     for (const p of this.peds) this._free(p);
     this.gibs.clear();
+    this.dueAt = []; // city: when each missing pedestrian is due to be replaced (sorted)
     if (this.netRole === 'guest') return; // толпу пришлёт хост
     if (this.layout) {
       for (const s of this.layout) this._place(s);
@@ -247,7 +256,7 @@ export class Pedestrians {
     s.t = 0;
   }
 
-  /** Полигон: место пустует FIXED_RESPAWN с (пешеход погиб) и рядом нет машины — ставим нового. */
+  /** Полигон: место пустует RESPAWN.time с (пешеход погиб) и рядом нет машины — ставим нового. */
   _refill(dt, cars) {
     for (const s of this.layout) {
       if (s.p && s.p.gen === s.gen && this.isLiving(s.p)) {
@@ -255,7 +264,7 @@ export class Pedestrians {
         continue;
       }
       s.t += dt;
-      if (s.t < FIXED_RESPAWN || cars.some((c) => Math.hypot(c.x - s.x, c.z - s.z) < 8)) continue;
+      if (s.t < RESPAWN.time || cars.some((c) => Math.hypot(c.x - s.x, c.z - s.z) < RESPAWN.dist)) continue;
       this._place(s);
     }
   }
@@ -280,7 +289,7 @@ export class Pedestrians {
    */
   _spawn(cars, initial = false) {
     const p = this.peds.find((x) => x.state === ST.FREE);
-    if (!p) return;
+    if (!p) return false;
     const humans = cars.filter((c) => c.human);
     const anchor = humans.length ? pick(humans) : cars[0];
     let n = -1;
@@ -288,14 +297,14 @@ export class Pedestrians {
       const k = Math.floor(Math.random() * this.nodes.length);
       const node = this.nodes[k];
       const d = Math.hypot(node.x - anchor.x, node.z - anchor.z);
-      if (d < (initial ? 25 : 45) || d > 170) continue;
+      if (d < (initial ? 25 : RESPAWN.dist) || d > 170) continue;
       let clear = true;
       for (let c = 0; c < cars.length && clear; c++) {
-        if (cars[c] !== anchor && Math.hypot(node.x - cars[c].x, node.z - cars[c].z) < (initial ? 12 : 30)) clear = false;
+        if (cars[c] !== anchor && Math.hypot(node.x - cars[c].x, node.z - cars[c].z) < (initial ? 12 : RESPAWN.dist)) clear = false;
       }
       if (clear) n = k;
     }
-    if (n < 0) return;
+    if (n < 0) return false;
     const node = this.nodes[n];
     p.from = n;
     p.to = pick(node.links);
@@ -304,6 +313,7 @@ export class Pedestrians {
     this._init(p, node.x + rand(-1, 1), node.z + rand(-1, 1), ++this.serial);
     this._setTarget(p);
     p.yaw = Math.atan2(p.tx - p.x, p.tz - p.z);
+    return true;
   }
 
   /** Поставить пешехода на ноги в точке x, z: всё по нулям, одежда — по номеру поколения (у всех игроков одна). */
@@ -1186,9 +1196,15 @@ export class Pedestrians {
     // пополнение толпы
     this.spawnTimer -= dt;
     if (this.layout) this._refill(dt, cars);
-    else if (this.netRole !== 'guest' && alive + living < this.target && this.spawnTimer <= 0) {
-      this.spawnTimer = 0.15;
-      this._spawn(cars);
+    else if (this.netRole !== 'guest') {
+      // each missing pedestrian is replaced RESPAWN.time s after it went missing
+      const missing = Math.max(0, this.target - alive - living), due = this.dueAt;
+      while (due.length < missing) due.push(this.time + RESPAWN.time);
+      if (due.length > missing) due.length = missing;
+      if (due.length && due[0] <= this.time && this.spawnTimer <= 0) {
+        this.spawnTimer = 0.15;
+        if (this._spawn(cars)) due.shift();
+      }
     }
 
     this.gibs.update(dt, ground, world, this.fx);
@@ -1405,6 +1421,7 @@ export class Pedestrians {
     const e = _root.elements;
     const cy = p.cy + bob;
     _root.setPosition(p.x - e[4], cy - e[5], p.z - e[6]);
+    _root.scale(_pedScale); // about the feet: the model is built 1.91 m tall, the pedestrian is PED_HEIGHT
 
     _out.multiplyMatrices(_root, local(0, 1.16, 0, 0, 0, 0, 0, 0));
     this.mTorso.setMatrixAt(i, _out);

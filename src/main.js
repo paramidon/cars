@@ -37,6 +37,7 @@ const HEAL = { car: 6, gib: 8, crush: 8, explosion: 2, gun: 2 };
 const WEAPON_NAME = { cannon: 'ПУШКА', mg: 'ПУЛЕМЁТ' };
 const WRECK_HEAL = 15; // разбил машину тараном или из пушки — подлатался
 const WRECK_CREDIT_MS = 4000; // чей последний удар был за столько мс до взрыва, тот и разбил
+const AIR_BONUS_MIN = 0.8; // s in the air for a flight bonus (10 points per 0.1 s)
 const COMBO_TIME = 4; // убийства не дальше стольких с друг от друга копят комбо
 const GORE_WARN = [20, 30, 35]; // на скольких пешеходах предупредить, что соперник близок к победе
 const BEST_KEY = 'cars-and-guts:best';
@@ -390,6 +391,19 @@ class Game {
     car.onWrecked = () => (car === this.car ? this._myWreck() : this._carWrecked(car));
     car.onRight = () => {
       if (car === this.car && this.state === 'play') this.hud.popup('НА КОЛЁСА!', 'info');
+    };
+    car.onLand = (air, impact) => {
+      if (car !== this.car) return;
+      if (impact > 4) this.cam.shake(Math.min(0.9, impact / 22));
+      if (air < AIR_BONUS_MIN || this.state !== 'play' || car.wrecked) return;
+      const pts = Math.round(air * 10) * 10;
+      this.score += pts;
+      this.hud.popup(`ПОЛЁТ ${air.toFixed(1)} С +${pts}`, air > 2 ? 'gold big' : 'gold');
+    };
+    car.onPad = (type) => {
+      if (car !== this.car || this.state !== 'play') return;
+      this.hud.popup(type === 'boost' ? 'УСКОРИТЕЛЬ!' : 'КАТАПУЛЬТА!', 'info');
+      this.cam.shake(type === 'boost' ? 0.15 : 0.4);
     };
   }
 

@@ -638,6 +638,7 @@ export class Vehicle {
       _lv.y = VEH.launch;
       changed = true;
     }
+    if (pad && pad !== this.padIn) car.onPad?.(pad.type);
     this.padIn = pad;
     if (changed) b.setLinvel(_lv, true);
     this.setV.copy(_lv);
@@ -780,6 +781,7 @@ export class Vehicle {
   /** Touched down on the wheels after a flight: dust, sound, sparks, and damage above VEH.landSafe. */
   _land(impact) {
     const car = this.car, { x, y, z } = this.curP;
+    const air = this.airT; // s of the flight (the callers reset it right after)
     if (impact > 3) {
       car.fx.dust(x, y + 0.2, z, Math.min(14, Math.floor(impact)));
       const v = car.vol();
@@ -788,7 +790,7 @@ export class Vehicle {
     if (impact > 9) car.fx.sparks(x, y + 0.3, z, 0, 0, Math.min(24, Math.floor(impact)));
     // the dent: the underbody, pushed up
     if (impact > VEH.landSafe) car.applyDamage((impact - VEH.landSafe) * VEH.landScale, x, z, 0, 0, y, 1);
-    car.onLand?.(impact);
+    car.onLand?.(air, impact);
   }
 
   /** The body hit a floor while on its side or roof: sparks, sound, a dent there, damage above VEH.roofSafe. */
