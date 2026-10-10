@@ -899,7 +899,8 @@ from their cars. The production single file boots on Rapier with no flag. Handli
 
 - A bot on its side can lie for up to 5.5 s: the flip rule waits for 1.5 s of stillness, and a car rocking on its side
   or pushed by others isn't still. Fine for now.
-- Respawning at the last gate costs a stuck racer its place; a smarter way out of a trap (reversing further, another
-  route) would be nicer. The respawn rate is low (0–0.3 per game per all bots on Rapier).
-- The bots' track and navigation are still 2D (`_clearLine` against the 2D world): on the test ground's ramps, deck and
-  tube they would not know heights, but the test ground has no bots.
+- Respawning at the last gate costs a stuck racer its place. Decided with the user: the bot should get out by itself and
+  be teleported only after 20 s, to a free spot nearby, 2 m above the ground — `NAV_PLAN.md` session 1.
+- The bots' navigation is 2D and tied to the city's grid (`_clearLine`, `_navPoint`, `race.route`, `roadPointNear`), and
+  future maps will be 3D. Planned as its own project: `NAV_PLAN.md` (nav grid from the 3D colliders, A*, links for
+  jumps and drops).

@@ -59,4 +59,5 @@ URL parameters: `?mute` (use it for automated runs), `?debug` (FPS counter), `?q
 - **Keep the README in sync.** It documents gameplay rules and exact numbers (damage, speeds, timings). When you change behavior or a constant it describes, update the README in the same commit.
 - **`plan.md` is the user's to-do list.** Remove an item once it's done; don't rewrite the file otherwise.
 - **`PHYSICS_PLAN.md` is the plan for moving car physics to Rapier**, done in sessions on `claude/rapier-physics`. Follow the session you are asked to do, then tick it and add notes there.
+- **`NAV_PLAN.md` is the plan for real bot navigation** (any map, 3D maps later), done in sessions on `claude/bot-navigation`. Follow the session you are asked to do, then tick it and add notes there.
 - **Branches:** don't commit directly to `master` or `claude/carmageddon-game-prototype-m0zs5f`. Work on a `claude/*` branch.
