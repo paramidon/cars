@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { clamp, lerp, moveToward, rand, wrapAngle } from './utils.js';
-import { circleVsCollider } from './physics/collision.js';
 import { flashTexture, blobShadowTexture } from './world/textures.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { XRAY } from './xray.js';
@@ -53,16 +52,10 @@ const P = {
   steerReturn: 0.05, // а от упора к центру — всегда быстро, с любой скорости (и встречный руль — тоже)
   yawResp: [18, 13], // как быстро машина отзывается на руль
   yawUnwind: 22, // а перестаёт крутиться, когда руль выпрямили, — всегда быстро
-  restitution: 0.25,
-  inertia: 1.9,
   damageThreshold: 8, // м/с ≈ 29 км/ч — ниже этого удар не повреждает
   damageScale: 2.4,
 };
 
-// машина в коллизиях — три круга вдоль корпуса
-export const HIT_Z = [-1.3, 0, 1.3];
-export const HIT_R = 1.0;
-export const CAR_INERTIA = P.inertia;
 export const CAR_GRIP = P.grip;
 // лоб с кенгурятником держит удар: урон по передней части при ударе о столб/стену
 const FRONT_ARMOR_WALL = 0.75;
@@ -79,7 +72,6 @@ const TURRET_STEEP = (50 * Math.PI) / 180; // rad: steeper than this, the turret
 export const sameTeam = (a, b) => a !== b && a.team != null && a.team === b.team;
 
 const HARD = new Set(['building', 'wall', 'pole', 'tree', 'pillar', 'fountain', 'statue', 'pump', 'rail', 'deck', 'ramp']);
-const PEN = { nx: 0, nz: 0, depth: 0, px: 0, pz: 0 };
 const _p = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _s = new THREE.Vector3();
@@ -87,7 +79,6 @@ const _qi = new THREE.Quaternion();
 const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();
 const _loc = new THREE.Vector3();
-const _Y = new THREE.Vector3(0, 1, 0);
 // the body as a box in its own frame (for pedestrians, shells, bullets, bottles): half width and length, and from
 // the wheels' contact up to the roof (BODY_TOP) or the top of the cannon (GUN_TOP)
 const BODY_TOP = 1.7;
@@ -129,7 +120,6 @@ export class Car {
   constructor(scene, city, fx, audio, debris, quality, opts = {}) {
     this.scene = scene;
     this.city = city;
-    this.world = city.world;
     this.fx = fx;
     this.audio = audio;
     this.debris = debris;
@@ -367,28 +357,22 @@ export class Car {
     if (hd < 0.2) return false; // (nearly) straight up or down
     const at = m.y + (m.dy / hd) * Math.hypot(x - m.x, z - m.z);
     if (at < y - SHOT_PAD || at > y + h + SHOT_PAD) return false;
-    if (!this.rb) return true;
     // the muzzle itself must be in the open: from the body's middle to it, nothing static in the way
     const c = this.toWorld(0, 0.9, 0, _a);
     const dx = m.x - c.x, dy = m.y - c.y, dz = m.z - c.z, d = Math.hypot(dx, dy, dz);
     return !this.rb.phys.castStatic(c.x, c.y, c.z, dx / d, dy / d, dz / d, d);
   }
 
-  /** The body's rotation: the rigid body's on Rapier, the heading alone on the old physics. */
-  _rot() {
-    return this.rb ? this.rb.quat : _qi.setFromAxisAngle(_Y, this.yaw);
-  }
-
   /** World point (x, y, z) in the car's frame (lx to the left, ly up from the wheels' contact, lz forward). */
   toLocal(x, y, z, out = _loc) {
-    out.set(x - this.x, y - this.y - (this.rb ? 0 : this.hop), z - this.z);
-    return out.applyQuaternion(_qi.copy(this._rot()).invert());
+    out.set(x - this.x, y - this.y, z - this.z);
+    return out.applyQuaternion(_qi.copy(this.rb.quat).invert());
   }
 
   /** A point of the car's frame in the world; dir — a direction (no translation). */
   toWorld(lx, ly, lz, out = _loc, dir = false) {
-    out.set(lx, ly, lz).applyQuaternion(this._rot());
-    if (!dir) out.add(_s.set(this.x, this.y + (this.rb ? 0 : this.hop), this.z));
+    out.set(lx, ly, lz).applyQuaternion(this.rb.quat);
+    if (!dir) out.add(_s.set(this.x, this.y, this.z));
     return out;
   }
 
@@ -423,8 +407,7 @@ export class Car {
 
   /** Куда смотрит ствол (мировой угол). */
   get aimYaw() {
-    if (!this.rb) return this.yaw + this.turretYaw;
-    // on Rapier: the barrel's real heading, also on a tilted car (straight up or down — the car's heading plus the turret)
+    // the barrel's real heading, also on a tilted car (straight up or down — the car's heading plus the turret)
     const t = this.turretYaw;
     const d = this.toWorld(Math.sin(t), 0, Math.cos(t), _b, true);
     return Math.hypot(d.x, d.z) > 1e-3 ? Math.atan2(d.x, d.z) : wrapAngle(this.yaw + t);
@@ -437,8 +420,7 @@ export class Car {
    * side): then the angle that points it as close as it can get to a.
    */
   turretToward(a) {
-    if (!this.rb) return wrapAngle(a - this.yaw);
-    const inv = _qi.copy(this._rot()).invert();
+    const inv = _qi.copy(this.rb.quat).invert();
     // the barrel (sin t, 0, cos t) in the body's frame lies in the plane of a when it is square to n, a's horizontal normal
     const n = _a.set(Math.cos(a), 0, -Math.sin(a)).applyQuaternion(inv);
     if (Math.hypot(n.x, n.z) > 1e-3) {
@@ -513,9 +495,7 @@ export class Car {
     this.rollVel = 0;
     this.pitch = 0;
     this.pitchVel = 0;
-    this.hop = 0;
-    this.hopVel = 0;
-    this.upY = 1; // height of the body's up vector: 1 upright, 0 on its side, −1 on its roof (moves only on Rapier)
+    this.upY = 1; // height of the body's up vector: 1 upright, 0 on its side, −1 on its roof
     this.vy = 0;
     this.throttle = 0;
     this.braking = false;
@@ -548,8 +528,11 @@ export class Car {
     this.cabinMat.color.copy(this.paintColor);
     this.headMat.color.set(0xfff6d8);
     this.tailMat.color.set(0x7a0b0b);
-    if (this.rb) this.rb.place(this.x, this.y, this.z, this.yaw);
-    this._syncMesh(0);
+    // (the body is given right after the car is built: Game._addBody)
+    if (this.rb) {
+      this.rb.place(this.x, this.y, this.z, this.yaw);
+      this._syncMesh(0);
+    }
   }
 
   /** Put the car at sp = { x, z, yaw } on the ground, standing still (respawn, unstuck); damage and parts stay. */
@@ -560,20 +543,13 @@ export class Car {
     this.yaw = sp.yaw;
     this.y = this.city.groundHeight(sp.x, sp.z);
     this.vx = this.vz = this.angVel = 0;
-    if (this.rb) {
-      this.rb.place(this.x, this.y, this.z, this.yaw);
-      this._syncMesh(0);
-    }
+    this.rb.place(this.x, this.y, this.z, this.yaw);
+    this._syncMesh(0);
   }
 
   /** A sudden change of velocity (a shot's recoil, a blast's shove, a body under the wheels), m/s and rad/s. */
   nudge(dvx, dvz, dw = 0) {
-    if (this.rb) this.rb.kick(dvx, 0, dvz, 0, dw, 0);
-    else {
-      this.vx += dvx;
-      this.vz += dvz;
-      this.angVel += dw;
-    }
+    this.rb.kick(dvx, 0, dvz, 0, dw, 0);
   }
 
   /** Громкость звуков этой машины для игрока (1 — своя машина). */
@@ -615,44 +591,15 @@ export class Car {
   }
 
   // ------------------------------------------------------------------ физика
-  update(dt, input) {
-    const n = Math.max(1, Math.ceil(dt / (1 / 120)));
-    const h = dt / n;
-    for (let i = 0; i < n; i++) this.physicsStep(h, input);
-    this.postUpdate(dt, input);
-  }
-
-  /** Один подшаг физики: движение и столкновения со статикой. */
+  /** One physics step h: the controls only (Vehicle.preStep); the step itself is the world's (Physics.step). */
   physicsStep(h, input) {
-    if (this.rb) {
-      // on Rapier: controls only, the step itself is the world's (Physics.step)
-      this.rb.preStep(h, input);
-      return;
-    }
-    this._step(h, input);
-    this._collide();
-  }
-
-  /** После всех подшагов: визуал, следы, дым, звук. */
-  postUpdate(dt, input) {
-    this._afterPhysics(dt, input);
-  }
-
-  _step(h, inp) {
-    const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
-    const fx = s, fz = c, rx = -c, rz = s;
-    this._drive(h, inp, this.vx * fx + this.vz * fz, this.vx * rx + this.vz * rz);
-    // скорость собирается по старым осям — при повороте часть уходит в боковую и гасится сцеплением (занос)
-    this.vx = fx * this.vF + rx * this.vR;
-    this.vz = fz * this.vF + rz * this.vR;
-    this.yaw += this.angVel * h;
-    this.x += this.vx * h;
-    this.z += this.vz * h;
+    this.rb.preStep(h, input);
   }
 
   /**
-   * The handling, shared by both physics paths: from the input and the current forward and lateral speeds (vF, vR)
-   * and yaw rate (this.angVel) — the new vF, vR and angVel after one step h, plus steer, accel and the brake state.
+   * The handling (the arcade layer, applied to the body by Vehicle.preStep): from the input and the current forward and
+   * lateral speeds (vF, vR) and yaw rate (this.angVel) — the new vF, vR and angVel after one step h, plus steer, accel
+   * and the brake state.
    */
   _drive(h, inp, vF, vR) {
     let thr = inp.throttle, brk = inp.brake, st = inp.steer, hb = inp.handbrake;
@@ -724,53 +671,6 @@ export class Car {
     this.handbrake = hb;
   }
 
-  _collide() {
-    const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
-    let maxImpact = 0, inx = 0, inz = 0, ipx = 0, ipz = 0, hitC = null;
-    for (let k = 0; k < HIT_Z.length; k++) {
-      const oz = HIT_Z[k];
-      const cx = this.x + s * oz, cz = this.z + c * oz;
-      const list = this.world.queryCircle(cx, cz, HIT_R);
-      for (let j = 0; j < list.length; j++) {
-        const col = list[j];
-        if (!circleVsCollider(cx, cz, HIT_R, col, PEN)) continue;
-        if (col.kind === 'breakable') {
-          if (this.speed > 2.5 && this.onBreakable && this.onBreakable(col, this)) continue;
-        }
-        this.x += PEN.nx * PEN.depth;
-        this.z += PEN.nz * PEN.depth;
-        const rX = PEN.px - this.x, rZ = PEN.pz - this.z;
-        const vpx = this.vx + this.angVel * rZ, vpz = this.vz - this.angVel * rX;
-        const vn = vpx * PEN.nx + vpz * PEN.nz;
-        if (vn >= 0) continue;
-        const rn = rZ * PEN.nx - rX * PEN.nz;
-        const jn = (-(1 + P.restitution) * vn) / (1 + (rn * rn) / P.inertia);
-        this.vx += jn * PEN.nx;
-        this.vz += jn * PEN.nz;
-        this.angVel += (jn * rn) / P.inertia;
-        // трение вдоль стены
-        const tx = -PEN.nz, tz = PEN.nx;
-        const vt = vpx * tx + vpz * tz;
-        const rt = rZ * tx - rX * tz;
-        let jt = -vt / (1 + (rt * rt) / P.inertia);
-        const mf = 0.3 * jn;
-        jt = clamp(jt, -mf, mf);
-        this.vx += jt * tx;
-        this.vz += jt * tz;
-        this.angVel += (jt * rt) / P.inertia;
-        if (-vn > maxImpact) {
-          maxImpact = -vn;
-          inx = PEN.nx;
-          inz = PEN.nz;
-          ipx = PEN.px;
-          ipz = PEN.pz;
-          hitC = col;
-        }
-      }
-    }
-    if (maxImpact > 0) this._impact(maxImpact, inx, inz, ipx, ipz, hitC.kind);
-  }
-
   /** Hit something solid: (nx, nz) — the push out of it, (px, py, pz) — where; kind — what (the collider's kind). */
   _impact(impact, nx, nz, px, pz, kind, py = this.y + 0.8) {
     const now = performance.now();
@@ -807,7 +707,7 @@ export class Car {
     this.health = Math.max(0, this.health - dmg);
     const l = this.toLocal(px, py ?? this.y + 0.9, pz, _a);
     const lx = l.x, ly = py == null ? 0.9 : l.y, lz = l.z;
-    const n = _b.set(nx, ny, nz).applyQuaternion(_qi.copy(this._rot()).invert());
+    const n = _b.set(nx, ny, nz).applyQuaternion(_qi.copy(this.rb.quat).invert());
     // мелкий урон (пули) мнёт кузов едва-едва, иначе очередь сминает машину в гармошку
     this._deform(lx, lz, n.x, n.z, Math.min(0.5, 0.06 * Math.min(1, dmg / 3) + dmg * 0.012), ly, n.y);
     if (lz > 1.2) this.frontHits += dmg;
@@ -865,8 +765,7 @@ export class Car {
     this.fx.explosion(this.x, this.y + 0.8, this.z);
     this.fx.glass(this.x, this.y + 1.4, this.z, 40);
     this.audio.explosion(Math.max(0.15, this.vol()));
-    if (this.rb) this.rb.kick(0, 6, 0, rand(-1.5, 1.5), 0, rand(-1.5, 1.5));
-    else this.hopVel = 6;
+    this.rb.kick(0, 6, 0, rand(-1.5, 1.5), 0, rand(-1.5, 1.5));
     const byKind = (k) => this.parts.filter((p) => p.kind === k);
     for (const top of [...byKind('cannon'), ...byKind('wing')]) this._detach(top, this.vx * 0.4 + rand(-3, 3), 11, this.vz * 0.4 + rand(-3, 3));
     for (const p of [...byKind('front'), ...byKind('rear')]) this._detach(p, this.vx * 0.4 + rand(-5, 5), rand(5, 9), this.vz * 0.4 + rand(-5, 5));
@@ -896,25 +795,13 @@ export class Car {
     return d;
   }
 
-  _afterPhysics(dt, input) {
-    if (this.rb) {
-      this.rb.update(dt);
-      this.rb.sync();
-      this._breakProps();
-    }
+  /** After the frame's physics steps: the pose from the body, then visuals, marks, smoke, sound. */
+  postUpdate(dt, input) {
+    this.rb.update(dt);
+    this.rb.sync();
+    this._breakProps();
     const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
     const speed = this.speed;
-
-    if (!this.rb) {
-      // высота над землёй (бордюр) и подскоки
-      const gy = this.city.groundHeight(this.x, this.z);
-      const dy = gy - this.y;
-      if (Math.abs(dy) > 0.05) this.pitchVel += -dy * 6 * Math.sign(this.vF || 1);
-      this.y += dy * Math.min(1, dt * 20);
-      this.hopVel -= 20 * dt;
-      this.hop = Math.max(0, this.hop + this.hopVel * dt);
-      if (this.hop === 0) this.hopVel = 0;
-    }
 
     // крен и тангаж на пружинах
     const lat = this.vF * this.angVel;
@@ -936,7 +823,7 @@ export class Car {
     for (let i = 0; i < 4; i++) {
       const w = WHEELS[i], tr = this.trails[i];
       const wx = this.x + w.x * c + w.z * s, wz = this.z - w.x * s + w.z * c;
-      if (this.rb && !this.rb.wheelOnGround(i, wx, wz)) {
+      if (!this.rb.wheelOnGround(i, wx, wz)) {
         // a wheel in the air (or on a slope, on the tunnel's floor) leaves no marks
         tr.skid = false;
         tr.blood = 0;
@@ -977,11 +864,11 @@ export class Car {
       const hx = this.x + s * 1.5, hz = this.z + c * 1.5;
       while (this.smokeAcc > 1) {
         this.smokeAcc -= 1;
-        this.fx.smoke(hx + rand(-0.4, 0.4), this.y + 1.1 + this.hop, hz + rand(-0.4, 0.4), k, 0.7 + k * 0.7);
+        this.fx.smoke(hx + rand(-0.4, 0.4), this.y + 1.1, hz + rand(-0.4, 0.4), k, 0.7 + k * 0.7);
       }
       if ((this.health < 25 || this.wrecked) && Math.random() < dt * (this.wrecked ? 50 : 22)) {
-        this.fx.fire(hx, this.y + 1.0 + this.hop, hz, this.wrecked ? 1.1 : 0.7);
-        if (this.wrecked) this.fx.fire(this.x + rand(-0.6, 0.6), this.y + 1.3 + this.hop, this.z + rand(-1, 1), 1.2);
+        this.fx.fire(hx, this.y + 1.0, hz, this.wrecked ? 1.1 : 0.7);
+        if (this.wrecked) this.fx.fire(this.x + rand(-0.6, 0.6), this.y + 1.3, this.z + rand(-1, 1), 1.2);
       }
     }
 
@@ -989,7 +876,7 @@ export class Car {
   }
 
   /**
-   * On Rapier: street props whose sensors the body overlaps (Vehicle.props) break once it moves faster than 2.5 m/s;
+   * Street props whose sensors the body overlaps (Vehicle.props) break once it moves faster than 2.5 m/s;
    * they don't stop it. In 3D: flying over a bin misses it, a car sliding on its roof knocks it down.
    */
   _breakProps() {
@@ -1000,20 +887,15 @@ export class Car {
 
   _syncMesh(dt) {
     const r = this.root;
-    if (this.rb) {
-      r.position.set(this.x, this.y, this.z);
-      r.quaternion.copy(this.rb.quat);
-      this.blob.visible = this.rb.contacts >= 2 && this.upY > 0.7;
-    } else {
-      r.position.set(this.x, this.y + this.hop, this.z);
-      r.rotation.y = this.yaw;
-    }
+    r.position.set(this.x, this.y, this.z);
+    r.quaternion.copy(this.rb.quat);
+    this.blob.visible = this.rb.contacts >= 2 && this.upY > 0.7;
     this.body.rotation.set(this.pitch, 0, this.roll);
     const spinD = (this.vF * dt) / 0.42;
     for (let i = 0; i < this.wheels.length; i++) {
       const w = this.wheels[i];
       if (w.part.detached) continue;
-      if (this.rb) w.pivot.position.y = this.rb.wheelY(i);
+      w.pivot.position.y = this.rb.wheelY(i);
       w.spin.rotation.x += spinD;
       // steer > 0 — поворот вправо, а вправо у машины — локальная −X
       if (w.front) w.pivot.rotation.y = -this.steer;

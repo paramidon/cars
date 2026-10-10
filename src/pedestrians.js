@@ -583,7 +583,6 @@ export class Pedestrians {
       return;
     }
     car.pitchVel += 1.5;
-    car.hopVel = Math.max(car.hopVel, 1.3);
     p.vx += car.vx * 0.2;
     p.vz += car.vz * 0.2;
     this._crushed(p, s, dirx, dirz, car.vol());
@@ -644,7 +643,6 @@ export class Pedestrians {
       return;
     }
     car.pitchVel += 1.2;
-    car.hopVel = Math.max(car.hopVel, 1.1);
     p.vx += car.vx * 0.3;
     p.vz += car.vz * 0.3;
     this._ranOver(p, s, car.vx / s, car.vz / s, car.vol());

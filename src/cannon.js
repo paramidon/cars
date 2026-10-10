@@ -17,16 +17,14 @@ export const CANNON = {
   carHitPad: 0.4, // м: попасть в машину чуть проще, чем в неё врезаться (её коробка шире на столько со всех сторон)
 };
 
-const shellFilter = (c) => c.kind !== 'breakable' && c.h >= 1.2;
 // «убийца» пешеходов от чужого выстрела по сети: у стрелявшего свои пешеходы и свой счёт
 const REMOTE_SHOT = { remote: true };
 
 /** Снаряды всех машин. */
 export class Artillery {
-  constructor(scene, city, fx, audio) {
+  constructor(scene, phys, fx, audio) {
     this.scene = scene;
-    this.world = city.world;
-    this.phys = null; // Rapier: shells fly in 3D against its static colliders
+    this.phys = phys; // shells fly in 3D against its static colliders
     this.fx = fx;
     this.audio = audio;
     this.cars = [];
@@ -140,14 +138,9 @@ export class Artillery {
     }
   }
 
-  /**
-   * How far along its next `step` m the shell hits a wall, a pole, the ground…: −1 if it doesn't. On Rapier — any
-   * static collider in 3D; on the old physics — the 2D colliders at least 1.2 m tall.
-   */
+  /** How far along its next `step` m the shell hits any static collider (a wall, a pole, the ground…): −1 if it doesn't. */
   _wall(s, step) {
-    if (this.phys) return this.phys.castStatic(s.x, s.y, s.z, s.dx, s.dy, s.dz, step)?.t ?? -1;
-    const w = this.world.raycast(s.x, s.z, s.dx, s.dz, step, shellFilter); // (the old physics' cars fire level)
-    return w ? w.t : -1;
+    return this.phys.castStatic(s.x, s.y, s.z, s.dx, s.dy, s.dz, step)?.t ?? -1;
   }
 
   /** Взрыв снаряда: урон и толчок машинам, пешеходы в клочья или в полёт, уличная мелочь — в стороны. */
@@ -161,9 +154,9 @@ export class Artillery {
     for (const car of this.cars) {
       if (car.wrecked || sameTeam(car, shooter)) continue; // дружественного огня нет
       const dx = car.x - x, dz = car.z - z;
-      // from the blast to the car: as on the old physics (its centre less 1.1 m), plus how far above or below its body
+      // from the blast to the car: to its centre less 1.1 m on the ground, plus how far above or below its body
       const l = car.toLocal(x, y, z);
-      const d = Math.hypot(Math.max(0, Math.hypot(dx, dz) - 1.1), car.rb ? Math.max(0, Math.abs(l.y - 0.85) - 0.85) : 0);
+      const d = Math.hypot(Math.max(0, Math.hypot(dx, dz) - 1.1), Math.max(0, Math.abs(l.y - 0.85) - 0.85));
       const k = Math.max(0, 1 - d / R);
       const direct = car === directCar;
       if (!direct && k <= 0) continue;
@@ -176,12 +169,11 @@ export class Artillery {
       const hl = Math.hypot(dx, dz) || 1;
       const nx = dx / hl, nz = dz / hl;
       const push = CANNON.push * Math.max(k, direct ? 0.6 : 0);
-      if (car.rb) car.rb.blast(x, y, z, push); // an impulse at the body's point nearest to the blast: shoves and tilts
-      else car.nudge(nx * push, nz * push, rand(-1.5, 1.5) * k);
+      car.rb.blast(x, y, z, push); // shoves the body and tilts it away from the blast (Vehicle.blast)
       if (car === shooter) continue; // свой снаряд только толкает
       car.lastAttacker = shooter;
       car.lastAttackAt = now;
-      car.applyDamage(dmg, x, z, nx, nz, car.rb ? y : null);
+      car.applyDamage(dmg, x, z, nx, nz, y);
       if (this.onCarHit) this.onCarHit(car, shooter, dmg, direct, local);
     }
     if (this.peds) {

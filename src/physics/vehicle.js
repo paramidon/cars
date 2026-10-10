@@ -2,7 +2,7 @@
  * A car on Rapier: a dynamic rigid body with a two-box chassis, mass and centre of mass set explicitly, and Rapier's
  * DynamicRayCastVehicleController for the four ray-cast wheels — suspension only, the tyres themselves hold
  * nothing. Grip, thrust and steering come from the arcade layer: each step, while wheels touch the ground, the
- * car's own handling (Car._drive, the same numbers as the old physics) turns input into new forward and lateral
+ * car's own handling (Car._drive, the README's handling numbers) turns input into new forward and lateral
  * speeds and a yaw rate, and the body's velocity is nudged towards them. In the air, or leaning hard, the car is
  * purely physical. The body frame is the car model's frame: x to the left, y up from the wheels' contact, z forward.
  */

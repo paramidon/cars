@@ -202,7 +202,7 @@ function rayAABB(ox, oz, dx, dz, c, n) {
  * Пересечение круга с коллайдером. Заполняет out: нормаль (от препятствия к кругу),
  * глубину проникновения и точку контакта на поверхности препятствия.
  */
-export function circleVsCollider(x, z, r, c, out) {
+function circleVsCollider(x, z, r, c, out) {
   if (c.type === CIRCLE) {
     const dx = x - c.x, dz = z - c.z;
     const rr = r + c.r;

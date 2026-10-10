@@ -82,7 +82,7 @@ export class CarTag {
   /** viewer — машина игрока: чужие таблички дальше 110 м не видны. */
   update(viewer) {
     const c = this.car;
-    this.sprite.position.set(c.x, c.y + this.lift + c.hop, c.z);
+    this.sprite.position.set(c.x, c.y + this.lift, c.z);
     this.sprite.visible = c === viewer ? !c.wrecked : Math.hypot(c.x - viewer.x, c.z - viewer.z) < 110;
     const hp = c.wrecked ? -2 : Math.max(0, Math.round(c.health));
     const w = this.weapon;

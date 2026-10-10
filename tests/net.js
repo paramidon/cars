@@ -150,7 +150,7 @@ export async function setup({ query = '?mute&map=test', game = 'race', mode = 'c
 const carIn = (w, id) => w.game.net.car(id);
 
 function pose(car) {
-  const q = car.rb ? car.rb.quat : { x: 0, y: Math.sin(car.yaw / 2), z: 0, w: Math.cos(car.yaw / 2) };
+  const q = car.rb.quat;
   return { x: car.x, y: car.y, z: car.z, q: [q.x, q.y, q.z, q.w], up: car.upY, kmh: car.speed * KMH, vy: car.vy || 0, hp: car.health };
 }
 
@@ -345,19 +345,17 @@ export async function ram(s, { speeds = [40, 60, 100] } = {}) {
   const A = s.A.game, B = s.B.game;
   armour(s);
   const out = [];
-  const rbB = B.car.rb ?? {}; // (no knocks to log on the old physics)
+  const rbB = B.car.rb;
   const log = [];
-  const nk = rbB.netKnock?.bind(rbB), lk = rbB.localKnock?.bind(rbB);
-  if (nk) {
-    rbB.netKnock = (o, dv, dw) => {
-      log.push({ k: 'event', dv: r2(dv.length()), t: now() });
-      nk(o, dv, dw);
-    };
-    rbB.localKnock = (o) => {
-      log.push({ k: 'local', dv: r2(rbB.knockV.length()), t: now() });
-      lk(o);
-    };
-  }
+  const nk = rbB.netKnock.bind(rbB), lk = rbB.localKnock.bind(rbB);
+  rbB.netKnock = (o, dv, dw) => {
+    log.push({ k: 'event', dv: r2(dv.length()), t: now() });
+    nk(o, dv, dw);
+  };
+  rbB.localKnock = (o) => {
+    log.push({ k: 'local', dv: r2(rbB.knockV.length()), t: now() });
+    lk(o);
+  };
   for (const kmh of speeds) {
     B.car.health = A.car.health = 100;
     await place(s, 'B', 170, 60, Math.PI / 2);

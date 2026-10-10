@@ -22,12 +22,12 @@ const _m = { x: 0, y: 0, z: 0, dx: 0, dy: 0, dz: 0 };
 
 /** Пули всех пулемётов: трассеры, попадания, нагрев. Пули мгновенные (луч), летит только трассер. */
 export class MachineGuns {
-  constructor(scene, city, fx, audio) {
+  constructor(scene, city, phys, fx, audio) {
     this.world = city.world;
     this.fx = fx;
     this.audio = audio;
     this.peds = null;
-    this.phys = null; // Rapier: bullets fly in 3D against its static colliders
+    this.phys = phys; // bullets fly in 3D against its static colliders
     this.listener = null;
     this.onCarHit = null; // (victim, shooter, dmg, x, z, dx, dz) — моя пуля попала в машину
     const geo = new THREE.BoxGeometry(1, 1, 1);
@@ -123,14 +123,9 @@ export class MachineGuns {
     const a = Math.atan2(m.dx, m.dz) + rand(-MG.spread, MG.spread);
     // (dx, dz) — the heading, unit; the bullet flies along (dx·fh, dy, dz·fh), fh = cos of its slope
     const dx = Math.sin(a), dz = Math.cos(a), dy = m.dy, fh = Math.sqrt(1 - dy * dy);
-    let t, wall; // t — distance along the bullet's flight (3D), wall — { nx, nz } of a wall it hit
-    if (this.phys) {
-      wall = this.phys.castStatic(m.x, m.y, m.z, dx * fh, dy, dz * fh, MG.range);
-      t = wall ? wall.t : MG.range;
-    } else {
-      wall = this.world.raycast(m.x, m.z, dx, dz, MG.range, bulletFilter);
-      t = wall ? wall.t : MG.range;
-    }
+    // t — distance along the bullet's flight (3D), wall — { nx, nz } of a wall it hit
+    const wall = this.phys.castStatic(m.x, m.y, m.z, dx * fh, dy, dz * fh, MG.range);
+    let t = wall ? wall.t : MG.range;
     let hitCar = null;
     for (const c of cars) {
       if (c === car || c.wrecked || sameTeam(c, car)) continue; // своих пули не трогают
@@ -146,19 +141,17 @@ export class MachineGuns {
       hitCar = null;
     }
     const hx = m.x + dx * fh * t, hz = m.z + dz * fh * t;
-    let hy = this.phys ? m.y + dy * t : m.y - t * 0.012;
+    let hy = m.y + dy * t;
     if (hitCar) {
-      if (!this.phys) hy = hitCar.y + 0.9;
       this.fx.sparks(hx, hy, hz, -dx, -dz, 5);
       if (Math.random() < 0.35) this.audio.impact();
       if (local && this.onCarHit) this.onCarHit(hitCar, car, MG.carDamage, hx, hz, dx, dz);
     } else if (ph) {
-      const g = this.phys ? this.peds.city.groundHeight(ph.ped.x, ph.ped.z) : car.y;
+      const g = this.peds.city.groundHeight(ph.ped.x, ph.ped.z);
       hy = this.peds.isLying(ph.ped) ? g + 0.3 : g + 1.3;
       if (local) this.peds.shoot(ph.ped, dx, dz, car);
       else this.fx.bloodBurst(ph.ped.x, hy, ph.ped.z, dx, dz, 3, 4);
     } else if (wall) {
-      if (!this.phys) hy = Math.max(0.4, hy);
       this.fx.sparks(hx, hy, hz, wall.nx, wall.nz, 4);
       this.fx.dust(hx, hy, hz, 2);
       if (Math.random() < 0.3) this.audio.impact();

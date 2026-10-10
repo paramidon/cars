@@ -11,8 +11,8 @@
  *   // also: landings, carCrashes, blasts, pedJumps, props, muzzle (session 3), sideHit, obstacle, wallScrape, rollovers,
  *   // gunnerTilt (session 5)
  *
- * Rapier is the only car physics since session 5; the `phys: 'old'` results in PHYSICS_PLAN.md were measured before
- * that, with `?phys=rapier` left out. The functions stop the page's own
+ * Rapier is the only car physics since session 5 (the old 2D physics was deleted in session 6); the "old physics"
+ * numbers in PHYSICS_PLAN.md were measured before that. The functions stop the page's own
  * animation loop and step the game by hand (game.step(1/60)), so they run faster than real time; reload afterwards.
  */
 
@@ -55,13 +55,11 @@ async function run(game, secs, each) {
 
 /** Move the car by dz along z keeping its velocity (an endless straight on the test ground). */
 function shiftZ(car, dz) {
-  if (car.rb) {
-    const b = car.rb.body, t = b.translation();
-    b.setTranslation({ x: t.x, y: t.y, z: t.z + dz }, true);
-    car.rb.curP.z += dz;
-    car.rb.prevP.z += dz;
-    car.rb.sync();
-  } else car.z += dz;
+  const b = car.rb.body, t = b.translation();
+  b.setTranslation({ x: t.x, y: t.y, z: t.z + dz }, true);
+  car.rb.curP.z += dz;
+  car.rb.prevP.z += dz;
+  car.rb.sync();
 }
 
 const r1 = (v) => Math.round(v * 10) / 10;
@@ -108,8 +106,8 @@ export async function handling(game) {
   if (!game.test) throw new Error('handling(): open the test ground (?map=test)');
   const inp = takeOver(game);
   game.restart();
-  const out = { phys: game.phys ? 'rapier' : 'old' };
-  // the largest lean of the body through every manoeuvre below (only moves on Rapier)
+  const out = {};
+  // the largest lean of the body through every manoeuvre below
   let maxLean = 0;
   const step = game.step.bind(game);
   game.step = (dt) => {
@@ -242,13 +240,11 @@ export async function leanRace(game, { secs = 75, bots = 7, seed = 1 } = {}) {
   soloRace(game, bots, seed);
   const stats = game.cars.map((c) => ({ name: c.name, max: 0, at: null, over30: 0, tipped: 0, wasTipped: false, wrecked: false }));
   let t = 0, hits = 0;
-  const onHit = game.phys?.onCarHit;
-  if (game.phys) {
-    game.phys.onCarHit = (...a) => {
-      if (a[2] > 4.5) hits++;
-      onHit(...a);
-    };
-  }
+  const onHit = game.phys.onCarHit;
+  game.phys.onCarHit = (...a) => {
+    if (a[2] > 4.5) hits++;
+    onHit(...a);
+  };
   await run(game, secs, () => {
     game.cars.forEach((c, i) => {
       const s = stats[i];
@@ -268,10 +264,9 @@ export async function leanRace(game, { secs = 75, bots = 7, seed = 1 } = {}) {
     });
     t += DT;
   });
-  if (game.phys) game.phys.onCarHit = onHit;
+  game.phys.onCarHit = onHit;
   Math.random = random;
   return {
-    phys: game.phys ? 'rapier' : 'old',
     secs,
     carHits: hits,
     cars: stats.map((s) => ({ name: s.name, maxLean: r1(s.max), at: s.at, over30s: r1(s.over30), tipped: s.tipped, wrecked: s.wrecked })),
@@ -327,16 +322,16 @@ export async function botLaps(game, { runs = 6, secs = 25, bots = 7 } = {}) {
   Math.random = random;
   const mean = (f) => r1(res.reduce((a, r) => a + f(r), 0) / res.length);
   return {
-    phys: game.phys ? 'rapier' : 'old', runs: res, avgKmh: mean((r) => r.avgKmh), gatesPerRun: mean((r) => r.gates),
+    runs: res, avgKmh: mean((r) => r.avgKmh), gatesPerRun: mean((r) => r.gates),
     reversesPerRun: mean((r) => r.reverses), respawnsPerRun: mean((r) => r.respawns), wreckedPerRun: mean((r) => r.wrecked), crashes: window.crash?.entries?.length ?? 0 };
 }
 
 /**
- * Test ground on Rapier: my car rams the side of a parked car at 40…125 km/h. The victim's largest lean, how fast
+ * Test ground: my car rams the side of a parked car at 40…125 km/h. The victim's largest lean, how fast
  * it was thrown, whether it ended on its wheels, the hit's closing speed and the ram damage.
  */
 export async function sideHit(game, { speeds = [40, 60, 80, 100, 125] } = {}) {
-  if (!game.test || !game.phys) throw new Error('sideHit(): open /?map=test');
+  if (!game.test) throw new Error('sideHit(): open /?map=test');
   const inp = takeOver(game);
   game.restart();
   if (!game.dummies.length) game.addPhysDummies(1);
@@ -391,18 +386,18 @@ export async function obstacle(game, { kind = 'pole', secs = 6 } = {}) {
   const inp = takeOver(game);
   game.restart();
   const car = game.car;
-  car.applyDamage = () => {}; // the old physics damages the car on the obstacle: a wreck would end the game
+  car.applyDamage = () => {}; // a wreck on the obstacle would end the game
   const ox = 170, oz = 0;
-  // the obstacle, added to the 2D world and (on Rapier) as a static collider
+  // the obstacle, added to the 2D world (for the bots' line of sight) and as a static collider
   if (!game._testObstacle) {
     const w = game.city.world;
     if (kind === 'wall') {
       w.addAABB(ox - 10, oz, ox + 10, oz + 2, { kind: 'building', h: 10 });
-      game.phys?.addSolid({ kind: 'building', box: [ox, 5, oz + 1, 10, 5, 1] });
+      game.phys.addSolid({ kind: 'building', box: [ox, 5, oz + 1, 10, 5, 1] });
     } else {
       const r = kind === 'tree' ? 0.5 : 0.36;
       w.addCircle(ox, oz, r, { kind, h: 7 });
-      game.phys?.addSolid({ kind, cyl: [ox, 3.5, oz, 3.5, r] });
+      game.phys.addSolid({ kind, cyl: [ox, 3.5, oz, 3.5, r] });
     }
     game._testObstacle = kind;
   }
@@ -434,7 +429,6 @@ export async function obstacle(game, { kind = 'pole', secs = 6 } = {}) {
     }
   }
   return {
-    phys: game.phys ? 'rapier' : 'old',
     kind,
     stuck: runs.filter((r) => r.stuck).length,
     notReached: runs.filter((r) => !r.reached).length,
@@ -489,7 +483,7 @@ export async function wallScrape(game, { speeds = [60, 100], angles = [10, 25, 4
       out.push({ kmh, deg, touchKmh: r1((touchV ?? 0) * KMH), after03: r1((v03 ?? 0) * KMH), after1: r1((v1 ?? 0) * KMH), afterLeavingKmh: leaveV == null ? null : r1(leaveV * KMH), leftWall: leaveV != null, intoWallM: r1(maxX - wallX), up: r1(car.upY) });
     }
   }
-  return { phys: game.phys ? 'rapier' : 'old', out };
+  return { out };
 }
 
 /**
@@ -509,22 +503,18 @@ export async function rollovers(game, { races = 20, secs = 75, seed0 = 100 } = {
         shoves.push({ t: game.race.clock, car: c, dv: Math.hypot(a, b) });
         nudge.call(c, a, b, w);
       };
-      if (c.rb) {
-        // on Rapier blasts go through Vehicle.blast, not nudge
-        const blast = Object.getPrototypeOf(c.rb).blast;
-        c.rb.blast = (x, y, z, dv) => {
-          shoves.push({ t: game.race.clock, car: c, dv });
-          blast.call(c.rb, x, y, z, dv);
-        };
-      }
-    }
-    const onHit = game.phys?.onCarHit;
-    if (game.phys) {
-      game.phys.onCarHit = (...a) => {
-        onHit(...a);
-        hits.push({ t: game.race.clock, a: a[0], b: a[1], kmh: a[2] * KMH });
+      // blasts go through Vehicle.blast, not nudge
+      const blast = Object.getPrototypeOf(c.rb).blast;
+      c.rb.blast = (x, y, z, dv) => {
+        shoves.push({ t: game.race.clock, car: c, dv });
+        blast.call(c.rb, x, y, z, dv);
       };
     }
+    const onHit = game.phys.onCarHit;
+    game.phys.onCarHit = (...a) => {
+      onHit(...a);
+      hits.push({ t: game.race.clock, a: a[0], b: a[1], kmh: a[2] * KMH });
+    };
     const was = new Map();
     await run(game, secs, () => {
       for (const c of game.cars) {
@@ -542,12 +532,12 @@ export async function rollovers(game, { races = 20, secs = 75, seed0 = 100 } = {
     });
     for (const c of game.cars) {
       delete c.nudge;
-      if (c.rb) delete c.rb.blast;
+      delete c.rb.blast;
     }
-    if (game.phys) game.phys.onCarHit = onHit;
+    game.phys.onCarHit = onHit;
   }
   Math.random = random;
-  return { phys: game.phys ? 'rapier' : 'old', races, tips: tips.length, perRace: r1(tips.length / races), list: tips };
+  return { races, tips: tips.length, perRace: r1(tips.length / races), list: tips };
 }
 
 /**
@@ -635,7 +625,7 @@ export async function botBattles(game, { runs = 10, secs = 120, bots = 7, type =
   Math.random = random;
   const mean = (f) => r1(res.reduce((a, r) => a + f(r), 0) / res.length);
   return {
-    phys: game.phys ? 'rapier' : 'old', type, mode, bots, secs: mean((r) => r.secs),
+    type, mode, bots, secs: mean((r) => r.secs),
     stuckMax: Math.max(...res.map((r) => r.stuckMax)), stuckOver10: res.filter((r) => r.stuckMax > 10).length,
     wrecked: mean((r) => r.wrecked), kills: mean((r) => r.kills), rams: mean((r) => r.rams), shots: mean((r) => r.shots),
     respawns: mean((r) => r.respawns), reverses: mean((r) => r.reverses), tips: mean((r) => r.tips),
@@ -679,7 +669,7 @@ export async function wallDamage(game, { speeds = [25, 30, 40, 60, 80, 100, 125]
   const pole = { x: 170, z: 100 };
   if (!game._testPole) {
     game.city.world.addCircle(pole.x, pole.z, 0.36, { kind: 'pole', h: 7 });
-    game.phys?.addSolid({ kind: 'pole', cyl: [pole.x, 3.5, pole.z, 3.5, 0.36] });
+    game.phys.addSolid({ kind: 'pole', cyl: [pole.x, 3.5, pole.z, 3.5, 0.36] });
     game._testPole = true;
   }
   const bar = () => car.parts.find((p) => p.kind === 'front');
@@ -700,16 +690,16 @@ export async function wallDamage(game, { speeds = [25, 30, 40, 60, 80, 100, 125]
     out.push(row);
   }
   fresh(car, game.city.spawn);
-  return { phys: game.phys ? 'rapier' : 'old', crashes: window.crash?.entries?.length ?? 0, out };
+  return { crashes: window.crash?.entries?.length ?? 0, out };
 }
 
 /**
- * Test ground on Rapier: the car dropped level on its wheels, and upside down on its roof, from heights that give
+ * Test ground: the car dropped level on its wheels, and upside down on its roof, from heights that give
  * `speeds` m/s at touchdown — the hull lost (wheels: VEH.landScale per m/s above landSafe; roof: roofScale above
  * roofSafe).
  */
 export async function landings(game, { speeds = [8, 12, 14, 16, 20, 24] } = {}) {
-  if (!game.test || !game.phys) throw new Error('landings(): open /?map=test');
+  if (!game.test) throw new Error('landings(): open /?map=test');
   takeOver(game);
   game.restart();
   const car = game.car, g = -game.phys.world.gravity.y;
@@ -741,11 +731,11 @@ export async function landings(game, { speeds = [8, 12, 14, 16, 20, 24] } = {}) 
 }
 
 /**
- * Test ground on Rapier: my car into another one. Head-on (100 vs 80 km/h), catching up (55 into one doing 50), a
+ * Test ground: my car into another one. Head-on (100 vs 80 km/h), catching up (55 into one doing 50), a
  * T-bone (60 into a parked car's side), a side swipe (60 and 60, 15° apart). Closing speed and the hull each lost.
  */
 export async function carCrashes(game) {
-  if (!game.test || !game.phys) throw new Error('carCrashes(): open /?map=test');
+  if (!game.test) throw new Error('carCrashes(): open /?map=test');
   const inp = takeOver(game);
   game.restart();
   if (!game.dummies.length) game.addPhysDummies(1);
@@ -785,12 +775,12 @@ export async function carCrashes(game) {
 }
 
 /**
- * Test ground on Rapier: a shell's blast by a parked car's left side, 0…3 m from it, y m up (0.9 — the body's middle;
+ * Test ground: a shell's blast by a parked car's left side, 0…3 m from it, y m up (0.9 — the body's middle;
  * 1.96 — a level shot's height),
  * and a direct hit there. The car's largest lean, how fast it was thrown, the hull lost, did it tip over.
  */
 export async function blasts(game, { gaps = [0, 1, 2, 3], y = 0.9 } = {}) {
-  if (!game.test || !game.phys) throw new Error('blasts(): open /?map=test');
+  if (!game.test) throw new Error('blasts(): open /?map=test');
   takeOver(game);
   game.restart();
   if (!game.dummies.length) game.addPhysDummies(1);
@@ -880,7 +870,7 @@ export async function pedJumps(game, { speeds = [90, 120, 140, 160, 180] } = {})
     delete car.applyDamage;
     out.push({ run: r.name, lipKmh: r.x === -15 ? lip : undefined, heightOverLine: yAt, lowestY: r.tube ? r1(minY) : undefined, endZ: r1(car.z), hits: hit.length, causes: [...new Set(hit.map((h) => h.cause))].join(','), at: hit.slice(0, 4) });
   }
-  return { phys: game.phys ? 'rapier' : 'old', crashes: window.crash?.entries?.length ?? 0, out };
+  return { crashes: window.crash?.entries?.length ?? 0, out };
 }
 
 /**
@@ -917,15 +907,15 @@ export async function props(game) {
     }
     out.push({ prop: name, type: it?.type, broken: !it?.alive, kmhBefore: r1(v0 * KMH), kmhAfter: r1(v1 * KMH) });
   }
-  return { phys: game.phys ? 'rapier' : 'old', crashes: window.crash?.entries?.length ?? 0, out };
+  return { crashes: window.crash?.entries?.length ?? 0, out };
 }
 
 /**
- * Test ground on Rapier: where a tilted car fires. The car pitched nose-up 2°, 10°, 30°, rolled 90° (on its side),
+ * Test ground: where a tilted car fires. The car pitched nose-up 2°, 10°, 30°, rolled 90° (on its side),
  * upside down: the muzzle's height and the shell's slope; and a level shot from 40 m into a parked car.
  */
 export async function muzzle(game) {
-  if (!game.test || !game.phys) throw new Error('muzzle(): open /?map=test');
+  if (!game.test) throw new Error('muzzle(): open /?map=test');
   takeOver(game);
   game.restart();
   const car = game.car, rb = car.rb;
@@ -943,13 +933,13 @@ export async function muzzle(game) {
 }
 
 /**
- * Test ground on Rapier (session 5): the bot gunner and the machine gun's auto-aim on a tilted car. The car is posed
+ * Test ground (session 5): the bot gunner and the machine gun's auto-aim on a tilted car. The car is posed
  * (level, nose up 13° as across the big ramp, rolled 30°, on its side, on its roof) facing +z, a target 30 m away at
  * bearings 0 / 45 / 270 / 200°; the gunner turns for 3 s. Per case: the barrel's heading error from the target's bearing
  * (`err`), whether the gunner fired, and what the old yaw-only arithmetic would have pointed at (`oldErr`).
  */
 export async function gunnerTilt(game, { gunner = null } = {}) {
-  if (!game.test || !game.phys) throw new Error('gunnerTilt(): open /?map=test');
+  if (!game.test) throw new Error('gunnerTilt(): open /?map=test');
   takeOver(game);
   game.restart();
   const BotGunner = gunner ?? (await import('/src/gunner.js')).BotGunner;

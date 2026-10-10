@@ -20,7 +20,7 @@ import { Input } from './input.js';
 import { ChaseCamera } from './camera.js';
 import { HUD } from './hud.js';
 import { Race, RACE } from './race.js';
-import { Rival, RIVALS, GRID, maxCars, gridPoint, collideCars, carHitDamage } from './racers.js';
+import { Rival, RIVALS, GRID, maxCars, gridPoint, carHitDamage } from './racers.js';
 import { CarTag } from './tag.js';
 import { Netplay } from './net/netplay.js';
 import { Lobby } from './net/lobby.js';
@@ -110,8 +110,8 @@ class Game {
     this.car = this.mainCar; // машина, в которой я сижу (по сети может быть чужая — если я в её пушке)
     this.carTag = new CarTag(scene, this.car);
     this.peds = new Pedestrians(scene, this.city, this.fx, this.audio, QUALITY);
-    this.artillery = new Artillery(scene, this.city, this.fx, this.audio);
-    this.mg = new MachineGuns(scene, this.city, this.fx, this.audio);
+    this.artillery = new Artillery(scene, this.phys, this.fx, this.audio);
+    this.mg = new MachineGuns(scene, this.city, this.phys, this.fx, this.audio);
     this.molotovs = new Molotovs(scene, this.city, this.fx, this.audio);
     this.weapon = 'cannon'; // моё оружие: cannon | mg (у ботов — только пушка)
     this.race = new Race(scene, this.city, this.fx, this.audio);
@@ -134,7 +134,6 @@ class Game {
     this.setCars([this.car, ...this.rivals.map((r) => r.car)]);
     this.artillery.peds = this.peds;
     this.artillery.breakables = this.breakables;
-    this.artillery.phys = this.mg.phys = this.phys;
     this.artillery.listener = this.car;
     this.mg.peds = this.peds;
     this.molotovs.listener = this.car;
@@ -156,9 +155,9 @@ class Game {
     this.lobby = new Lobby(this);
     this._resetStats();
     this.peds.reset(this.cars);
-    // на полигоне и в меню на фоне — одна моя машина; on Rapier the city's menu also starts from the solo lineup
+    // на полигоне и в меню на фоне — одна моя машина; the city's menu also starts from the solo lineup
     // (the unused rivals' bodies leave the world instead of piling up on the grid)
-    if (this.test || this.phys) this._resetWorld();
+    this._resetWorld();
 
     this.state = 'menu';
     this.soundOpen = null; // 'menu' | 'pause' — откуда открыли настройки звука
@@ -198,11 +197,11 @@ class Game {
     this.scene.add(this.sky);
   }
 
-  /** On Rapier: give the car a rigid body (standing where the car is). */
+  /** Give a just-built car its rigid body, standing where the car is. Every car needs one (Car.rb). */
   _addBody(car) {
-    if (!this.phys) return;
     car.rb = new Vehicle(this.phys, car);
     car.rb.place(car.x, car.y, car.z, car.yaw);
+    car._syncMesh(0);
   }
 
   /** Все машины заезда: первая — своя. */
@@ -232,7 +231,7 @@ class Game {
     this.race.onEvent = (type, data) => this._raceEvent(type, data);
     for (const r of this.allRivals) this._bindCar(r.car);
     this._onCarHit = (a, b, impact, px, pz, nx, nz) => this._carHit(a, b, impact, px, pz, nx, nz);
-    if (this.phys) this.phys.onCarHit = this._onCarHit; // on Rapier the engine itself pushes cars apart
+    this.phys.onCarHit = this._onCarHit; // the engine itself pushes cars apart; this is for damage, sparks, sound
     peds.onKill = (p, cause, speed) => this._kill(p, cause, speed);
     peds.onEvent = (type, p) => this._pedEvent(type, p);
     this.artillery.onCarHit = (victim, shooter, dmg, direct, local) => this._shellHit(victim, shooter, dmg, direct, local);
@@ -478,13 +477,13 @@ class Game {
       r.car.root.visible = on;
       if (r.tag) r.tag.sprite.visible = on;
       if (!on) r.car.x = r.car.z = 1e5; // не участвует — подальше от пешеходов и столкновений
-      r.car.rb?.setActive(on);
+      r.car.rb.setActive(on);
     }
     this.rivals = rivals;
     const mainUsed = car === this.mainCar || others.includes(this.mainCar);
     this.mainCar.root.visible = mainUsed;
     if (!mainUsed) this.mainCar.x = this.mainCar.z = 1e5;
-    this.mainCar.rb?.setActive(mainUsed);
+    this.mainCar.rb.setActive(mainUsed);
     this.car = car;
     car.root.visible = true;
     this.carTag.car = car;
@@ -492,9 +491,9 @@ class Game {
     for (const c of this.cars) {
       c.isPlayer = c === car; // звук мотора, перезарядка как у человека
       c.listener = c === car ? null : car;
-      // on Rapier: a car another computer drives is a ghost following its snapshots
-      c.rb?.setActive(true);
-      c.rb?.setRemote(!!c.remote);
+      // a car another computer drives is a ghost following its snapshots
+      c.rb.setActive(true);
+      c.rb.setRemote(!!c.remote);
     }
     this.artillery.listener = car;
     this.molotovs.listener = car;
@@ -804,7 +803,7 @@ class Game {
   _unstuck() {
     const car = this.car;
     if (car.wrecked || car.remote) return; // за рулём не я — переставлять машину не мне
-    if (car.rb?.tipped) {
+    if (car.rb.tipped) {
       // on its side or roof: back onto the wheels where it lies
       car.rb.right();
       return;
@@ -1016,13 +1015,13 @@ class Game {
   }
 
   /**
-   * Урон victim от тарана by: своим машинам — сразу, чужой по сети — событием её владельцу. On Rapier the event also
+   * Урон victim от тарана by: своим машинам — сразу, чужой по сети — событием её владельцу. The event also
    * carries the knock: what this computer's solver did to the victim's ghost (Vehicle.netKnock), even with no damage.
    */
   _ramDamage(victim, by, dmg, px, pz, nx, nz, now) {
     if (by.remote) return;
     if (victim.remote) {
-      const k = victim.rb && victim.rb.knockV.length() + victim.rb.knockW.length() > 0.3 ? victim.rb : null;
+      const k = victim.rb.knockV.length() + victim.rb.knockW.length() > 0.3 ? victim.rb : null;
       if (dmg > 0 || k) this.net.sendHit(victim, by, Math.max(0, dmg), px, pz, nx, nz, k);
       return;
     }
@@ -1113,33 +1112,28 @@ class Game {
     else if (ev.type === 'lap' && ev.lap === RACE.laps) this.hud.popup(`${r.name}: ПОСЛЕДНИЙ КРУГ`, 'info');
   }
 
-  /** Синхронная физика всех машин: подшаги, столкновения между машинами, потом визуал. */
+  /** Every car's physics: Rapier's fixed steps (each car's controls before each), then the visuals. */
   _physics(dt, playerInp) {
     const cars = this.cars;
     const sub = (h) => {
       if (!cars[0].remote) cars[0].physicsStep(h, playerInp); // в пушке чужой машины — её ведёт хозяин
       for (const r of this.rivals) if (!r.car.remote) r.car.physicsStep(h, r.inp);
       for (const c of this.dummies) c.physicsStep(h, c.dummyInp);
-      if (!this.phys) collideCars(cars, this._onCarHit);
     };
-    if (this.phys) this.phys.step(dt, sub); // Rapier: fixed steps, the pose is interpolated in postUpdate
-    else {
-      const n = Math.max(1, Math.ceil(dt / (1 / 120)));
-      for (let i = 0; i < n; i++) sub(dt / n);
-    }
+    this.phys.step(dt, sub); // fixed steps of 1/120 s; the rendered pose is interpolated in postUpdate
     for (const c of this.dummies) c.postUpdate(dt, c.dummyInp);
     cars[0].postUpdate(dt, playerInp);
     for (const r of this.rivals) r.car.postUpdate(dt, r.inp);
     for (const rc of this.remotes) if (rc.car !== cars[0]) rc.car.postUpdate(dt, NO_INPUT);
   }
 
-  /** Debug (?map=test): n more cars on Rapier driving in circles on the test ground's open asphalt. */
+  /** Debug (?map=test): n more cars driving in circles on the test ground's open asphalt. */
   addPhysDummies(n) {
-    if (!this.phys || !this.test) return 0;
+    if (!this.test) return 0;
     for (let i = 0; i < n; i++) {
       const k = this.dummies.length;
       const c = new Car(this.scene, this.city, this.fx, this.audio, this.debris, QUALITY, { isPlayer: false, wing: true, color: '#3a7bd5', number: k + 2 });
-      c.rb = new Vehicle(this.phys, c);
+      this._addBody(c);
       c.reset({ x: -90 + (k % 5) * 30, z: 100 + Math.floor(k / 5) * 22, yaw: (k * 1.3) % (Math.PI * 2) });
       c.dummyInp = { throttle: 0.7, brake: 0, steer: k % 2 ? 0.5 : -0.5, handbrake: false };
       this.dummies.push(c);
@@ -1174,13 +1168,11 @@ class Game {
       quality: { low: QUALITY.low, shadows: QUALITY.shadows, peds: QUALITY.pedCount },
       touch: this.input.usingTouch,
       map: this.test ? 'test' : 'city',
-      phys: this.phys
-        ? {
-          y: r1(car.y), up: Math.round(car.upY * 100) / 100, vy: r1(car.vy || 0), wheels: car.rb?.contacts,
-          righting: !!car.rb?.righting, stepMs: Math.round(this.phys.stepMs * 1000) / 1000, steps: this.phys.steps,
-          bodies: this.phys.vehicles.length, initMs: Math.round(rapierStats.initMs),
-        }
-        : null,
+      phys: {
+        y: r1(car.y), up: Math.round(car.upY * 100) / 100, vy: r1(car.vy || 0), wheels: car.rb.contacts,
+        righting: !!car.rb.righting, stepMs: Math.round(this.phys.stepMs * 1000) / 1000, steps: this.phys.steps,
+        bodies: this.phys.vehicles.length, initMs: Math.round(rapierStats.initMs),
+      },
     };
   }
 

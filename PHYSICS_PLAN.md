@@ -28,7 +28,7 @@ given below. Run them in order. At the end of every session, tick its checkbox i
 - [x] Session 3: damage, rams, props, pedestrians, weapons in 3D
 - [x] Session 4: networking
 - [x] Session 5: bots on the new physics
-- [ ] Session 6: remove the old physics, docs, performance
+- [x] Session 6: remove the old physics, docs, performance
 - [ ] Session 7 (optional): carry over the non-physics changes from `claude/test-verticals`
 
 ## Why
@@ -904,3 +904,83 @@ from their cars. The production single file boots on Rapier with no flag. Handli
 - The bots' navigation is 2D and tied to the city's grid (`_clearLine`, `_navPoint`, `race.route`, `roadPointNear`), and
   future maps will be 3D. Planned as its own project: `NAV_PLAN.md` (nav grid from the 3D colliders, A*, links for
   jumps and drops).
+
+### Session 6 (2026-10-10): remove the old physics, docs, performance
+
+**Result:** the old 2D car physics is deleted. Rapier is the only path and no code branches on it any more (`car.rb` is
+always there). Every measurement of sessions 2–5 comes out the same after the removal, single player and online. The
+README has a new "Physics" section; its damage, ramming, test ground, networking and tuning parts and CLAUDE.md's
+"Architecture" describe the engine.
+
+**Removed** (code and tests: −434 / +158 lines)
+
+- `car.js`: `_step`, `_collide`, `update()`, `HIT_Z` / `HIT_R` / `CAR_INERTIA`, `P.restitution` / `P.inertia`, the
+  cosmetic hop (`hop` / `hopVel`, also in `pedestrians.js` and `tag.js`), and every `this.rb ? … : …` fallback (`_rot`,
+  `toLocal` / `toWorld`, `aimYaw`, `turretToward`, `shotReaches`, `nudge`, `explode`, `_syncMesh`, tyre marks).
+  `_afterPhysics` became `postUpdate`. `Car._impact` stays: `Vehicle.staticHits` calls it for wall hits.
+- `racers.js`: `collideCars`, `collidePair`, `CAR_HIT.restitution`.
+- `main.js`: the 2D sub-steps and `collideCars` in `_physics`, every `if (this.phys)`. `_addBody` is the one place that
+  gives a car its body (also for `addPhysDummies`); `Car.reset` places the body only once it exists.
+- `cannon.js`, `mg.js`: the 2D wall ray casts for shells and bullets, the level-fire heights and the blast's 2D shove;
+  `Physics` is now a constructor argument of `Artillery` and `MachineGuns`.
+- `net/netplay.js`: the old remote-car interpolation (`EXTRAP_MAX`, `SNAP_DIST`, yaw damping), the yaw-only snapshot
+  row and resume branches; `readRow` no longer returns `yaw` / `angVel`.
+- `physics/collision.js`: nothing in it was used by cars alone; `circleVsCollider` is no longer exported (only
+  `pushOutCircle` uses it). The 2D world stays for pedestrians, debris, the camera, the bots' navigation and sight, the
+  machine gun's auto-aim and the molotovs.
+- `tests/physics.js`, `tests/net.js`: the `phys: 'old'` fields and the `game.phys ?` / `car.rb ?` branches.
+
+**Checks after the removal** (dev server, `?mute`; equal to the earlier sessions unless noted)
+
+- `handling()`: 42.9 / 76.9 / 99.2 / 118.9 / 125.5 km/h, top 126, yaw 120.6 / 107.4 / 69.9 / 58.3 °/s, reverse 39.8,
+  lean 0.1°.
+- `sideHit()`: thrown 24 / 32 / 43 / 59 / 67 km/h, lean 1 / 3 / 8 / 13 / 123°; `wallDamage()`, `landings()`, `blasts()`,
+  `pedJumps()`, `props()`, `muzzle()`, `gunnerTilt()` — the session 3 and 5 tables to the digit.
+- `botBattles()` (city, seeded games of 120 s; per game):
+
+  | | Games | Stuck max, s | Wrecked | Ped kills | Rams > 4.5 m/s | Shots | Tipped > 60° (longest) | Errors |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | Race, 7 bots | 10 | 9.3 | 4.0 | 47.1 | 16.6 | 76.3 | 0.5 (3.5 s) | 0 |
+  | Royale, 19 bots | 5 | 7.8 | 18.4 | 76.8 | 55.2 | 142 | 1.4 (3 s) | 0 |
+  | Race crew, 7 bots | 3 | 8.3 | 6.3 | 28.3 | 15 | 105 | 0.7 (1.9 s) | 0 |
+
+  Within session 5's spread. The same seed run twice gives different games — also with `performance.now()` replaced by
+  the game's clock — so the state a `restart()` carries over (the crowd, debris, broken props, Rapier's contact caches)
+  is the likely cause. Bot rows compare as statistics only.
+- Online (`tests/net.js` through `npm run server`): jump off the big ramp — pitch real / ghost −16…23° / −19…24°,
+  position error 0.1 m mean, rotation 0.96°; rollover — past 60° at 4.55 / 4.57 s, upright at 8.97 / 8.94 s; rams at
+  60 / 100 km/h — thrown 30 / 55 km/h on both screens, −36.6 / −53.8, knocks local 9.96 vs event 10.01 m/s; reconnect —
+  back on its roof at the same spot after 0.51 s, 0° of rotation change; crew gunner — the session 5 table; city with 7
+  host bots — ghosts 0.15 m / 1.05° from their cars; 80 bytes per car row, 12.2 KB/s. No errors on either screen.
+- The production single file (`dist/cars-and-guts.html`, 4106 KB) boots the city and the test ground from the server
+  with no errors and no requests besides the optional Google font.
+
+**Performance** (this PC, Chromium in the app's browser pane, a 375 × 812 viewport, `?q=low` — pixel ratio 1.5, no
+shadows, 54 pedestrians; the pane is hidden, so there are no animation frames: each frame is `game.step(1/60)` +
+`game.render()` + `gl.finish()`, measured by hand; 360 frames from the green light)
+
+| | `game.step` mean / p95 | Render mean | Frame mean / p95 / p99 | One physics step |
+| --- | --- | --- | --- | --- |
+| Battle royale, 20 cars (3 runs) | 1.53–1.6 / 2.2–2.5 ms | 1.3–1.8 ms | 2.8–3.4 / 3.7–4.5 / 4.3–5.8 ms | 0.34 ms |
+| Race, 2 cars | 0.64 / 1.0 ms | 1.53 ms | 2.18 / 2.6 / 3.8 ms | 0.16 ms |
+
+Inside a 20-car frame (two physics steps): Rapier's `world.step` 0.37 ms, the cars' controls and suspension
+(`Vehicle.preStep`) 0.24, `afterStep` 0.05, `savePrev` 0.03, car contacts 0.02 — the physics is 0.72 of the 1.58 ms of
+`game.step`; the bots' thinking 0.10. Nothing stands out to optimise. Real FPS on a phone is still unmeasured (no phone
+here): open the game with `?q=low&debug` on one.
+
+**Not bugs**
+
+- `ram()` at 60 km/h ended with the victim on 100 hull: it was thrown into the test ground's pedestrians, killed five and
+  healed +8 each.
+
+**Open problems** (carried over, none new)
+
+- Ghosts overshoot the spin through an impact for a moment (left as it is, session 4).
+- Two cars left overlapping at rest online pass through each other until one moves off.
+- A bot on its side can lie for up to 5.5 s before it is still enough to self-right.
+- Molotov bottles meet walls in 2D; the pedestrians' side of shell and bullet ray casts is 2D.
+- Tyre marks and bloody tracks are skipped where a wheel isn't on the flat ground (ramps, the tube's floor).
+- Real phone FPS (above).
+
+The branch is ready to merge; ask the user before merging it into `master`.

@@ -53,9 +53,15 @@ lose by wrecking your own car or running out of time.
   approaching 50 is announced at 25, 40 and 45); rivals are marked on the minimap,
   and each car shows a name and a hull bar above it.
 - **Ramming**: that's what the bull bar on the nose is for — ramming nose-first into a side or a rear doesn't hurt it at all.
-  Damage depends on the closing speed: it grows linearly up to ~60 km/h and three times slower after that, so a single hit can't
+  Damage depends on the closing speed: how fast the two cars' contact points approach each other along the contact
+  normal, so the direction of the hit is already in it — head-on at 100 against 80 km/h is a 178 km/h hit, catching up
+  at 55 on a car doing 50 is 5 km/h, a 15° side swipe at 60/60 is 16 km/h (below 16 km/h — `CAR_HIT.threshold` — no
+  damage). It grows linearly up to ~60 km/h and three times slower after that, so a single hit can't
   wreck a car from full hull. Nose into a side: 20 km/h — rival −3, 40 — −20, 60 — −36, 80 — −48, 100 — −55,
-  130 — −68, 160 — −81; yourself 0. Pushing does no damage. Walls, buildings and thick poles still hurt when hit nose-first (the nose resists them only slightly better).
+  130 — −68, 160 — −81; yourself 0. Head-on, each nose with its bull bar takes 0.3 of that (100 against 80 km/h: −32
+  to each). Pushing does no damage. Cars are rigid bodies, so a hit also shoves, spins and can roll the other car: a
+  parked car rammed in the side at 60 km/h is thrown at ~32 km/h and leans ~3°, at 100 — ~59 km/h and ~13°, at 125 it
+  goes over (see [Physics](#physics)). Walls, buildings and thick poles still hurt when hit nose-first (the nose resists them only slightly better).
   Once the bull bar has fallen off, the nose is softer and takes damage when ramming. Whoever wrecks a car by ramming or with the cannon (the last hit
   within 4 s before the explosion) gets +15 hull — both the player and bots; the player also gets +1000 points and +12 s on the timer (`RACE.wreckTime`) — hunting pays off. A wrecked car is out.
 - **Cannon** — on the roof of every car. It doesn't aim: the shell flies straight along the car's heading, so you aim
@@ -93,9 +99,14 @@ lose by wrecking your own car or running out of time.
   and runs away. Someone who is down can be crushed by driving over them. Above 40 km/h the body
   flies off tumbling, hits walls (blood on the walls), and leaves a corpse with a growing pool of blood. Above
   ~85 km/h it is torn to pieces. Driving over corpses, bloody tire tracks, blood spatter on the "windshield" (on screen).
-- **Damage**: hitting a wall, building, thick concrete pole, tree or column above ~29 km/h
-  takes away "hull": 2.4 per m/s of the impact speed above 8 m/s (nose into a wall at 100 km/h — −35 with the bull bar,
-  whose armour takes off a quarter, −47 without it; thick poles, trees and columns ×1.15). The body dents where it was hit, the bull bar
+- **Damage**: hitting a wall, building, thick concrete pole, tree or column (on the test ground also the deck's
+  sides, the rails, the ramps' sides and the tube's walls) above ~29 km/h takes away "hull": 2.4 per m/s of the impact
+  speed — the closing speed at the contact point along its normal — above 8 m/s (nose into a wall at 100 km/h — −35 with the bull bar,
+  whose armour takes off a quarter, −47 without it; thick poles, trees and columns ×1.15). Curbs never hurt.
+  Touching down on the wheels after a flight harder than 13 m/s (speed into the surface) costs 1.6 hull per m/s above
+  that (a 6.4 m drop, 16 m/s — −4.8; the catapult at 70 km/h — ~−8); the body hitting the ground on its side or roof
+  costs 2.4 per m/s above 6 m/s (a flip landing on the roof at 12 m/s — −15), with sparks. The body dents where it was
+  hit (a roof hit dents the roof, a hard landing the underbody), the bull bar
   and bumper fall off, glass scatters, smoke appears, then fire. At zero — an explosion: wheels and the cannon fly off, nearby
   pedestrians are thrown around. Thin lamp posts, traffic lights, signs, bins, hydrants (they spout water) and benches are simply knocked down.
 - **Gates repair**: every gate (a checkpoint or a lap's finish line) gives +6 hull (`RACE.cpHeal`) — to
@@ -116,44 +127,75 @@ lose by wrecking your own car or running out of time.
   A lot the same size as the city and behind the same wall, but instead of blocks it is flat asphalt with a 20 m grid,
   two buildings and a row of street props. Pedestrians stand in place and don't get scared (one knocked down gets up and stands where they fell):
   one with Molotov cocktails (throws as usual), a crowd of 20 further away, and beyond it a line of 50 spaced 2 m apart. A dead one
-  stands up again in their spot after 5 s if no car is within 8 m. No rivals, no track, no timer and no win condition — only
-  your own car; if it gets wrecked — «ЕЩЁ ЗАЕЗД». Single player only. New mechanics should be added here too.
-  Layout — `testGround()` in `src/world/city.js`.
-- **Rigid-body physics** — every car (yours and the bots, in the city, on the test ground and online) is a body in the
-  3D physics engine Rapier (`PHYSICS_PLAN.md`; the old 2D car physics is still in the code, unused, until it is
-  deleted). Each car is a 1200 kg body (centre of mass 0.55 m up) on four ray-cast springs; seen from above its
-  lower body has semicircular ends, and it slides along walls, poles and trees (friction 0.1, little sideways grip while
-  touching one), so a car glances off a pole or a building's corner as before instead of getting stuck. The same handling numbers as the old physics are applied as velocity changes while wheels
-  touch the ground, so top speed, acceleration, steering, the handbrake slide and reverse are unchanged (measured to
-  within 0.1%), but it jumps, lands nose first off a lip, and with one side up a ramp rolls over (it tips past ~59°).
-  The city is solid in 3D: buildings, the wall, poles, trees, columns, the fountain, the statue and the pumps; a curb
-  is a 0.15 m step bevelled over 0.3 m that cars bump over (~3.5° of pitch). Cars push each other as rigid bodies: a hit
-  can shove, spin and roll the other car. A car knocked sideways by a hit (another car, a shell's blast) can trip
-  over its own tyres: a parked car rammed in the side at 60 km/h leans ~3°, at 80 — ~8°, at 100 — ~13°, at 125 it goes
-  over. Driving itself never tips a car (full lock, the handbrake at top speed, curbs: under 1° of
-  lean); in 8-car races cars lean 10–25° in pile-ups, and about one race in twenty sees a car rolled over by a hard
-  side crash. On its side or roof and nearly still for 1.5 s a car rolls back onto its wheels («НА КОЛЁСА!»); `R`
-  does that at once. Gravity is 20 m/s². Damage follows the same rules, from the closing speed at the contact point
-  (measured within 3% of the old physics): walls and buildings (also the deck's sides, rails, ramps' sides and
-  the tube's walls), and rams — the closing speed along the contact normal, so head-on 100 against 80 km/h is a
-  178 km/h hit (−32 to each nose with its bull bar), catching up at 55 on a car doing 50 is 5 km/h (nothing), and a
-  15° side swipe at 60/60 is 16 km/h (nothing). New on this path: touching down on the wheels after a flight harder
-  than 13 m/s (into the surface) costs 1.6 hull per m/s above that (a 6.4 m drop, 16 m/s — −4.8); the body hitting the
-  ground on its side or roof costs 2.4 per m/s above 6 m/s (a flip landing on the roof at 12 m/s — −15), with sparks.
-  Shell blasts shove a car and tilt it away (a blast touching its side at 7 m/s: ~40°, 1 m away ~16°, 2 m ~7°); its
-  own grip can then trip it over. Shells, bullets and bottles fly from the barrel's real pose (a car nose-up on a ramp
-  fires upwards; its springs' few degrees are ignored) and hit the car's box turned with its body; shells and bullets
-  stop at any solid surface, the ground included. Pedestrians are hit by that box too: a car flying over their heads
-  or driving through the tube under them misses them, one landing on them hits them as hard as it falls. Street props
-  break when the body touches them, so a car flying over a bin misses it. The test ground also has
-  vertical play (`verticals()` in `src/world/city.js`): a big 3.5 m ramp in front of the line of 50 (at ~108 km/h you
-  land right in it), three 1.2 m kickers with a boost pad before them, a ramp over the tube's exit trench, the
-  underground tube on the west side (an open trench down 5.5 m, an 80 m covered tunnel with lights, a trench back
-  up; the trenches are fenced with 0.9 m rails, the camera stays under the tunnel's ceiling), a 6 m deck reached by
-  a 40 m ramp with eight pedestrians on it, orange boost pads (130 km/h along the heading) and a red catapult
-  (18 m/s straight up) right before a 4.5 m wall (it clears the wall from ~65 km/h). Settings — `PHYS` in
-  `src/physics/rapier.js`, `VEH` in `src/physics/vehicle.js`. Measurements — `tests/physics.js`, run in the browser.
+  stands up again in their spot after 5 s if no car is within 8 m. It also has vertical play for the physics:
+  - a big 3.5 m ramp in front of the line of 50: at ~108 km/h you land right in it, nose first; with one side up it
+    you roll over;
+  - three 1.2 m kickers with a boost pad before them, and a ramp over the tube's exit trench (clears it from ~79 km/h);
+  - the underground tube on the west side: an open trench down 5.5 m, an 80 m covered tunnel with lights and a
+    pedestrian standing on its roof, a trench back up; the trenches are fenced with 0.9 m rails, and the camera stays
+    under the tunnel's ceiling;
+  - a 6 m deck reached by a 40 m ramp, with eight pedestrians on it;
+  - orange boost pads (130 km/h along the heading) and a red catapult (18 m/s straight up) right before a 4.5 m wall
+    (it clears the wall from ~65 km/h).
+
+  No rivals, no track, no timer and no win condition — only
+  your own car; if it gets wrecked — «ЕЩЁ ЗАЕЗД». Single player only (online only from a test script). New mechanics
+  should be added here too. Layout — `testGround()` and `verticals()` in `src/world/city.js`.
 - **Back to menu** in single player is available from pause and from the results screen (online, the same place has «ВЫЙТИ ИЗ КОМНАТЫ»): the race is reset and cars return to the start.
+
+## Physics
+
+Every car — yours, the bots', other players' online — is a rigid body in the 3D physics engine **Rapier**
+(`@dimforge/rapier3d-compat` 0.19.3; its WASM is embedded, so the single file still works on its own). Collisions,
+gravity, suspension, jumps, rollovers and lying on any side come out of one system; the game adds its rules on top:
+the arcade handling, damage, tripping and self-righting. How it was built and measured — `PHYSICS_PLAN.md`.
+
+- **World**: fixed steps of 1/120 s (at most 8 per frame: after a long freeze the game slows down rather than
+  catching up); the rendered pose is interpolated between the last two steps. Gravity is 20 m/s² — arcade, short
+  punchy jumps. The static colliders are built from the same seeded city data on every client: the ground, buildings,
+  the wall, poles, trees, columns, the fountain, the statue, planters and pumps (upright cylinders and boxes), the test
+  ground's ramps, deck and tube (convex hulls). A curb is a 0.15 m step bevelled over 0.3 m that cars bump over (~3.5°
+  of pitch). Walls and obstacles have friction 0.1, the ground 0.5.
+- **The car**: 1200 kg, centre of mass 0.55 m above the wheels' contact, inertia 2050 / 2250 / 600 kg·m² (pitch / yaw
+  / roll). The chassis is a 2.2 × 0.76 × 4.5 m lower body whose ends are semicircles seen from above, so a car glances
+  off a pole or a building's corner instead of snagging, plus a cabin box. Four ray-cast wheels: suspension rest
+  0.3 m, travel 0.2 m, stiffness 50 and damping 3 / 3.5 per kg (0.1 m of sag); the tyres themselves hold nothing.
+- **Arcade layer**: while wheels touch the ground, the handling (`Car._drive`: thrust curve, brake, the steering table,
+  lateral grip and the handbrake slide) is applied to the body as velocity changes, scaled by the share of wheels on
+  the ground and faded out as the car leans from ~53° to ~70°. Only the spin about the car's own up axis is set; pitch
+  and roll stay physical, and cornering acts at the centre of mass, so the body doesn't lean in turns (the visible
+  body roll is a cosmetic spring). Measured: top speed 126 km/h; 0 → 1 / 2 / 3 / 5 / 9 s: 43 / 77 / 99 / 119 /
+  125.5 km/h; yaw rate at 40 / 60 / 100 km/h: 120.6 / 107.4 / 69.9 °/s (on full lock at 125 km/h the car slows to
+  ~121 km/h: 58 °/s); reverse 39.8 km/h; the speedometer matches the real distance. Driving itself never tips a car
+  (full lock, the handbrake at top speed, curbs: under 1° of lean). While the body leans on a wall, a pole or a tree,
+  only a quarter of the sideways grip is applied, so a car pushing into one slides along it instead of sticking.
+- **Tripping**: for 0.4 s after a hit (another car, a blast), sideways grip harder than 40 m/s² (the hardest turn
+  needs ~35) acts ×1.5 at the wheels' contact, below the centre of mass, so a car knocked sideways can trip over its
+  own tyres. Only the sideways speed the hit itself gave it counts. In 8-car races cars lean 10–25° in pile-ups, and a
+  car rolls over in about one race in five, always from a hard side crash or blasts.
+- **Rollovers and self-righting**: rolled past ~59° a car falls over. On its side or roof (its up vector less than
+  half up) and nearly still (under 1.5 m/s and 1.5 rad/s) for 1.5 s, it rolls back onto its wheels («НА КОЛЁСА!»):
+  still a physical body, so walls push it away, turned upright about its centre of mass at up to 6 rad/s with its
+  heading kept, for at most 1.5 s. `R` on a tipped car does that at once.
+- **Blasts** shove a car (`CANNON.push`, 7 m/s at the centre) with a tenth of it upwards and tilt it away at 1 rad/s
+  per m/s: a blast touching its side throws a parked car at 21 km/h and tilts it 40°, 1 m away — 16 km/h and 16°,
+  2 m — 11 km/h and 7°, 3 m — 6 km/h and 3°.
+- **Weapons and pedestrians** use the car's box turned with its body (2.1 × 1.7 × 4.7 m, up to 2.2 m with the
+  cannon). Shells and bullets fly from the barrel's real pose (a car nose-up on a ramp fires upwards; the springs' few
+  degrees are ignored) and stop at any solid surface, the ground included; a car on its roof fires into the ground.
+  A pedestrian is hit by that box too: a car flying over heads or driving through the tube under them misses them,
+  one landing on them hits as hard as it falls. Street props are sensors: they break when the body touches them faster
+  than 2.5 m/s (a car flying over a bin misses it) and slow the car a little (at 40 km/h a lamp or a bench takes off
+  ~12%, a bin ~6%).
+- **Everything else is 2D.** Pedestrians, debris, the camera and the bots' navigation and line of sight use a 2D world
+  on the XZ plane (buildings are AABBs, poles are circles, a spatial grid, DDA ray casts), with heights from the car's
+  real pose — enough for an arcade game and cheap on phones.
+- **Cost** (a desktop PC, a phone-sized 375 × 812 window, `?q=low`): a battle royale of 20 cars takes ~3.3 ms a frame
+  — the simulation 1.6 ms (of it the physics 0.7: Rapier's world 0.37, the cars' controls and suspension 0.24), the
+  rendering 1.8 ms; with 2 cars 2.2 ms. Rapier adds ~2.2 MB to the bundle (0.85 MB gzipped) and 10–60 ms to the boot.
+
+Settings — `PHYS` in `src/physics/rapier.js`, `VEH` and `GHOST` in `src/physics/vehicle.js`. Measurements —
+`tests/physics.js` (single player) and `tests/net.js` (two clients), run in the browser.
 
 ## Multiplayer
 
@@ -191,8 +233,8 @@ mode (classic / crew), number of bots (0–7, in battle also 10 / 15 / 19; at mo
 in the lobby. A room only admits players with the same fingerprint; a room with a different version is greyed out in the list with a note.
 
 **How it works.** The server (`server/server.js`) handles the lobby, rooms and message relaying; it doesn't simulate the game.
-Everyone simulates their own car, and the host also simulates the bots; other cars arrive as snapshots 20 times a second and
-are smoothed. Ram damage is computed by the rammer (their own car is exact) and sent to the victim's owner;
+Everyone simulates their own car, and the host also simulates the bots; other cars arrive as snapshots 20 times a second
+and follow them as ghosts (below). Ram damage is computed by the rammer (their own car is exact) and sent to the victim's owner;
 shells fly for everyone, and the owner of the hit car computes the damage locally. A car is simulated by whoever is driving it (and if a bot
 is driving — by whoever is in the gun); a gunner in someone else's car rotates the turret locally and sends its angle to the owner, and also fires
 locally. Street props (lamp posts, traffic lights, signs, bins, hydrants, benches) are broken by whoever's car or shell hit them,
@@ -207,9 +249,9 @@ Every client measures its round trip to the server (a ping every 2 s) and sends 
 adds its own half and carries each snapshot forward by that much (at most 0.15 s), so a car is shown where it is now, not
 where it was when the snapshot left.
 
-**On the rigid-body physics** a snapshot carries a car's full pose: position with height, rotation (one
+**Snapshots and ghosts.** A snapshot carries a car's full pose: position with height, rotation (one
 number: the quaternion's three smallest components, 10 bits each, ~0.1°), velocity and spin on all three axes — 80 bytes
-per car instead of 66 (a host with 7 cars sends 12 KB/s). A car another computer drives is a *ghost*: a body of a car's
+per car (a host with 7 cars sends 12 KB/s). A car another computer drives is a *ghost*: a body of a car's
 mass with no gravity that touches only the cars driven here, pulled each physics step towards its snapshot (carried
 forward by its velocities, in the air with gravity, never below the ground) by a critically damped spring of 12 rad/s.
 So jumps, rollovers and self-righting look the same on every screen (in tests: a ghost 0.1 m and ~1° from its car on
@@ -288,8 +330,8 @@ The build doesn't rename functions, so the stack trace shows real names (`Pedest
 src/
   main.js             game loop, states (menu/play/pause/crash), scoring, wiring between systems
   config.js           quality settings and city dimensions
-  car.js              arcade physics (bicycle model + lateral grip → drifts),
-                      impulse collisions, damage, body vertex deformation, explosion
+  car.js              the car: model, handling (the arcade layer: bicycle model + lateral grip → drifts),
+                      damage rules, body vertex deformation, explosion, the muzzle and turret on a tilted body
   pedestrians.js      crowd: instanced body parts, AI (sidewalk graph, panic), flight, corpses, gibs
   cannon.js           cannons and shells: firing along the heading, flight, blast, damage (settings — CANNON)
   mg.js               machine gun: hitscan bullets, tracers, turret auto-aim, overheating (settings — MG)
@@ -298,16 +340,11 @@ src/
   input.js            keyboard/mouse, touch joystick, gamepad
   hud.js              HUD, popup captions, blood on screen, minimap
   audio.js            synthesized sound: engine and effects buses, volume settings
-  physics/collision.js  2D collisions: AABBs + circles, spatial grid, DDA raycast
+  physics/collision.js  the 2D world (pedestrians, debris, camera, bots' sight): AABBs + circles, grid, DDA raycast
   physics/rapier.js   the Rapier world, static colliders from the city, prop sensors, fixed 1/120 s
                       steps, car-vs-car hits, ray casts for shells and bullets
   physics/vehicle.js  a car as a rigid body — chassis, ray-cast suspension, arcade layer, tripping,
                       self-righting, wall / landing / roof hits, blasts; a ghost of another player's car (network)
-tests/physics.js      in-browser measurements of the physics: handling numbers, lean in a race, bots' pace, side hits,
-                      damage (walls, landings, rams), blasts, pedestrians and props against the car's box, the muzzle,
-                      bot games (stuck bots, wrecks, kills), the bot gunner on a tilted car
-tests/net.html, net.js  two games side by side in one page, joined in a room through the server: a car vs its ghost
-                      in jumps, rollovers and ordinary driving, rams, the gunner on a tilted car, reconnecting, bytes
   world/city.js       city generation (and the test ground), pedestrian graph, minimap
   race.js             track, checkpoint gates, laps, timer (settings — RACE at the top of the file)
   racers.js           rivals: personalities (RIVALS), AI — track, hunting cars and pedestrians, car hits (CAR_HIT)
@@ -324,14 +361,18 @@ tests/net.html, net.js  two games side by side in one page, joined in a room thr
   world/textures.js   procedural canvas textures (facades, asphalt, blood…)
   effects/            particles (custom shader), decals (blood, tire tracks), debris
 server/server.js      server: serves dist/, lobby and rooms, relaying, who was first
+tests/physics.js      in-browser measurements of the physics: handling numbers, lean in a race, bots' pace, side hits,
+                      damage (walls, landings, rams), blasts, pedestrians and props against the car's box, the muzzle,
+                      bot games (stuck bots, wrecks, kills), the bot gunner on a tilted car
+tests/net.html, net.js  two games side by side in one page, joined in a room through the server: a car vs its ghost
+                      in jumps, rollovers and ordinary driving, rams, the gunner on a tilted car, reconnecting, bytes
 ```
 
-Cars are bodies in the Rapier physics engine (see above). Everything else collides in the XZ plane (buildings are
-AABBs, poles are circles), which is enough for an arcade game and cheap on phones: pedestrians, the camera and bot navigation still use the 2D world, with heights from the car's real
-pose (pedestrians, shells, bullets and bottles test the car's box turned with its body). Pedestrians (all body parts) are drawn in ~6 draw calls via
+Cars are bodies in the Rapier physics engine; everything else collides in the XZ plane (see [Physics](#physics)).
+Pedestrians (all body parts) are drawn in ~6 draw calls via
 `InstancedMesh`. On a weak device the render resolution drops automatically if the FPS sags.
 
-Main tuning numbers: `PHYS` in `src/physics/rapier.js` and `VEH` in `src/physics/vehicle.js` (gravity, step, wall friction, mass, centre of mass, chassis shape and friction, grip against obstacles — `leanGrip`, suspension, tripping — `tripAccel`/`trip`/`tripTime`, landing and roof damage — `landSafe`/`landScale`/`roofSafe`/`roofScale`, blasts — `blastLift`/`blastSpin`, self-righting, pads; `GHOST` — other players' cars over the network: the spring's `rate`, how far a snapshot is carried forward — `ahead`, `sink`, `snap`, passing through — `deep`/`loose`, a just-hit ghost — `holdShow`/`hold`, reconciling knocks — `knockWindow`), `SNAP_HZ`/`LEAD_MAX` in `src/net/netplay.js` (snapshots a second, the most a snapshot is carried forward for the network's delay), `P` in `src/car.js` (thrust, grip, steering at speed — the `yawCap` table and `hardFrom`/`hardTo`/`steerTime`/`yawResp`, steering return — `steerReturn`/`yawUnwind`, damage threshold and multiplier),
+Main tuning numbers: `PHYS` in `src/physics/rapier.js` (gravity, the step and `maxSteps` per frame, ground and wall friction) and `VEH` in `src/physics/vehicle.js` (`mass`, centre of mass — `com`, `inertia`, chassis shape — `lower`/`cabin`, its `friction`/`restitution`, `angularDamping`, suspension — `wheelRadius`/`rest`/`travel`/`stiffness`/`compression`/`relaxation`, the arcade layer's fade with lean — `upFull`/`upNone`, grip against obstacles — `leanGrip`, the flip rule — `flipUp`/`flipAfter`/`flipStill`/`rightRate`/`rightLift`/`rightTime`, tripping — `tripAccel`/`trip`/`tripTime`, wall hits — `wallNormal`, landing and roof damage — `landAir`/`landSafe`/`landScale`/`roofSafe`/`roofScale`, blasts — `blastLift`/`blastSpin`, pads — `boost`/`launch`; `GHOST` — other players' cars over the network: the spring's `rate`, how far a snapshot is carried forward — `ahead`, `sink`, `snap`, passing through — `deep`/`loose`, a just-hit ghost — `holdShow`/`hold`, reconciling knocks — `knockWindow`), `SNAP_HZ`/`LEAD_MAX` in `src/net/netplay.js` (snapshots a second, the most a snapshot is carried forward for the network's delay), `P` in `src/car.js` (thrust, grip, steering at speed — the `yawCap` table and `hardFrom`/`hardTo`/`steerTime`/`yawResp`, steering return — `steerReturn`/`yawUnwind`, damage threshold and multiplier),
 `HEAL` in `src/main.js` (repair for kills), `RACE` in `src/race.js` (laps, pace, time bonuses),
 `CANNON` in `src/cannon.js` (reload, damage, blast radius), `MG` in `src/mg.js` (machine gun), `MOLOTOV` in `src/molotov.js` (cocktails), `RIVALS` (personality `aggr`/`gore`, speed; battle bots beyond seven reuse the same personalities under names from `EXTRA`), `MAX_CARS`/`MAX_CARS_ROYALE` (cars in a race / in battle),
 `HUNT`/`GORE`/`PREY_WEIGHT`/`HUNT_DELAY`, `STUCK` and `CAR_HIT` in `src/racers.js` (how personality scales turn into behavior,

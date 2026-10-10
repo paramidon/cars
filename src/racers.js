@@ -1,4 +1,4 @@
-import { Car, HIT_Z, HIT_R, CAR_INERTIA, sameTeam } from './car.js';
+import { Car, sameTeam } from './car.js';
 import { ST } from './pedestrians.js';
 import { CarTag } from './tag.js';
 import { ZONE, roadPointNear } from './zone.js';
@@ -116,7 +116,6 @@ export const CAR_HIT = {
   over: 0.35, // во сколько раз медленнее
   // front — только лоб в лоб; если таранишь лбом в бок или зад, лоб с кенгурятником не страдает вовсе
   zone: { front: 0.3, side: 1.25, rear: 1.0 },
-  restitution: 0.3,
 };
 
 const TOP_SPEED = 35; // ≈ максималка игрока, м/с
@@ -595,78 +594,6 @@ export class Rival {
     this.target = null;
     this.prey = null;
   }
-}
-
-// ---------------------------------------------------------------- столкновения машин
-const _c = { nx: 0, nz: 0, depth: 0, px: 0, pz: 0 };
-
-/** Все пары машин; onHit(a, b, impact, px, pz, nx, nz) — n смотрит от b к a. */
-export function collideCars(cars, onHit) {
-  for (let i = 0; i < cars.length; i++) {
-    for (let j = i + 1; j < cars.length; j++) collidePair(cars[i], cars[j], onHit);
-  }
-}
-
-/** Чужие машины по сети (remote) не двигаем: их сдвинет и толкнёт их владелец, у себя — тем же ударом. */
-function collidePair(A, B, onHit) {
-  if (A.remote && B.remote) return;
-  const ddx = B.x - A.x, ddz = B.z - A.z;
-  if (ddx * ddx + ddz * ddz > 36) return;
-  const sa = Math.sin(A.yaw), ca = Math.cos(A.yaw), sb = Math.sin(B.yaw), cb = Math.cos(B.yaw);
-  let best = -1;
-  for (const oa of HIT_Z) {
-    const ax = A.x + sa * oa, az = A.z + ca * oa;
-    for (const ob of HIT_Z) {
-      const bx = B.x + sb * ob, bz = B.z + cb * ob;
-      const dx = ax - bx, dz = az - bz;
-      const d = Math.hypot(dx, dz);
-      const depth = 2 * HIT_R - d;
-      if (depth <= best) continue;
-      best = depth;
-      _c.nx = d > 1e-6 ? dx / d : 1;
-      _c.nz = d > 1e-6 ? dz / d : 0;
-      _c.depth = depth;
-      _c.px = (ax + bx) / 2;
-      _c.pz = (az + bz) / 2;
-    }
-  }
-  if (best <= 0) return;
-  const { nx, nz, depth, px, pz } = _c;
-  // развести поровну (если одна чужая — своя отходит целиком)
-  const wa = A.remote ? 0 : B.remote ? 1 : 0.5, wb = 1 - wa;
-  A.x += nx * depth * wa;
-  A.z += nz * depth * wa;
-  B.x -= nx * depth * wb;
-  B.z -= nz * depth * wb;
-
-  const rAx = px - A.x, rAz = pz - A.z, rBx = px - B.x, rBz = pz - B.z;
-  const vAx = A.vx + A.angVel * rAz, vAz = A.vz - A.angVel * rAx;
-  const vBx = B.vx + B.angVel * rBz, vBz = B.vz - B.angVel * rBx;
-  const vn = (vAx - vBx) * nx + (vAz - vBz) * nz;
-  if (vn >= 0) return;
-  const I = CAR_INERTIA;
-  const rnA = rAz * nx - rAx * nz, rnB = rBz * nx - rBx * nz;
-  const j = (-(1 + CAR_HIT.restitution) * vn) / (2 + (rnA * rnA) / I + (rnB * rnB) / I);
-  const ka = A.remote ? 0 : 1, kb = B.remote ? 0 : 1;
-  A.vx += j * nx * ka;
-  A.vz += j * nz * ka;
-  A.angVel += ((rnA * j) / I) * ka;
-  B.vx -= j * nx * kb;
-  B.vz -= j * nz * kb;
-  B.angVel -= ((rnB * j) / I) * kb;
-  // трение металла о металл
-  const tx = -nz, tz = nx;
-  const vt = (vAx - vBx) * tx + (vAz - vBz) * tz;
-  const rtA = rAz * tx - rAx * tz, rtB = rBz * tx - rBx * tz;
-  let jt = -vt / (2 + (rtA * rtA) / I + (rtB * rtB) / I);
-  jt = clamp(jt, -0.4 * j, 0.4 * j);
-  A.vx += jt * tx * ka;
-  A.vz += jt * tz * ka;
-  A.angVel += ((rtA * jt) / I) * ka;
-  B.vx -= jt * tx * kb;
-  B.vz -= jt * tz * kb;
-  B.angVel -= ((rtB * jt) / I) * kb;
-  if (onHit) onHit(A, B, -vn, px, pz, nx, nz);
 }
 
 /**
