@@ -216,6 +216,30 @@ lose by wrecking your own car or running out of time.
   royale with N bots (single player as well: the menu has no network button there — a room doesn't check its players'
   maps). The race's gates: before the big ramp, after its landing, on the deck, north of the deck (the
   way there is off its edge), in the tunnel, and the finish after the tube (`course` in `buildCity()`).
+- **Атомград** — the second race map (the main menu's «Карта: ГОРОД / АТОМГРАД», or `?map=retro`; switching reloads
+  the page). A city of the 1960s' future on rolling ground, inside the same 392 m square and fence as the city: saucer
+  towers, geodesic-looking domes, slabs with ribbon windows or breeze-block screens and roof fins, diners with butterfly
+  roofs, starburst signs, palms, neon, a rocket and an atom on the lots, a monorail round the fence, a sunset sky. The
+  ground is a heightfield (a Rapier heightfield collider, 2 m cells; roads, sidewalks and lawns are laid exactly on its
+  triangles), and there are no curbs — the whole city is drivable apart from the buildings. The race (3 laps, the same
+  rules) goes round the 1.2 km ring road:
+  - start on the south boulevard (22 m wide) under the «АТОМГРАД» arch; in its middle two 2.4 m stunt ramps with a
+    10 m gap between them (from ~70 km/h you land on the down ramp, ~0.5–0.7 s in the air; the side lanes go round);
+  - north over the **skyway** — a 7 m deck on Y-pylons over the east road and its three crossings, 45 m ramps at both
+    ends, rails along it. A 1.2 m kicker at the end of its first half throws you over a 10 m **gap** (glowing chevrons
+    lead to it; from ~60 km/h you clear it; too slow — a 7–8 m fall onto the street under it, the gap's gate is
+    already behind you);
+  - west over **the hill** — a 10 m plateau with 70 m slopes (≤ 13°), the observatory dome and the saucer tower on it;
+    a 1.4 m kicker on its west lip throws you down the slope (~1–1.2 s in the air; at 130 km/h the landing costs ~18 hull);
+  - south along the bed of **the dry canal** — 7 m deep with 34° concrete banks (rails along the rims; it slopes in
+    and out over 58 m at its ends) under three bridges (the inner streets) with orange parabolic arches;
+  - in the middle a **sunken plaza** (a 4.5 m bowl) with a roundabout round a Sputnik in atom rings.
+
+  Gates: on the boulevard after the stunt ramps, on the skyway before the gap (cars under it don't pass it), on the
+  hilltop, two in the canal between the bridges, and the finish. Pedestrians walk the inner blocks' sidewalks and
+  zebras. Online, the map is part of the room's version (`…@retro`): a room only takes players on the same map; the
+  lobby shows a room's map and, for a room on the other one, «другая карта». Layout — `ATOM` and `buildRetro()` in
+  `src/world/retro.js`; its sky and light — `ATOM_LOOK`.
 - **Back to menu** in single player is available from pause and from the results screen (online, the same place has «ВЫЙТИ ИЗ КОМНАТЫ»): the race is reset and cars return to the start.
 
 ## Physics
@@ -298,8 +322,10 @@ the arcade handling, damage, tripping and self-righting. How it was built and me
   edge, onto a catapult) to 40 m — if a car entering there at 8 m/s reaches the band's middle speed by the lip at full
   throttle. A jump lands at the end of its run-out (where the path goes on). City: none; test ground: 655 — 68 off the
   ramps (the big one, the kickers), 465 off the deck's edges and the tube's portals, 122 onto the catapult (the ramp over
-  the tube's exit trench needs ~25 m/s at its lip, more than a car gets there: no jump), found in ~30 ms. Building the grid takes 0.13–0.3 s on a
-  desktop (city: 59 055 floors; test ground: 65 971, 318 of them on a second layer — the street over the tube) and
+  the tube's exit trench needs ~25 m/s at its lip, more than a car gets there: no jump), found in ~30 ms; Атомград: 69 —
+  off the hilltop kicker (14–20 m/s), over the skyway's gap (16–22 m/s) and the stunt ramps (20–26 m/s), ~60 ms. Building the grid takes 0.13–0.3 s on a
+  desktop (city: 59 055 floors; test ground: 65 971, 318 of them on a second layer — the street over the tube;
+  Атомград: 64 338, 1 048 on a second layer — the skyway and the bridges, on a heightfield) and
   1.7–2.2 MB. `?debug=nav` draws it: a square per floor, coloured by kind (road green, sidewalk blue, ramp yellow,
   deck grey), upper layers lighter; unwalkable floors small dark red; the jumps — the run-up white, the flights at the
   band's slowest and fastest speed orange (off a ramp), cyan (off an edge) or red (a catapult); and every bot's current
@@ -352,7 +378,7 @@ mode (classic / crew), number of bots (0–7, in battle also 10 / 15 / 19; at mo
   are a team too: shared points, they don't hurt each other. You can play against a friend both as a driver and as a gunner.
 
 **Versions.** The game has a fingerprint: the version from `package.json` + a hash of the sources (`scripts/build-id.mjs`), shown
-in the lobby. A room only admits players with the same fingerprint; a room with a different version is greyed out in the list with a note.
+in the lobby. A room only admits players with the same fingerprint; a room with a different version is greyed out in the list with a note. The map is part of the version (Атомград adds `@retro`), so a room's players are all on one map.
 
 **How it works.** The server (`server/server.js`) handles the lobby, rooms and message relaying; it doesn't simulate the game.
 Everyone simulates their own car, and the host also simulates the bots; other cars arrive as snapshots 20 times a second
@@ -435,6 +461,7 @@ URL parameters:
 - `?q=low` / `?q=high` — force low (no shadows, fewer pedestrians) or high graphics
   (default: phone — low, desktop — high);
 - `?peds=100` — how many live pedestrians to keep in the city (default 84 on desktop, 54 on a phone);
+- `?map=retro` — Атомград instead of the city (the menu's map switch does the same);
 - `?map=test` — the test ground instead of the city; `?map=test&bots=7` — a race (or battle royale, as chosen in the
   menu) on it with 7 bots;
 - `?debug` — FPS counter; `?debug=nav` — also draws the bots' nav grid and their paths (magenta lines; see [Physics](#physics));
@@ -471,6 +498,7 @@ src/
   physics/vehicle.js  a car as a rigid body — chassis, ray-cast suspension, arcade layer, tripping,
                       self-righting, wall / landing / roof hits, blasts; a ghost of another player's car (network)
   world/city.js       city generation (and the test ground), pedestrian graph, minimap
+  world/retro.js      Атомград: the heightfield terrain, skyway, canal, ramps, retro buildings, pedestrian graph, minimap
   race.js             track, checkpoint gates, laps, timer (settings — RACE at the top of the file)
   racers.js           rivals: personalities (RIVALS), AI — driving paths to gates and targets, hunting cars and
                       pedestrians, avoiding cars, getting out of traps, car hits (CAR_HIT)

@@ -1,10 +1,16 @@
 import { version } from '../../package.json';
+import { MAP } from '../config.js';
 
 /** Версия сборки: номер из package.json + отпечаток исходников (scripts/build-id.mjs). */
 // eslint-disable-next-line no-undef
 export const BUILD_VERSION = `${version}+${typeof __BUILD__ === 'string' ? __BUILD__ : 'dev'}`;
-/** Версия игры для сетевой комнаты. */
-export const GAME_VERSION = BUILD_VERSION;
+/**
+ * Версия игры для сетевой комнаты. The map is part of it (`@retro`): the server only lets players of one version into
+ * a room, so everyone in a room is on the same map.
+ */
+export const GAME_VERSION = MAP === 'city' ? BUILD_VERSION : `${BUILD_VERSION}@${MAP}`;
+/** A room's version → the map it plays on. */
+export const mapOfVersion = (v) => (String(v).split('@')[1] || 'city');
 const PING_MS = 2000; // how often to measure the round trip to the server
 const PINGS = 5; // … over how many of the last ones
 

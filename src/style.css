@@ -1469,6 +1469,7 @@ body.test .test-only {
 }
 
 body.test #menu .goal:not(.test-only),
+body.test #map-setup,
 body.test #solo-setup,
 body.test #btn-net,
 body.test #race {
@@ -1478,4 +1479,13 @@ body.test #race {
 /* the test ground with bots (?map=test&bots=N) is single-player too: a room doesn't know its players' maps */
 body.testmap #btn-net {
   display: none;
+}
+
+/* Атомград: its line under the map switch */
+.retro-only {
+  display: none;
+}
+
+body.retro .retro-only {
+  display: block;
 }

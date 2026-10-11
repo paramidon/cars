@@ -1,4 +1,4 @@
-import { NetClient, GAME_VERSION, BUILD_VERSION, defaultServer, wsUrl } from './client.js';
+import { NetClient, GAME_VERSION, BUILD_VERSION, defaultServer, wsUrl, mapOfVersion } from './client.js';
 import { makeStart, botCount, TEAMS } from './netplay.js';
 import { MAX_CARS, maxCars } from '../racers.js';
 
@@ -9,6 +9,7 @@ const BACK_MS = 85000; // столько сервер держит место в
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const MODE_NAME = { classic: 'классика', crew: 'экипажи' };
 const GAME_NAME = { race: 'гонка', royale: 'битва' };
+const MAP_NAME = { city: 'город', retro: 'Атомград', test: 'полигон' };
 const parse = (key, v) => (key === 'bots' || key === 'team' ? Number(v) : key === 'teams' ? v === 'true' : v);
 
 /** Подсветить в переключателях .seg выбранные значения; enabled = false — только показать. */
@@ -390,10 +391,14 @@ export class Lobby {
     }
     list.innerHTML = this.rooms
       .map((r) => {
-        const other = r.version !== GAME_VERSION;
-        const why = other ? `другая версия: ${esc(r.version)}` : r.state !== 'lobby' ? 'идёт заезд' : r.count >= r.max ? 'полная' : '';
+        const other = r.version !== GAME_VERSION, map = mapOfVersion(r.version);
+        // the same build on another map: say which (the map is chosen in the main menu)
+        const otherMap = other && r.version.split('@')[0] === BUILD_VERSION;
+        const why = otherMap
+          ? `другая карта: ${esc(MAP_NAME[map] || map)} — выбери её в главном меню`
+          : other ? `другая версия: ${esc(r.version)}` : r.state !== 'lobby' ? 'идёт заезд' : r.count >= r.max ? 'полная' : '';
         const st = r.settings || {};
-        const about = `${GAME_NAME[st.game] || 'гонка'} · ${MODE_NAME[st.mode] || ''} · ботов ${st.bots ?? '?'}${st.teams ? ' · команды' : ''}`;
+        const about = `${MAP_NAME[map] || map} · ${GAME_NAME[st.game] || 'гонка'} · ${MODE_NAME[st.mode] || ''} · ботов ${st.bots ?? '?'}${st.teams ? ' · команды' : ''}`;
         return `<button class="room-item" data-room="${esc(r.id)}" ${why ? 'disabled' : ''}>
           <span>${esc(r.name)}<small>хост ${esc(r.host || '?')} · ${about}</small></span><b>${r.count}/${r.max}</b>${why ? `<em>${why}</em>` : ''}</button>`;
       })

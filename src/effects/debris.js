@@ -86,7 +86,7 @@ export class Debris {
         const f = Math.exp(-3 * dt);
         it.vx *= f;
         it.vz *= f;
-        const g = this.groundHeight(o.position.x, o.position.z);
+        const g = this.groundHeight(o.position.x, o.position.z, o.position.y + 0.5);
         o.position.y = g + (it.theta / (Math.PI / 2)) * it.radius;
         if (it.theta >= Math.PI / 2 && it.omega === 0 && Math.abs(it.vx) + Math.abs(it.vz) < 0.1) it.resting = true;
         continue;
@@ -112,7 +112,7 @@ export class Debris {
           it.vz -= 1.4 * vn * push.nz;
         }
       }
-      const g = this.groundHeight(o.position.x, o.position.z) + it.radius;
+      const g = this.groundHeight(o.position.x, o.position.z, o.position.y + 0.5) + it.radius; // not a deck above it
       if (o.position.y < g) {
         o.position.y = g;
         if (it.vy < -2.5) {

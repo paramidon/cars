@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import './style.css';
-import { QUALITY, IS_TOUCH, DEBUG, DEBUG_NAV, MUTE, TEST_MAP, TEST_BOTS } from './config.js';
+import { QUALITY, IS_TOUCH, DEBUG, DEBUG_NAV, MUTE, MAP, TEST_MAP, TEST_BOTS } from './config.js';
 import { Physics, initRapier, rapierStats } from './physics/rapier.js';
 import { Vehicle } from './physics/vehicle.js';
 import { buildCity } from './world/city.js';
+import { buildRetro, ATOM_LOOK } from './world/retro.js';
 import { buildNav } from './nav/grid.js';
 import { navMesh, pathLines, jumpLines } from './nav/debug.js';
 import { NavPaths } from './nav/path.js';
@@ -49,6 +50,9 @@ const PLAYER_COLOR = '#e5262b';
 const SHADOW_EXTENT = 60;
 const SHADOW_MAP = 2048;
 const SOLO_KEY = 'cars-and-guts:solo';
+// sky, fog and light per map: the sky's top and horizon, fog near / far, hemisphere sky / ground / intensity, the sun
+const CITY_LOOK = { top: '#4a86c8', horizon: '#cfdde6', fog: [110, 360], hemi: ['#dcecff', '#6b5a48', 1.35], sun: ['#fff0d8', 2.4] };
+const LOOK = MAP === 'retro' ? ATOM_LOOK : CITY_LOOK;
 // автопилот моей машины, когда я сижу в пушке
 const AUTOPILOT = { name: 'АВТОПИЛОТ', color: '#b3121a', aggr: 0.1, gore: 0.12, speed: 0.95, corner: 12, lane: 0 };
 const AIM_MOUSE = 0.0032; // рад на пиксель мыши
@@ -76,15 +80,15 @@ class Game {
     $('app').appendChild(renderer.domElement);
 
     const scene = (this.scene = new THREE.Scene());
-    const horizon = new THREE.Color('#cfdde6');
+    const horizon = new THREE.Color(LOOK.horizon);
     scene.background = horizon;
-    scene.fog = new THREE.Fog(horizon, 110, 360);
+    scene.fog = new THREE.Fog(horizon, LOOK.fog[0], LOOK.fog[1]);
     this._sky(horizon);
 
     this.camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 1500);
 
-    scene.add(new THREE.HemisphereLight(0xdcecff, 0x6b5a48, 1.35));
-    const sun = (this.sun = new THREE.DirectionalLight(0xfff0d8, 2.4));
+    scene.add(new THREE.HemisphereLight(LOOK.hemi[0], LOOK.hemi[1], LOOK.hemi[2]));
+    const sun = (this.sun = new THREE.DirectionalLight(LOOK.sun[0], LOOK.sun[1]));
     sun.castShadow = QUALITY.shadows;
     if (QUALITY.shadows) {
       sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
@@ -101,7 +105,7 @@ class Game {
     // ------------------------------------------------------------ мир
     this.test = TEST_MAP && !TEST_BOTS; // тестовый полигон: один, без соперников, трассы и условий победы
     this.testMap = TEST_MAP; // the test ground (with ?bots=N a race or battle on it, see TEST_BOTS)
-    this.city = buildCity(scene, QUALITY, TEST_MAP);
+    this.city = MAP === 'retro' ? buildRetro(scene, QUALITY) : buildCity(scene, QUALITY, TEST_MAP);
     this.xray = new Xray(renderer, scene);
     this.fx = new FX(scene, this.city.groundHeight, QUALITY);
     this.debris = new Debris(scene, this.city.groundHeight, this.city.world);
@@ -188,6 +192,7 @@ class Game {
     document.body.classList.toggle('touch', IS_TOUCH);
     document.body.classList.toggle('test', this.test);
     document.body.classList.toggle('testmap', this.testMap);
+    document.body.classList.toggle('retro', MAP === 'retro');
     renderer.setAnimationLoop((t) => this._tick(t));
   }
 
@@ -197,7 +202,7 @@ class Game {
       side: THREE.BackSide,
       depthWrite: false,
       fog: false,
-      uniforms: { top: { value: new THREE.Color('#4a86c8') }, bottom: { value: horizon.clone() } },
+      uniforms: { top: { value: new THREE.Color(LOOK.top) }, bottom: { value: horizon.clone() } },
       vertexShader: 'varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
       fragmentShader: `uniform vec3 top; uniform vec3 bottom; varying vec3 vP;
         void main(){ float h = clamp(vP.y, 0.0, 1.0); gl_FragColor = vec4(mix(bottom, top, pow(h, 0.55)), 1.0);
@@ -292,6 +297,20 @@ class Game {
       });
     }
     this._syncSoloUI();
+    // the map: another one is built at load, so a reload with ?map=… (the city has none)
+    for (const btn of document.querySelectorAll('#map-setup button[data-v]')) {
+      btn.classList.toggle('on', btn.dataset.v === MAP);
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (btn.dataset.v === MAP) return;
+        const q = new URLSearchParams(location.search);
+        if (btn.dataset.v === 'city') q.delete('map');
+        else q.set('map', btn.dataset.v);
+        q.delete('bots');
+        const qs = q.toString();
+        location.href = location.pathname + (qs ? `?${qs}` : '') + location.hash;
+      });
+    }
     click('btn-resume', () => this._setPaused(false));
     click('btn-restart', () => this._again());
     click('btn-net', () => this.lobby.open());
@@ -1193,7 +1212,7 @@ class Game {
       pixelRatio: this.pixelRatio,
       quality: { low: QUALITY.low, shadows: QUALITY.shadows, peds: QUALITY.pedCount },
       touch: this.input.usingTouch,
-      map: this.testMap ? 'test' : 'city',
+      map: MAP,
       phys: {
         y: r1(car.y), up: Math.round(car.upY * 100) / 100, vy: r1(car.vy || 0), wheels: car.rb.contacts,
         righting: !!car.rb.righting, stepMs: Math.round(this.phys.stepMs * 1000) / 1000, steps: this.phys.steps,

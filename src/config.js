@@ -33,8 +33,13 @@ export const DEBUG = params.has('debug');
 export const DEBUG_NAV = params.get('debug') === 'nav';
 /** `?mute` — начать без звука, не меняя сохранённых настроек (удобно для автотестов). */
 export const MUTE = params.has('mute');
+/**
+ * The map: 'city' (default), 'retro' (`?map=retro` — Атомград, src/world/retro.js) or 'test' (`?map=test`). A map is
+ * built at load, so switching maps reloads the page.
+ */
+export const MAP = ['retro', 'test'].includes(params.get('map')) ? params.get('map') : 'city';
 /** `?map=test` — тестовый полигон: пустая площадка с парой домов, неподвижные пешеходы, без соперников и победы. */
-export const TEST_MAP = params.get('map') === 'test';
+export const TEST_MAP = MAP === 'test';
 /**
  * `?map=test&bots=N` — the test ground as a playable map: a race over its ramps, deck and tube (or a battle royale, as
  * chosen in the menu) with N bots, to exercise the bots' 3D navigation. Without it the test ground is a free ride.

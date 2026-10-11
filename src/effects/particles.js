@@ -144,7 +144,7 @@ export class ParticleSystem {
       col[i * 4 + 3] = a;
 
       if (k === KIND.SMOKE || k === KIND.FIRE) continue;
-      const gy = groundAt(pos[i3], pos[i3 + 2]) + 0.03;
+      const gy = groundAt(pos[i3], pos[i3 + 2], pos[i3 + 1] + 0.5) + 0.03; // the floor under it, not a deck above
       if (pos[i3 + 1] < gy) {
         if (k === KIND.BLOOD) {
           alive[i] = 0;

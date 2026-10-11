@@ -89,6 +89,8 @@ export class ChaseCamera {
     }
 
     let tx = car.x - fx * dist, tz = car.z - fz * dist, ty = car.y + height;
+    // on rolling ground (Атомград): stay over the slope behind the car
+    if (this.city.terrainAt) ty = Math.max(ty, this.city.terrainAt(tx, tz) + 1.5);
     // in the test ground's tube: stay under the ceiling and between the walls
     const roof = this.city.roofOver?.(car.x, car.z, car.y) || this.city.roofOver?.(tx, tz, car.y);
     if (roof) {

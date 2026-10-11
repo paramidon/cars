@@ -48,8 +48,9 @@ export async function initRapier() {
 
 export class Physics {
   /**
-   * solids — static colliders from buildCity(): { kind, box: [cx, cy, cz, hx, hy, hz] } | { kind, cyl: [cx, cy, cz,
-   * halfHeight, r] } | { kind, hull: [x, y, z, …] }.
+   * solids — static colliders from buildCity() / buildRetro(): { kind, box: [cx, cy, cz, hx, hy, hz] } | { kind, cyl:
+   * [cx, cy, cz, halfHeight, r] } | { kind, hull: [x, y, z, …] } | { kind, hf: { rows, cols, heights, sx, sz, cx, cz } }
+   * — a heightfield: rows cells along z, cols along x over sx × sz m centred on (cx, cz), heights column by column.
    */
   constructor(solids) {
     this.world = new RAPIER.World({ x: 0, y: -PHYS.gravity, z: 0 });
@@ -71,11 +72,14 @@ export class Physics {
   }
 
   addSolid(s) {
+    const f = s.hf;
     const desc = s.box
       ? RAPIER.ColliderDesc.cuboid(s.box[3], s.box[4], s.box[5]).setTranslation(s.box[0], s.box[1], s.box[2])
       : s.cyl
         ? RAPIER.ColliderDesc.cylinder(s.cyl[3], s.cyl[4]).setTranslation(s.cyl[0], s.cyl[1], s.cyl[2])
-        : RAPIER.ColliderDesc.convexHull(new Float32Array(s.hull));
+        : f
+          ? RAPIER.ColliderDesc.heightfield(f.rows, f.cols, f.heights, { x: f.sx, y: 1, z: f.sz }, RAPIER.HeightFieldFlags.FIX_INTERNAL_EDGES).setTranslation(f.cx, 0, f.cz)
+          : RAPIER.ColliderDesc.convexHull(new Float32Array(s.hull));
     if (!desc) throw new Error(`Rapier: degenerate collider (${s.kind})`);
     desc.setFriction(OBSTACLES.has(s.kind) ? PHYS.wallFriction : PHYS.friction).setCollisionGroups(GROUPS.world);
     const c = this.world.createCollider(desc);

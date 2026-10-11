@@ -150,7 +150,7 @@ export class FX {
         rand(2, 4), rand(1.5, 2.8), 0.12, 0.11, 0.1, 0.7, -0.4, 1.2, 2, KIND.SMOKE);
     }
     this.sparks(x, y + 1, z, 0, 0, 40);
-    this.blood.add(x, this.groundHeight(x, z) + 0.02, z, 0, 1, 0, 7, 7, Math.random() * 6, 0.05, 0.04, 0.04, 0.85);
+    this.blood.add(x, this.groundHeight(x, z, y + 1) + 0.02, z, 0, 1, 0, 7, 7, Math.random() * 6, 0.05, 0.04, 0.04, 0.85);
   }
 
   /** Разрыв снаряда — меньше, чем взрыв машины. */
@@ -167,7 +167,7 @@ export class FX {
     }
     this.sparks(x, y, z, 0, 0, 18);
     this.dust(x, y, z, 6);
-    this.blood.add(x, this.groundHeight(x, z) + 0.02, z, 0, 1, 0, 3.2, 3.2, Math.random() * 6, 0.06, 0.05, 0.05, 0.75);
+    this.blood.add(x, this.groundHeight(x, z, y + 1) + 0.02, z, 0, 1, 0, 3.2, 3.2, Math.random() * 6, 0.06, 0.05, 0.05, 0.75);
   }
 
   glass(x, y, z, count = 14) {
